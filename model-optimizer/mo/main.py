@@ -42,7 +42,7 @@ def replace_ext(name: str, old: str, new: str):
 
 
 def print_argv(argv: argparse.Namespace, is_caffe: bool, is_tf: bool, is_mxnet: bool, is_kaldi: bool, is_onnx: bool,
-               model_name: str):
+               is_torchscript: bool, model_name: str):
     print('Model Optimizer arguments:')
     props = OrderedDict()
     props['common_args'] = get_common_cli_options(model_name)
@@ -56,6 +56,8 @@ def print_argv(argv: argparse.Namespace, is_caffe: bool, is_tf: bool, is_mxnet: 
         props['kaldi_args'] = get_kaldi_cli_options()
     if is_onnx:
         props['onnx_args'] = get_onnx_cli_options()
+    if is_onnx:
+        props['torchscript_args'] = get_onnx_cli_options()
 
     framework_specifics_map = {
         'common_args': 'Common parameters:',
@@ -64,6 +66,7 @@ def print_argv(argv: argparse.Namespace, is_caffe: bool, is_tf: bool, is_mxnet: 
         'mxnet_args': 'MXNet specific parameters:',
         'kaldi_args': 'Kaldi specific parameters:',
         'onnx_args': 'ONNX specific parameters:',
+        'torchscript_args': 'TorchScript specific parameters:',
     }
 
     lines = []
@@ -84,11 +87,11 @@ def print_argv(argv: argparse.Namespace, is_caffe: bool, is_tf: bool, is_mxnet: 
 
 
 def prepare_ir(argv: argparse.Namespace):
-    is_tf, is_caffe, is_mxnet, is_kaldi, is_onnx = deduce_framework_by_namespace(argv)
+    is_tf, is_caffe, is_mxnet, is_kaldi, is_onnx, is_torchscript = deduce_framework_by_namespace(argv)
 
-    if not any([is_tf, is_caffe, is_mxnet, is_kaldi, is_onnx]):
+    if not any([is_tf, is_caffe, is_mxnet, is_kaldi, is_onnx, is_torchscript]):
         raise Error('Framework {} is not a valid target. Please use --framework with one from the list: caffe, tf, '
-                    'mxnet, kaldi, onnx. ' + refer_to_faq_msg(15), argv.framework)
+                    'mxnet, kaldi, onnx, torchscript. ' + refer_to_faq_msg(15), argv.framework)
 
     if is_tf and not argv.input_model and not argv.saved_model_dir and not argv.input_meta_graph:
         raise Error('Path to input model or saved model dir is required: use --input_model, --saved_model_dir or '
@@ -98,7 +101,7 @@ def prepare_ir(argv: argparse.Namespace):
                     '--input_symbol or --pretrained_model_name')
     elif is_caffe and not argv.input_model and not argv.input_proto:
         raise Error('Path to input model or input proto is required: use --input_model or --input_proto')
-    elif (is_kaldi or is_onnx) and not argv.input_model:
+    elif (is_kaldi or is_onnx or is_torchscript) and not argv.input_model:
         raise Error('Path to input model is required: use --input_model.')
 
     log.debug(str(argv))
@@ -134,7 +137,7 @@ def prepare_ir(argv: argparse.Namespace):
         log.info('Deduced name for prototxt: {}'.format(argv.input_proto))
 
     if not argv.silent:
-        print_argv(argv, is_caffe, is_tf, is_mxnet, is_kaldi, is_onnx, argv.model_name)
+        print_argv(argv, is_caffe, is_tf, is_mxnet, is_kaldi, is_onnx, is_torchscript, argv.model_name)
 
     # This try-except is additional reinsurance that the IE
     # dependency search does not break the MO pipeline
@@ -235,6 +238,9 @@ def prepare_ir(argv: argparse.Namespace):
     elif is_onnx:
         t.send_event('mo', 'framework', 'onnx')
         from mo.front.onnx.register_custom_ops import get_front_classes
+        import_extensions.load_dirs(argv.framework, extensions, get_front_classes)
+    elif is_torchscript:
+        from mo.front.torchscript.register_custom_ops import get_front_classes
         import_extensions.load_dirs(argv.framework, extensions, get_front_classes)
     graph = unified_pipeline(argv)
     return graph

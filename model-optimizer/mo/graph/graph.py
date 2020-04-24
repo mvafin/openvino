@@ -807,6 +807,11 @@ class Graph(nx.MultiDiGraph):
                                  ','.join([str(val) for val in node_attrs['value'].flatten()])[:40] + '\\"'
                     else:
                         label += '\\nvalue=None'
+                if 'data_type' not in attrs_to_print and 'data_type' in node_attrs:
+                    if node_attrs['data_type'] is not None:
+                        label += '\\ndata_type=\\"' + str(node_attrs['data_type']) + '\\"'
+                    else:
+                        label += '\\ndata_type=None'
             return label
 
         def _dump_nodes_attrs():
