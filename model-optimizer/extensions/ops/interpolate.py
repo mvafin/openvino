@@ -18,6 +18,22 @@ from mo.graph.graph import Node, Graph
 from mo.ops.op import Op, PermuteAttrs
 
 
+class ONNXResize(Op):
+    op = 'ONNXResize'
+    enabled = False
+
+    def __init__(self, graph: Graph, attrs: dict):
+        mandatory_props = {
+            'op': self.op,
+            'type': None,
+            'version': None,
+
+            'in_ports_count': 4,
+            'out_ports_count': 1,
+        }
+        super().__init__(graph, mandatory_props, attrs)
+
+
 class Interpolate(Op):
     op = 'Interpolate'
     enabled = False
