@@ -129,7 +129,7 @@ void MKLDNNGraphOptimizer::ApplyCommonGraphOptimizations(MKLDNNGraph &graph) {
     FuseMVNAndSimpleOperation(graph);
     graph.RemoveDroppedNodes();
 
-    FuseResampleAndSimpleOperation(graph);
+    FuseInterpolateAndSimpleOperation(graph);
     graph.RemoveDroppedNodes();
 
     FuseNormalizeAndSimpleOperation(graph);
@@ -1649,7 +1649,7 @@ void MKLDNNGraphOptimizer::FuseMVNAndSimpleOperation(MKLDNNGraph &graph) {
     }
 }
 
-void MKLDNNGraphOptimizer::FuseResampleAndSimpleOperation(MKLDNNGraph &graph) {
+void MKLDNNGraphOptimizer::FuseInterpolateAndSimpleOperation(MKLDNNGraph &graph) {
     auto removeEdge = [](MKLDNNGraph &graph, MKLDNNEdgePtr& edge) {
         auto& edges = graph.GetEdges();
         for (auto it = edges.begin(); it != edges.end(); it++) {
@@ -1662,21 +1662,30 @@ void MKLDNNGraphOptimizer::FuseResampleAndSimpleOperation(MKLDNNGraph &graph) {
 
     auto& graphNodes = graph.GetNodes();
 
-    auto isSutableParentNode = [](MKLDNNNodePtr node) {
-        bool isSutableResample = (node->getType() == Resample) && (node->inDims[0].ndims() == 4 || node->inDims[0].ndims() == 5);
+    auto isSuitableParentNode = [](MKLDNNNodePtr node) {
+        bool isSuitable = (node->getType() == Interpolate);
 
-        if (isSutableResample) {
-            auto *resampleLayer = node->getCnnLayer().get();
-            if (resampleLayer == nullptr)
-                THROW_IE_EXCEPTION << "Cannot get Resample layer " << node->getName();
+        if (isSuitable) {
+            auto *interpolateLayer = node->getCnnLayer().get();
+            if (interpolateLayer == nullptr)
+                THROW_IE_EXCEPTION << "Cannot get Interpolate layer " << node->getName();
 
-            return node->getChildEdges().size() == 1 && resampleLayer->GetParamAsString("type") == "caffe.ResampleParameter.NEAREST";
+            return node->getChildEdges().size() == 1;
         } else {
             return false;
         }
     };
 
-    auto isSutableChildNode = [](MKLDNNNodePtr node) {
+    auto isOneOf = [&](mkldnn::algorithm alg, std::vector<mkldnn::algorithm> algs) {
+        for (auto a : algs) {
+            if (alg == a) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto isSuitableChildNode = [&](MKLDNNNodePtr node) {
         if (!node->getCnnLayer())
             return false;
 
@@ -1689,27 +1698,29 @@ void MKLDNNGraphOptimizer::FuseResampleAndSimpleOperation(MKLDNNGraph &graph) {
             auto* depthwiseNode = dynamic_cast<MKLDNNDepthwiseNode*>(node.get());
             if (depthwiseNode == nullptr)
                 THROW_IE_EXCEPTION << "Cannot get depthwise layer " << node->getName();
-            return depthwiseNode->cnnLayer->type == "ScaleShift";
+            return ((depthwiseNode->getAlgorithm() == mkldnn::algorithm::depthwise_scale_shift && depthwiseNode->isWithBiases()) ||
+                    (depthwiseNode->getAlgorithm() == mkldnn::algorithm::depthwise_prelu));
         } else if (node->getType() == Activation) {
             auto* activationNode = dynamic_cast<MKLDNNActivationNode*>(node.get());
             if (activationNode == nullptr)
                 THROW_IE_EXCEPTION << "Cannot get activation layer " << node->getName();
-            return activationNode->getAlgorithm() == eltwise_relu;
+            return isOneOf(activationNode->getAlgorithm(), {eltwise_relu, eltwise_gelu, eltwise_elu, eltwise_logistic,
+                eltwise_bounded_relu, eltwise_clamp, eltwise_tanh, eltwise_swish, eltwise_linear, eltwise_abs,
+                eltwise_square, eltwise_sqrt});
         }
-
         return false;
     };
 
     auto parent = graphNodes.begin();
     while (parent != graphNodes.end()) {
         auto parentNode = *parent;
-        if (!isSutableParentNode(parentNode)) {
+        if (!isSuitableParentNode(parentNode)) {
             parent++;
             continue;
         }
 
         auto childNode = parentNode->getChildEdgeAt(0)->getChild();
-        if (!isSutableChildNode(childNode)) {
+        if (!isSuitableChildNode(childNode)) {
             parent++;
             continue;
         }
@@ -1720,7 +1731,7 @@ void MKLDNNGraphOptimizer::FuseResampleAndSimpleOperation(MKLDNNGraph &graph) {
             auto parentEdges = childNode->parentEdges;
             for (auto &parentEdge : parentEdges) {
                 auto p_edge = parentEdge.lock();
-                if (p_edge->getParent()->getType() == Resample)
+                if (p_edge->getParent()->getType() == Interpolate)
                     continue;
 
                 removeEdge(graph, p_edge);

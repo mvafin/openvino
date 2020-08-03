@@ -23,18 +23,49 @@ enum LayoutType {
     by_channel
 };
 
+enum InterpolateMode {
+    nearest,
+    linear,
+    linear_onnx,
+    cubic
+};
+
+enum CoordTransMode {
+    half_pixel,
+    pytorch_half_pixel,
+    asymmetric,
+    tf_half_pixel_for_nn,
+    align_corners
+};
+
+enum class NearestMode {
+    round_prefer_floor,
+    round_prefer_ceil,
+    floor,
+    ceil,
+    simple
+};
+
 struct jit_interpolate_config_params {
     LayoutType layout;
+    InterpolateMode mode;
     mkldnn::memory::data_type src_dt;
     mkldnn::memory::data_type dst_dt;
     int src_data_size;
     int dst_data_size;
     int indices_size;
-    size_t n, c, d, h, w;
+    int IH, IW, OH, OW;
 };
 
 struct jit_interpolate_call_args {
     const void *src;
+    const void *srcTR;
+    const void *srcBL;
+    const void *srcBR;
+    const float *weight;
+    const float *weightR;
+    const float *weightT;
+    const float *weightB;
     const int *index;
     void *dst;
     size_t work_amount;
@@ -56,28 +87,6 @@ struct jit_uni_interpolate_kernel {
     const mkldnn_primitive_attr &attr_;
 };
 
-enum class InterpolateMode {
-    nearest,
-    linear,
-    linear_onnx,
-    cubic
-};
-
-enum class CoordTransMode {
-    half_pixel,
-    pytorch_half_pixel,
-    asymmetric,
-    tf_half_pixel_for_nn,
-    align_corners
-};
-
-enum class NearestMode {
-    round_prefer_floor,
-    round_prefer_ceil,
-    floor,
-    ceil,
-    simple
-};
 
 class MKLDNNInterpolateNode : public MKLDNNNode {
 public:
@@ -94,26 +103,33 @@ public:
     }
 
 private:
-    // nn
-    void NearestNeighbor_PLN(const float *in_ptr_, float *out_ptr_, int B, int C, int ID, int IH, int IW,
+    // nearest neighbor
+    void NNPlanar(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
                                           float fx, float fy, float fz, int OD, int OH, int OW);
-    template <typename in_data_t, typename out_data_t>
-    void NearestNeighbor_BLK(const in_data_t *in_ptr_, out_data_t *out_ptr_, int B, int C, int ID, int IH, int IW,
+    void NNCGathered(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
                                           float fx, float fy, float fz, int OD, int OH, int OW);
-    template <typename in_data_t, typename out_data_t>
-    void NearestNeighbor_ref(const in_data_t *in_ptr_, out_data_t *out_ptr_, int B, int C, int ID, int IH, int IW,
+    void NNRef(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
                                           float fx, float fy, float fz, int OD, int OH, int OW);
+
+    // onnx linear
+    void linearOnnxPlanar(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int IH, int IW,
+                                          float fx, float fy, int OH, int OW);
+    void linearOnnxCGathered(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int IH, int IW,
+                                          float fx, float fy, int OH, int OW);
+    void linearOnnxRef(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int IH, int IW,
+                                              float fx, float fy, int OH, int OW);
+
     // linear
-    template <typename in_data_t, typename out_data_t>
-    void LinearInterpolation(const in_data_t *in_ptr_, out_data_t *out_ptr_, int B, int C, int ID, int IH, int IW,
+    void linearInterpolation(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
                                           float fx, float fy, float fz, int OD, int OH, int OW, int kernel_width, bool antialias);
+
     void setPostOps(mkldnn::primitive_attr &attr, bool initWeights = false);
-    inline void apply_post_ops_scalar(float &dst_value, int index_c);
+    inline void applyPostOpsScalar(float &dst_value, int index_c);
 
     inline float coordTransToInput(int outCoord, float scale, int inShape, int outShape);
     inline int nearestRound(float origin, bool isDownsample);
-
-    int blk_size;
+    float getValue(const uint8_t *base, size_t offset, InferenceEngine::Precision prec);
+    void setValue(uint8_t *base, size_t offset, float value, InferenceEngine::Precision prec);
 
     std::vector<int> axes;
     InterpolateMode mode;
