@@ -105,11 +105,138 @@ void op::v4::Range::validate_and_infer_types()
 shared_ptr<Node> op::v4::Range::clone_with_new_inputs(const OutputVector& new_args) const
 {
     check_new_args_count(this, new_args);
-    return make_shared<Range>(new_args.at(0), new_args.at(1), new_args.at(2), m_output_type);
+    return make_shared<v4::Range>(new_args.at(0), new_args.at(1), new_args.at(2), m_output_type);
+}
+
+template <typename T>
+bool get_casted_value(const HostTensorPtr& tensor, T* val)
+{
+    switch (tensor->get_element_type())
+    {
+    case element::Type_t::bf16:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::bf16>());
+        break;
+    case element::Type_t::f16:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::f16>());
+        break;
+    case element::Type_t::f32:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::f32>());
+        break;
+    case element::Type_t::f64:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::f64>());
+        break;
+    case element::Type_t::i8:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::i8>());
+        break;
+    case element::Type_t::i16:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::i16>());
+        break;
+    case element::Type_t::i32:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::i32>());
+        break;
+    case element::Type_t::i64:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::i64>());
+        break;
+    case element::Type_t::u8:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::u8>());
+        break;
+    case element::Type_t::u16:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::u16>());
+        break;
+    case element::Type_t::u32:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::u32>());
+        break;
+    case element::Type_t::u64:
+        *val = static_cast<T>(*tensor->get_data_ptr<element::Type_t::u64>());
+        break;
+    default: return false;
+    }
+    return true;
+}
+
+template <element::Type_t ET>
+bool evaluate_v4_range(const HostTensorPtr& out,
+                       const HostTensorPtr& start,
+                       const HostTensorPtr& stop,
+                       const HostTensorPtr& step)
+{
+    using T = typename element_type_traits<ET>::value_type;
+    T start_val;
+    T stop_val;
+    T step_val;
+    if (!(get_casted_value<T>(start, &start_val) &&
+        get_casted_value<T>(stop, &stop_val) &&
+        get_casted_value<T>(step, &step_val)))
+    {
+        return false;
+    }
+
+    int64_t out_size = 0;
+
+    int64_t steps = static_cast<int64_t>(std::ceil(double(stop_val - start_val) / step_val));
+    if (steps > 0)
+    {
+        out_size = steps;
+    }
+    Shape out_shape = Shape({static_cast<size_t>(out_size)});
+    out->set_shape(out_shape);
+    runtime::reference::range(&start_val, &step_val, out_shape, out->get_data_ptr<ET>());
+    return true;
+
 }
 
 bool op::v4::Range::evaluate(const HostTensorVector& outputs, const HostTensorVector& inputs)
 {
+    HostTensorPtr out = outputs[0];
+    HostTensorPtr start = inputs[0];
+    HostTensorPtr stop = inputs[1];
+    HostTensorPtr step = inputs[2];
+    switch (m_output_type)
+    {
+    case element::Type_t::bf16:
+        return evaluate_v4_range<element::Type_t::bf16>(out, start, stop, step);
+        break;
+    case element::Type_t::f16:
+        return evaluate_v4_range<element::Type_t::f16>(out, start, stop, step);
+        break;
+    case element::Type_t::f32:
+        return evaluate_v4_range<element::Type_t::f32>(out, start, stop, step);
+        break;
+    case element::Type_t::f64:
+        return evaluate_v4_range<element::Type_t::f64>(out, start, stop, step);
+        break;
+    case element::Type_t::i8:
+        return evaluate_v4_range<element::Type_t::i8>(out, start, stop, step);
+        break;
+    case element::Type_t::i16:
+        return evaluate_v4_range<element::Type_t::i16>(out, start, stop, step);
+        break;
+    case element::Type_t::i32:
+        return evaluate_v4_range<element::Type_t::i32>(out, start, stop, step);
+        break;
+    case element::Type_t::i64:
+        return evaluate_v4_range<element::Type_t::i64>(out, start, stop, step);
+        break;
+    case element::Type_t::u8:
+        return evaluate_v4_range<element::Type_t::u8>(out, start, stop, step);
+        break;
+    case element::Type_t::u16:
+        return evaluate_v4_range<element::Type_t::u16>(out, start, stop, step);
+        break;
+    case element::Type_t::u32:
+        return evaluate_v4_range<element::Type_t::u32>(out, start, stop, step);
+        break;
+    case element::Type_t::u64:
+        return evaluate_v4_range<element::Type_t::u64>(out, start, stop, step);
+        break;
+    case element::Type_t::dynamic:
+    case element::Type_t::u1:
+    case element::Type_t::undefined:
+    case element::Type_t::boolean:
+        NODE_VALIDATION_CHECK(
+            this, false, "Internal nGraph error: unsupported element type: ", m_output_type);
+        break;
+    }
     return false;
 }
 
