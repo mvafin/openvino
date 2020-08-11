@@ -751,8 +751,10 @@ void MKLDNNInterpolateNode::getSupportedDescriptors() {
     if (!descs.empty())
         return;
 
-    if (getParentEdges().size() != 3)
+    if (getParentEdges().size() != 3 && getParentEdges().size() != 4)
+        // data, target_shape, scale, axis(optional).
         THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' has incorrect number of input edges";
+    isAxesSpecified = (getParentEdges().size() == 3) ? false : true;
     if (getChildEdges().empty())
         THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' has incorrect number of output edges";
 
@@ -769,6 +771,15 @@ void MKLDNNInterpolateNode::getSupportedDescriptors() {
     } else {
         THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' do not support interpolate mode:" << modeString;
     }
+    int dataRank = getParentEdgeAt(DATA_ID)->getDims().ndims();
+    if (dataRank != 2 && dataRank != 4 && dataRank != 5) {
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() <<
+        "' do not support input tensor of rank :" << dataRank;
+    }
+    if ((mode == InterpolateMode::cubic || mode == InterpolateMode::linear_onnx) && (dataRank == 5)) {
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() <<
+        "' of 'linear_onnx' or 'cubic' mode only support input tensor of 2 or 4 rank";
+    }
 
     modeString = layer->GetParamAsString("coordinate_transformation_mode", "half_pixel");
     if (modeString == "half_pixel") {
@@ -782,7 +793,7 @@ void MKLDNNInterpolateNode::getSupportedDescriptors() {
     } else if (modeString == "align_corners") {
         coordTransMode = CoordTransMode::align_corners;
     } else {
-        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' do not support coordinate transformation mode:" << modeString;
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' do not support coordinate transformation mode: " << modeString;
     }
 
     if (mode == InterpolateMode::nearest) {
@@ -798,21 +809,55 @@ void MKLDNNInterpolateNode::getSupportedDescriptors() {
         } else if (modeString == "simple") {
             nearestMode = NearestMode::simple;
         } else {
-            THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' do not support nearest round mode:" << modeString;
+            THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' do not support nearest round mode: " << modeString;
         }
     } else if (mode == InterpolateMode::cubic) {
-        cubeCoeff = layer->GetParamAsFloat("cube_coeff");
+        cubeCoeff = layer->GetParamAsFloat("cube_coeff", -0.75);
     }
     antialias = layer->GetParamAsBool("antialias", false);
+    shapeInferMode = layer->GetParamAsString("shape_calculation_mode");
+
+    // get pad
+    std::vector<int> defPad(dataRank, 0);
+    padBegin = layer->GetParamAsInts("pads_begin", defPad);
+    padEnd = layer->GetParamAsInts("pads_end", defPad);
+    for (int i = 0; i < padBegin.size(); i++) {
+        if (padBegin[i] != 0) {
+            hasPad = true;
+            break;
+        }
+    }
+    for (int i = 0; i < padEnd.size(); i++) {
+        if (padEnd[i] != 0) {
+            hasPad = true;
+            break;
+        }
+    }
+    //correct pad
+    if (hasPad) {
+        auto correctPad = [&](std::vector<int> pad, int rank) {
+            int padLen = pad.size();
+            if (padLen == rank) {
+                return pad;
+            }
+            std::vector<int> result;
+            if (padLen > rank) {
+                result.insert(result.end(), pad.begin(), pad.begin() + rank);
+            } else {
+                result = pad;
+                result.insert(result.end(), rank - padLen, 0);
+            }
+            return result;
+        };
+
+        padBegin = correctPad(padBegin, dataRank);
+        padEnd = correctPad(padEnd, dataRank);
+    }
 }
 
 void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
     if (!supportedPrimitiveDescriptors.empty())
         return;
-
-    if (getParentEdgeAt(0)->getDims().ndims() < 4 || getParentEdgeAt(0)->getDims().ndims() > 5) {
-        return;
-    }
 
     setPostOps(attr, true);
 
@@ -836,17 +881,37 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
 
     InferenceEngine::LayerConfig config;
     config.dynBatchSupport = false;
-    config.inConfs.resize(1);
+    if (isAxesSpecified) {
+        config.inConfs.resize(4);
+    } else {
+        config.inConfs.resize(3);
+    }
     config.outConfs.resize(1);
-    config.inConfs[0].constant = false;
+    config.inConfs[DATA_ID].constant = false;
+    config.inConfs[TARGET_SHAPE_ID].constant = false;
+    config.inConfs[SCALES_ID].constant = false;
     config.outConfs[0].constant = false;
-    config.inConfs[0].inPlace = -1;
+    config.inConfs[DATA_ID].inPlace = -1;
+    config.inConfs[TARGET_SHAPE_ID].inPlace = -1;
+    config.inConfs[SCALES_ID].inPlace = -1;
     config.outConfs[0].inPlace = -1;
+    if (isAxesSpecified) {
+        config.inConfs[AXES_ID].constant = false;
+        config.inConfs[AXES_ID].inPlace = -1;
+    }
 
-    auto pushDesc = [&](memory::format format) {
-        config.inConfs[0].desc = MKLDNNMemoryDesc(getParentEdgeAt(0)->getDims(), inputDataType, format);
-        config.outConfs[0].desc = MKLDNNMemoryDesc(getChildEdgeAt(0)->getDims(), outputDataType, format);
-        supportedPrimitiveDescriptors.push_back({config, impl_desc_type::unknown, format});
+    auto targetShapeType = MKLDNNExtensionUtils::IEPrecisionToDataType(Precision::I32);
+    auto scalesType = MKLDNNExtensionUtils::IEPrecisionToDataType(Precision::FP32);
+    auto axesType = MKLDNNExtensionUtils::IEPrecisionToDataType(Precision::I32);
+
+    auto pushDesc = [&](memory::format dataFormat) {
+        config.inConfs[DATA_ID].desc = MKLDNNMemoryDesc(getParentEdgeAt(DATA_ID)->getDims(), inputDataType, dataFormat);
+        config.inConfs[TARGET_SHAPE_ID].desc = MKLDNNMemoryDesc(getParentEdgeAt(TARGET_SHAPE_ID)->getDims(), targetShapeType, memory::x);
+        config.inConfs[SCALES_ID].desc = MKLDNNMemoryDesc(getParentEdgeAt(SCALES_ID)->getDims(), scalesType, memory::x);
+        if (isAxesSpecified)
+            config.inConfs[AXES_ID].desc = MKLDNNMemoryDesc(getParentEdgeAt(AXES_ID)->getDims(), axesType, memory::x);
+        config.outConfs[0].desc = MKLDNNMemoryDesc(getChildEdgeAt(0)->getDims(), outputDataType, dataFormat);
+        supportedPrimitiveDescriptors.push_back({config, impl_desc_type::unknown, dataFormat});
     };
 
 // linear_onnx only for 2/4 rank tensor
@@ -871,7 +936,7 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
         }
         // planar always support. JIT kernel for f32 && avx2, else planar ref.
         pushDesc(MKLDNNMemory::GetPlainFormat(getChildEdgeAt(0)->getDims()));
-    } else if (mode == InterpolateMode::linear) {
+    } else if (mode == InterpolateMode::linear || mode == InterpolateMode::cubic) {
         pushDesc(MKLDNNMemory::GetPlainFormat(getChildEdgeAt(0)->getDims()));
     }
 }
@@ -1013,56 +1078,196 @@ void MKLDNNInterpolateNode::setPostOps(mkldnn::primitive_attr &attr, bool initWe
     attr.set_post_ops(ops);
 }
 
+// shapeND: n     c     d     h    w
+// blockND: ncdhw cdhw  dhw   hw   w    1
+// index  : 0      1    2     3    4    5
+SizeVector getBlockND(SizeVector& shape) {
+    int shapeRank = shape.size();
+    SizeVector blockND(shapeRank + 1, 1);
+    for (int i = shapeRank - 1; i >= 0; i--) {
+        blockND[i] = shape[i] * blockND[i+1];
+    }
+    return blockND;
+}
+
+SizeVector MKLDNNInterpolateNode::getPaddedInputShape(SizeVector& srcDim) {
+    SizeVector paddedShape;
+    int dataRank = srcDim.size();
+    for (int i = 0; i < dataRank; i++) {
+        paddedShape.push_back(srcDim[i] + padBegin[i] + padEnd[i]);
+    }
+    return paddedShape;
+}
+
+SizeVector MKLDNNInterpolateNode::outShapeCalc(SizeVector& srcDim) {
+    SizeVector dstDim = getPaddedInputShape(srcDim);
+    int axesRank = axes.size();
+    for (int i = 0; i < axesRank; i++) {
+        int axis = axes[i];
+        dstDim[axis] = (shapeInferMode == "scales") ? static_cast<size_t>(std::floor(dstDim[axis] * scales[i]))
+        : static_cast<size_t>(targetShape[i]);
+    }
+    return dstDim;
+}
+
+std::vector<float> MKLDNNInterpolateNode::getScales(int dataRank) {
+    std::vector<float> fullScales(dataRank, 1.f);
+    int axesRank = axes.size();
+    for (int i = 0; i < axesRank; i++) {
+        int axis = axes[i];
+        fullScales[axis] = scales[i];
+    }
+    return fullScales;
+}
 
 void MKLDNNInterpolateNode::execute(mkldnn::stream strm) {
     auto &dstMemPtr = getChildEdgeAt(0)->getMemoryPtr();
-    auto &srcMemPtr = getParentEdgeAt(0)->getMemoryPtr();
+    auto &srcMemPtr = getParentEdgeAt(DATA_ID)->getMemoryPtr();
+    auto &targetShapeMemPtr = getParentEdgeAt(TARGET_SHAPE_ID)->getMemoryPtr();
+    auto &scalesMemPtr = getParentEdgeAt(SCALES_ID)->getMemoryPtr();
 
-    Layout layout = getParentEdgeAt(0)->getDesc().getLayout();
-    bool isPlanar = (layout == NC || layout == NCHW || layout == NCDHW) ? true : false;
-
-    const uint8_t *src_data = reinterpret_cast<const uint8_t*>(srcMemPtr->GetData()) +
-            srcMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding * srcDataSize;
     uint8_t *dst_data = reinterpret_cast<uint8_t*>(dstMemPtr->GetData()) +
             dstMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding * dstDataSize;
+    uint8_t *src_data_origin = reinterpret_cast<uint8_t*>(srcMemPtr->GetData()) +
+            srcMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding * srcDataSize;
 
-    SizeVector src_dim = getParentEdgeAt(0)->getDesc().getDims();
-    SizeVector dst_dim = getChildEdgeAt(0)->getDesc().getDims();
+    int *targetShapeData = reinterpret_cast<int*>(targetShapeMemPtr->GetData()) +
+            targetShapeMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding;
+    int targetShapeLen = getParentEdgeAt(TARGET_SHAPE_ID)->getDesc().getDims()[0];
+    for (int i = 0; i < targetShapeLen; i++) {
+        targetShape[i] = targetShapeData[i];
+    }
 
-    size_t dims_size = src_dim.size();
-    size_t N = src_dim[0];
-    size_t C = src_dim[1];
-    size_t ID = (dims_size == 5) ? src_dim[dims_size - 3] : 1lu;
-    size_t IH = src_dim[dims_size - 2];
-    size_t IW = src_dim[dims_size - 1];
+    float *scalesData = reinterpret_cast<float*>(scalesMemPtr->GetData()) +
+            scalesMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding;
+    int scalesLen = getParentEdgeAt(SCALES_ID)->getDesc().getDims()[0];
+    for (int i = 0; i < scalesLen; i++) {
+        scales[i] = scalesData[i];
+    }
 
-    size_t OD = (dims_size == 5) ? dst_dim[dims_size - 3] : 1lu;
-    size_t OH = dst_dim[dims_size - 2];
-    size_t OW = dst_dim[dims_size - 1];
-
-    float fx = static_cast<float>(IW) / static_cast<float>(OW);
-    float fy = static_cast<float>(IH) / static_cast<float>(OH);
-    float fz = static_cast<float>(ID) / static_cast<float>(OD);
-
-    if (mode == InterpolateMode::nearest) {
-        if (interpolateKernel) {
-            if (isPlanar) {
-                NNPlanar(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW);
-            } else {
-                NNCGathered(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW);
-            }
-        } else {
-            NNRef(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW);
+    SizeVector srcDim = getParentEdgeAt(DATA_ID)->getDesc().getDims();
+    size_t dimSize = srcDim.size();
+    if (isAxesSpecified) {
+        auto &axesMemPtr = getParentEdgeAt(AXES_ID)->getMemoryPtr();
+        int *axesData = reinterpret_cast<int*>(axesMemPtr->GetData()) +
+            axesMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding;
+        int axesLen = getParentEdgeAt(AXES_ID)->getDesc().getDims()[0];
+        axes.resize(axesLen);
+        for (int i = 0; i < axesLen; i++) {
+            axes[i] = axesData[i];
         }
-    } else if (mode == InterpolateMode::linear) {
-        // todo: bf16 convert to fp32, generic data type, no if/else
-        bool isDownsample = (fx > 1) || (fy > 1) || (fz > 1);
-        int kernel_width = 2;
-        linearInterpolation(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW, kernel_width, isDownsample && antialias);
+    } else {
+        // default is: [0, ..., dataRank - 1]
+        axes.resize(dimSize);
+        for (int i = 0; i < dimSize; i++) {
+            axes[i] = i;
+        }
+    }
+    if (scales.size() != axes.size() || targetShape.size() != axes.size()) {
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() <<
+        "' do not have the same number elements in axis as in scales or target_spatial_shape.";
+    }
+
+    SizeVector srcDimPad = getPaddedInputShape(srcDim);
+    SizeVector dstDim = outShapeCalc(srcDim);
+
+    auto to5Dim = [&](SizeVector casesDim) {
+        size_t caseSize = casesDim.size();
+        SizeVector dim5(5, 1lu);
+        if (caseSize > 2) {
+            dim5[0] = casesDim[0];
+            dim5[1] = casesDim[1];
+        }
+        if (caseSize == 5) {
+            dim5[2] = casesDim[2];
+        }
+        dim5[3] = casesDim[caseSize - 2];
+        dim5[4] = casesDim[caseSize - 1];
+        return dim5;
+    };
+    auto srcDim5d = to5Dim(srcDim);
+    auto srcDimPad5d = to5Dim(srcDimPad);
+    auto dstDim5d = to5Dim(dstDim);
+
+    uint8_t *src_data = nullptr;
+    std::vector<uint8_t> srcPadded;
+    if (hasPad) {
+        int padB0 = (dimSize > 2) ? padBegin[0] : 0;
+        int padB1 = (dimSize > 2) ? padBegin[1] : 0;
+        int padB2 = (dimSize == 5) ? padBegin[dimSize - 3] : 0;
+        int padB3 = padBegin[dimSize - 2];
+        int padB4 = padBegin[dimSize - 1];
+
+        SizeVector inShapeBlock = getBlockND(srcDim5d);
+        SizeVector inShapePadBlock = getBlockND(srcDimPad5d);
+        srcPadded = std::vector<uint8_t>(inShapePadBlock[0] * srcDataSize, 0);
+        uint8_t *src_data_pad = static_cast<uint8_t *>(&srcPadded[0]);
+
+        parallel_for4d(srcDim5d[0], srcDim5d[1], srcDim5d[2], srcDim5d[3], [&](int n, int c, int d, int h) {
+            uint8_t *src = src_data_origin + (inShapeBlock[1] * n + inShapeBlock[2] * c + inShapeBlock[3] * d + inShapeBlock[4] * h) * srcDataSize;
+            uint8_t *srcPad = src_data_pad + (inShapePadBlock[1] * (n + padB0) + inShapePadBlock[2] * (c + padB1) +
+                           inShapePadBlock[3] * (d + padB2) + inShapePadBlock[4] * (h + padB3) + padB4) * srcDataSize;
+            std::memcpy(srcPad, src, srcDim5d[4] * srcDataSize);
+        });
+        src_data = src_data_pad;
+    } else {
+        src_data = src_data_origin;
+    }
+
+    size_t N = srcDimPad5d[0], C = srcDimPad5d[1], ID = srcDimPad5d[2], IH = srcDimPad5d[3], IW = srcDimPad5d[4];
+    size_t OD = dstDim5d[2], OH = dstDim5d[3], OW = dstDim5d[4];
+    std::vector<float> dataScales = getScales(dimSize);
+    if (dimSize > 2 && (dataScales[0] != 1.f || dataScales[1] != 1.f)) {
+        THROW_IE_EXCEPTION << "Interpolate layer only support resize on spatial dimensions(depth, height and width)";
+    }
+    float fz = (dimSize == 5) ? dataScales[dimSize - 3] : 1.f;
+    float fy = dataScales[dimSize - 2];
+    float fx = dataScales[dimSize - 1];
+    Layout layout = getParentEdgeAt(DATA_ID)->getDesc().getLayout();
+    bool isPlanar = (layout == NC || layout == NCHW || layout == NCDHW) ? true : false;
+
+    switch (mode) {
+        case InterpolateMode::nearest: {
+            if (interpolateKernel) {
+                if (isPlanar) {
+                    NNPlanar(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW);
+                } else {
+                    NNCGathered(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW);
+                }
+            } else {
+                NNRef(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW);
+            }
+            break;
+        }
+        case InterpolateMode::linear: {
+            // todo: bf16 convert to fp32
+            bool isDownsample = (fx > 1) || (fy > 1) || (fz > 1);
+            int kernel_width = 2;
+            linearInterpolation(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW, kernel_width, isDownsample && antialias);
+            break;
+        }
+        case InterpolateMode::linear_onnx: {
+            if (interpolateKernel) {
+                if (isPlanar) {
+                    linearOnnxPlanar(src_data, dst_data, N, C, IH, IW, fx, fy, OH, OW);
+                } else {
+                    linearOnnxCGathered(src_data, dst_data, N, C, IH, IW, fx, fy, OH, OW);
+                }
+            } else {
+                linearOnnxRef(src_data, dst_data, N, C, IH, IW, fx, fy, OH, OW);
+            }
+            break;
+        }
+        case InterpolateMode::cubic: {
+            cubic(src_data, dst_data, N, C, IH, IW, fx, fy, OH, OW, cubeCoeff);
+            break;
+        }
+        default: {
+            THROW_IE_EXCEPTION << "Interpolate layer has unsupported interpolate mode: " << mode;
+        }
     }
 }
 
-// input is f32(gatherISA works with fp32), fuse->output dt varies
 void MKLDNNInterpolateNode::NNPlanar(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
                                           float fx, float fy, float fz, int OD, int OH, int OW) {
     std::vector<int> index_buffer(OD * OH * OW);
@@ -1208,97 +1413,6 @@ void MKLDNNInterpolateNode::NNRef(const uint8_t *in_ptr_, uint8_t *out_ptr_, int
                 applyPostOpsScalar(dstValue, c);
             }
             setValue(out_ptr, i_dst * dstDataSize, dstValue, outputPrec);
-        }
-    });
-}
-
-static inline float triangleCoeff(float x) {
-    return (std::max)(0.0f, 1 - std::abs(x));
-}
-
-void MKLDNNInterpolateNode::linearInterpolation(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
-                                          float fx, float fy, float fz, int OD, int OH, int OW, int kernel_width, bool antialias) {
-    if (IW == OW && IH == OH && ID == OD) {
-        size_t spatialDimSize = IW * IH * ID;
-        if (fusedWith.empty() && inputPrec == outputPrec) {
-            size_t size = B * C * spatialDimSize * srcDataSize;
-            simple_copy(out_ptr_, size, in_ptr_, size);
-        } else {
-            parallel_for2d(B, C, [&](size_t b, size_t c) {
-                const uint8_t *in_ptr_nc = in_ptr_ + (spatialDimSize * C * b + spatialDimSize * c) * srcDataSize;
-                uint8_t *out_ptr_nc = out_ptr_ + (spatialDimSize * C * b + spatialDimSize * c) * dstDataSize;
-                for (size_t i = 0; i < spatialDimSize; i++) {
-                    float dstValue = getValue(in_ptr_nc, i * srcDataSize, inputPrec);
-                    applyPostOpsScalar(dstValue, c);
-                    setValue(out_ptr_nc, i * dstDataSize, dstValue, outputPrec);
-                }
-            });
-        }
-        return;
-    }
-
-    float ax = 1.0f / (antialias ? fx : 1.0f);
-    float ay = 1.0f / (antialias ? fy : 1.0f);
-    float az = 1.0f / (antialias ? fz : 1.0f);
-
-    int rx = (fx < 1.0f) ? 2 : static_cast<int>(ceil(static_cast<float>(kernel_width) / ax));
-    int ry = (fy < 1.0f) ? 2 : static_cast<int>(ceil(static_cast<float>(kernel_width) / ay));
-    int rz = (fz < 1.0f) ? 2 : static_cast<int>(ceil(static_cast<float>(kernel_width) / az));
-
-    parallel_for2d(B, C, [&](size_t b, size_t c) {
-        const uint8_t *in_ptr_nc = in_ptr_ + (IW * IH * ID * C * b + IW * IH * ID * c) * srcDataSize;
-        uint8_t *out_ptr_nc = out_ptr_ + (OW * OH * OD * C * b + OW * OH * OD * c) * dstDataSize;
-        for (size_t oz = 0; oz < OD; oz++) {
-            uint8_t *out_ptr_ncd = out_ptr_nc + (OW * OH * oz) * dstDataSize;
-            float iz = coordTransToInput(oz, fz, ID, OD);
-            int iz_r = static_cast<int>(round(iz));
-            for (size_t oy = 0; oy < OH; oy++) {
-                uint8_t *out_ptr_ncdh = out_ptr_ncd + (OW * oy) * dstDataSize;
-                float iy = coordTransToInput(oy, fy, IH, OH);
-                int iy_r = static_cast<int>(round(iy));
-                for (size_t ox = 0; ox < OW; ox++) {
-                    float ix = coordTransToInput(ox, fx, IW, OW);
-                    int ix_r = static_cast<int>(round(ix));
-
-                    float sum = 0;
-                    float wsum = 0;
-
-                    for (int z = iz_r - rz; z <= iz_r + rz; z++) {
-                        for (int y = iy_r - ry; y <= iy_r + ry; y++) {
-                            for (int x = ix_r - rx; x <= ix_r + rx; x++) {
-                                bool is_continue =  z < 0                     ||
-                                                    y < 0                     ||
-                                                    x < 0                     ||
-                                                    z >= static_cast<int>(ID) ||
-                                                    y >= static_cast<int>(IH) ||
-                                                    x >= static_cast<int>(IW);
-                                if (is_continue)
-                                    continue;
-
-                                float dx = ix - x;
-                                float dy = iy - y;
-                                float dz = iz - z;
-
-                                float w = ax * triangleCoeff(ax * dx) *
-                                          ay * triangleCoeff(ay * dy) *
-                                          az * triangleCoeff(az * dz);
-
-                                sum += w * getValue(in_ptr_nc, (z * IH * IW + y * IW + x) * srcDataSize, inputPrec);
-                                wsum += w;
-                            }
-                        }
-                    }
-                    if (!wsum) {
-                        setValue(out_ptr_ncdh, ox * dstDataSize, 0.f, outputPrec);
-                    } else {
-                        float dst_value = sum / wsum;
-                        if (!fusedWith.empty()) {
-                            applyPostOpsScalar(dst_value, c);
-                        }
-                        setValue(out_ptr_ncdh, ox * dstDataSize, dst_value, outputPrec);
-                    }
-                }
-            }
         }
     });
 }
@@ -1487,6 +1601,159 @@ void MKLDNNInterpolateNode::linearOnnxRef(const uint8_t *in_ptr_, uint8_t *out_p
                 setValue(out_ptr_nc, (oy * OW + ox) * dstDataSize, dstValue, outputPrec);
             }
         }
+    });
+}
+
+static inline float triangleCoeff(float x) {
+    return (std::max)(0.0f, 1 - std::abs(x));
+}
+
+void MKLDNNInterpolateNode::linearInterpolation(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int ID, int IH, int IW,
+                                          float fx, float fy, float fz, int OD, int OH, int OW, int kernel_width, bool antialias) {
+    if (IW == OW && IH == OH && ID == OD) {
+        size_t spatialDimSize = IW * IH * ID;
+        if (fusedWith.empty() && inputPrec == outputPrec) {
+            size_t size = B * C * spatialDimSize * srcDataSize;
+            simple_copy(out_ptr_, size, in_ptr_, size);
+        } else {
+            parallel_for2d(B, C, [&](size_t b, size_t c) {
+                const uint8_t *in_ptr_nc = in_ptr_ + (spatialDimSize * C * b + spatialDimSize * c) * srcDataSize;
+                uint8_t *out_ptr_nc = out_ptr_ + (spatialDimSize * C * b + spatialDimSize * c) * dstDataSize;
+                for (size_t i = 0; i < spatialDimSize; i++) {
+                    float dstValue = getValue(in_ptr_nc, i * srcDataSize, inputPrec);
+                    applyPostOpsScalar(dstValue, c);
+                    setValue(out_ptr_nc, i * dstDataSize, dstValue, outputPrec);
+                }
+            });
+        }
+        return;
+    }
+
+    float ax = 1.0f / (antialias ? fx : 1.0f);
+    float ay = 1.0f / (antialias ? fy : 1.0f);
+    float az = 1.0f / (antialias ? fz : 1.0f);
+
+    int rx = (fx < 1.0f) ? 2 : static_cast<int>(ceil(static_cast<float>(kernel_width) / ax));
+    int ry = (fy < 1.0f) ? 2 : static_cast<int>(ceil(static_cast<float>(kernel_width) / ay));
+    int rz = (fz < 1.0f) ? 2 : static_cast<int>(ceil(static_cast<float>(kernel_width) / az));
+
+    parallel_for2d(B, C, [&](size_t b, size_t c) {
+        const uint8_t *in_ptr_nc = in_ptr_ + (IW * IH * ID * C * b + IW * IH * ID * c) * srcDataSize;
+        uint8_t *out_ptr_nc = out_ptr_ + (OW * OH * OD * C * b + OW * OH * OD * c) * dstDataSize;
+        for (size_t oz = 0; oz < OD; oz++) {
+            uint8_t *out_ptr_ncd = out_ptr_nc + (OW * OH * oz) * dstDataSize;
+            float iz = coordTransToInput(oz, fz, ID, OD);
+            int iz_r = static_cast<int>(round(iz));
+            for (size_t oy = 0; oy < OH; oy++) {
+                uint8_t *out_ptr_ncdh = out_ptr_ncd + (OW * oy) * dstDataSize;
+                float iy = coordTransToInput(oy, fy, IH, OH);
+                int iy_r = static_cast<int>(round(iy));
+                for (size_t ox = 0; ox < OW; ox++) {
+                    float ix = coordTransToInput(ox, fx, IW, OW);
+                    int ix_r = static_cast<int>(round(ix));
+
+                    float sum = 0;
+                    float wsum = 0;
+
+                    for (int z = iz_r - rz; z <= iz_r + rz; z++) {
+                        for (int y = iy_r - ry; y <= iy_r + ry; y++) {
+                            for (int x = ix_r - rx; x <= ix_r + rx; x++) {
+                                bool is_continue =  z < 0                     ||
+                                                    y < 0                     ||
+                                                    x < 0                     ||
+                                                    z >= static_cast<int>(ID) ||
+                                                    y >= static_cast<int>(IH) ||
+                                                    x >= static_cast<int>(IW);
+                                if (is_continue)
+                                    continue;
+
+                                float dx = ix - x;
+                                float dy = iy - y;
+                                float dz = iz - z;
+
+                                float w = ax * triangleCoeff(ax * dx) *
+                                          ay * triangleCoeff(ay * dy) *
+                                          az * triangleCoeff(az * dz);
+
+                                sum += w * getValue(in_ptr_nc, (z * IH * IW + y * IW + x) * srcDataSize, inputPrec);
+                                wsum += w;
+                            }
+                        }
+                    }
+                    if (!wsum) {
+                        setValue(out_ptr_ncdh, ox * dstDataSize, 0.f, outputPrec);
+                    } else {
+                        float dst_value = sum / wsum;
+                        if (!fusedWith.empty()) {
+                            applyPostOpsScalar(dst_value, c);
+                        }
+                        setValue(out_ptr_ncdh, ox * dstDataSize, dst_value, outputPrec);
+                    }
+                }
+            }
+        }
+    });
+}
+
+std::vector<float> MKLDNNInterpolateNode::getCubicCoeffs(float mantissa, float a) {
+  auto m = std::abs(mantissa);
+  std::vector<float> coeffs(4, 0.f);
+  coeffs[0] = static_cast<float>(a * (m - 1.0) * (m - 1.0) * m);
+  coeffs[1] = static_cast<float>(((a + 2.0) * m - (a + 3.0)) * m * m + 1.0);
+  coeffs[2] = static_cast<float>((((-a - 2.0) * m + (2.0 * a + 3.0)) * m - a) * m);
+  coeffs[3] = static_cast<float>(-a * m * m * (m - 1.0));
+  return coeffs;
+}
+
+void MKLDNNInterpolateNode::cubic(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int IH, int IW,
+                                    float fx, float fy, int OH, int OW, float a) {
+    const int cubicGridLen = 4;
+    std::vector<float> xOrigin(OW, 0.f);
+    std::vector<float> xFactor(cubicGridLen * OW, 0.f);
+    for (int ox = 0; ox < OW; ox++) {
+        xOrigin[ox] = coordTransToInput(ox, fx, IW, OW);
+        float m = xOrigin[ox] - std::floor(xOrigin[ox]);
+        std::vector<float> coffes = getCubicCoeffs(m, a);
+        xFactor[cubicGridLen * ox] = coffes[0];
+        xFactor[cubicGridLen * ox + 1] = coffes[1];
+        xFactor[cubicGridLen * ox + 2] = coffes[2];
+        xFactor[cubicGridLen * ox + 3] = coffes[3];
+    }
+
+    std::vector<float> yOrigin(OH, 0.f);
+    std::vector<float> yFactor(cubicGridLen * OH, 0.f);
+    for (int oy = 0; oy < OH; oy++) {
+        yOrigin[oy] = coordTransToInput(oy, fy, IH, OH);
+        float m = yOrigin[oy] - std::floor(yOrigin[oy]);
+        std::vector<float> coffes = getCubicCoeffs(m, a);
+        yFactor[cubicGridLen * oy] = coffes[0];
+        yFactor[cubicGridLen * oy + 1] = coffes[1];
+        yFactor[cubicGridLen * oy + 2] = coffes[2];
+        yFactor[cubicGridLen * oy + 3] = coffes[3];
+    }
+
+    parallel_for4d(B, C, OH, OW, [&](size_t n, size_t c, size_t oy, size_t ox) {
+        const uint8_t *in_ptr_nc = in_ptr_ + (IW * IH * C * n + IW * IH * c) * srcDataSize;
+        uint8_t *out_ptr_nc = out_ptr_ + (OW * OH * C * n + OW * OH * c) * dstDataSize;
+
+        int iy = static_cast<int>(yOrigin[oy]);
+        int ix = static_cast<int>(xOrigin[ox]);
+
+        float retY = 0.f;
+        for (int y = iy - 1, i = 0; y <= iy + 2; y++, i++) {
+            int yInRange = std::max(0, std::min(y, IH - 1));
+            const uint8_t *in_ptr_nch = in_ptr_nc + IW * yInRange * srcDataSize;
+            float retX = 0.f;
+            for (int x = ix - 1, j = 0; x <= ix + 2; x++, j++) {
+                int xInRange = std::max(0, std::min(x, IW - 1));
+                retX += xFactor[ox * cubicGridLen + j] * getValue(in_ptr_nch, xInRange * srcDataSize, inputPrec);
+            }
+            retY += yFactor[oy * cubicGridLen + i] * retX;
+        }
+        if (!fusedWith.empty()) {
+            applyPostOpsScalar(retY, c);
+        }
+        setValue(out_ptr_nc, (oy * OW + ox) * dstDataSize, retY, outputPrec);
     });
 }
 
