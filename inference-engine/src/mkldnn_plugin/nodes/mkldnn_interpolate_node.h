@@ -138,7 +138,7 @@ private:
 
     SizeVector getPaddedInputShape(SizeVector& srcDim);
     SizeVector outShapeCalc(SizeVector& srcDim);
-    std::vector<float> getScales(int dataRank);
+    std::vector<float> getScales(SizeVector& srcDim);
 
     const size_t DATA_ID = 0;
     const size_t TARGET_SHAPE_ID = 1;

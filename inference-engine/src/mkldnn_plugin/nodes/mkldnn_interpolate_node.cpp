@@ -22,6 +22,7 @@
 #include "jit_uni_depthwise.hpp"
 #include "jit_uni_quantization.hpp"
 #include "common/simple_copy.h"
+#include "ngraph/type/bfloat16.hpp"
 
 using namespace mkldnn;
 using namespace MKLDNNPlugin;
@@ -862,6 +863,10 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
     setPostOps(attr, true);
 
     Precision inputPrecision = getCnnLayer()->insData[0].lock()->getPrecision();
+    if (inputPrecision != Precision::I8 && inputPrecision != Precision::U8 &&
+        inputPrecision != Precision::BF16 && inputPrecision != Precision::FP32) {
+        inputPrecision = Precision::FP32;
+    }
     Precision outputPrecision = getCnnLayer()->outData[0]->getPrecision();
 
     if (!fusedWith.empty()) {
@@ -1110,12 +1115,17 @@ SizeVector MKLDNNInterpolateNode::outShapeCalc(SizeVector& srcDim) {
     return dstDim;
 }
 
-std::vector<float> MKLDNNInterpolateNode::getScales(int dataRank) {
+// get scales of data rank size
+// if "scale" version: set scales with input scales, 1.f for other dims not in axis
+// if "size" version: scales = shape[target] / shape[input].pad, 1.f for other dims not in axis
+std::vector<float> MKLDNNInterpolateNode::getScales(SizeVector& srcDim) {
+    SizeVector srcDimPadded = getPaddedInputShape(srcDim);
+    int dataRank = srcDim.size();
     std::vector<float> fullScales(dataRank, 1.f);
     int axesRank = axes.size();
     for (int i = 0; i < axesRank; i++) {
         int axis = axes[i];
-        fullScales[axis] = scales[i];
+        fullScales[axis] = (shapeInferMode == "scales") ? scales[i] : static_cast<float>(targetShape[i]) / static_cast<float>(srcDimPadded[axis]);
     }
     return fullScales;
 }
@@ -1216,13 +1226,13 @@ void MKLDNNInterpolateNode::execute(mkldnn::stream strm) {
 
     size_t N = srcDimPad5d[0], C = srcDimPad5d[1], ID = srcDimPad5d[2], IH = srcDimPad5d[3], IW = srcDimPad5d[4];
     size_t OD = dstDim5d[2], OH = dstDim5d[3], OW = dstDim5d[4];
-    std::vector<float> dataScales = getScales(dimSize);
+    std::vector<float> dataScales = getScales(srcDim);
     if (dimSize > 2 && (dataScales[0] != 1.f || dataScales[1] != 1.f)) {
         THROW_IE_EXCEPTION << "Interpolate layer only support resize on spatial dimensions(depth, height and width)";
     }
-    float fz = (dimSize == 5) ? dataScales[dimSize - 3] : 1.f;
-    float fy = dataScales[dimSize - 2];
-    float fx = dataScales[dimSize - 1];
+    float fz = (dimSize == 5) ? (1.f / dataScales[dimSize - 3]) : 1.f;
+    float fy = 1.0f / dataScales[dimSize - 2];
+    float fx = 1.f / dataScales[dimSize - 1];
     Layout layout = getParentEdgeAt(DATA_ID)->getDesc().getLayout();
     bool isPlanar = (layout == NC || layout == NCHW || layout == NCDHW) ? true : false;
 
@@ -1810,6 +1820,11 @@ float MKLDNNInterpolateNode::getValue(const uint8_t *base, size_t offset, Infere
             return static_cast<float>(*valuePtr);
             break;
         }
+        case Precision::BF16: {
+            const uint16_t *valuePtr = reinterpret_cast<const uint16_t *>(baseOffset);
+            return ngraph::bfloat16::from_bits(*valuePtr);
+            break;
+        }
         case Precision::FP32: {
             const float *valuePtr = reinterpret_cast<const float *>(baseOffset);
             return *valuePtr;
@@ -1833,6 +1848,11 @@ void MKLDNNInterpolateNode::setValue(uint8_t *base, size_t offset, float value, 
         case Precision::I8: {
             int8_t data = static_cast<int8_t>(value);
             std::memcpy(baseOffset, &data, 1);
+            break;
+        }
+        case Precision::BF16: {
+            uint16_t data = ngraph::bfloat16(value).to_bits();
+            std::memcpy(baseOffset, &data, 2);
             break;
         }
         case Precision::FP32: {
