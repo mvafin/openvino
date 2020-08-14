@@ -862,7 +862,7 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
 
     setPostOps(attr, true);
 
-    Precision inputPrecision = getCnnLayer()->insData[0].lock()->getPrecision();
+    Precision inputPrecision = getCnnLayer()->insData[DATA_ID].lock()->getPrecision();
     if (inputPrecision != Precision::I8 && inputPrecision != Precision::U8 &&
         inputPrecision != Precision::BF16 && inputPrecision != Precision::FP32) {
         inputPrecision = Precision::FP32;
@@ -878,11 +878,11 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
 
     auto inputDataType = MKLDNNExtensionUtils::IEPrecisionToDataType(inputPrecision);
     auto outputDataType = MKLDNNExtensionUtils::IEPrecisionToDataType(outputPrecision);
+    srcDataSize = MKLDNNExtensionUtils::sizeOfDataType(inputDataType);
+    dstDataSize = MKLDNNExtensionUtils::sizeOfDataType(outputDataType);
 
     inputPrec = inputPrecision;
     outputPrec = outputPrecision;
-    srcDataSize = MKLDNNExtensionUtils::sizeOfDataType(inputDataType);
-    dstDataSize = MKLDNNExtensionUtils::sizeOfDataType(outputDataType);
 
     InferenceEngine::LayerConfig config;
     config.dynBatchSupport = false;
@@ -921,16 +921,16 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
 
 // linear_onnx only for 2/4 rank tensor
     if (mode == InterpolateMode::nearest || mode == InterpolateMode::linear_onnx) {
-        // blk and by_channel kernel only on sse42 or above machine
+        // blk and by_channel JIT kernel only on sse42 or above machine
         if (mayiuse(cpu::sse42)) {
-            if (getParentEdgeAt(0)->getDims().ndims() == 4) {
+            if (getParentEdgeAt(DATA_ID)->getDims().ndims() == 4) {
                 pushDesc(memory::nhwc);
                 if (mayiuse(cpu::avx512_common)) {
                     pushDesc(memory::nChw16c);
                 } else {
                     pushDesc(memory::nChw8c);
                 }
-            } else if (getParentEdgeAt(0)->getDims().ndims() == 5 && mode == InterpolateMode::nearest) {
+            } else if (getParentEdgeAt(DATA_ID)->getDims().ndims() == 5 && mode == InterpolateMode::nearest) {
                 pushDesc(memory::ndhwc);
                 if (mayiuse(cpu::avx512_common)) {
                     pushDesc(memory::nCdhw16c);
@@ -939,22 +939,28 @@ void MKLDNNInterpolateNode::initSupportedPrimitiveDescriptors() {
                 }
             }
         }
-        // planar always support. JIT kernel for f32 && avx2, else planar ref.
-        pushDesc(MKLDNNMemory::GetPlainFormat(getChildEdgeAt(0)->getDims()));
+        // planar always support. JIT kernel for f32 && avx2(gather), else planar ref.
+        pushDesc(MKLDNNMemory::GetPlainFormat(getParentEdgeAt(DATA_ID)->getDims()));
     } else if (mode == InterpolateMode::linear || mode == InterpolateMode::cubic) {
-        pushDesc(MKLDNNMemory::GetPlainFormat(getChildEdgeAt(0)->getDims()));
+        pushDesc(MKLDNNMemory::GetPlainFormat(getParentEdgeAt(DATA_ID)->getDims()));
     }
 }
 
 void MKLDNNInterpolateNode::createPrimitive() {
     auto& dstMemPtr = getChildEdgeAt(0)->getMemoryPtr();
-    auto& srcMemPtr = getParentEdgeAt(0)->getMemoryPtr();
+    auto& srcMemPtr = getParentEdgeAt(DATA_ID)->getMemoryPtr();
+    auto& tsMemPtr = getParentEdgeAt(TARGET_SHAPE_ID)->getMemoryPtr();
+    auto& scaleMemPtr = getParentEdgeAt(SCALES_ID)->getMemoryPtr();
     if (!dstMemPtr || !dstMemPtr->GetPrimitivePtr())
-        THROW_IE_EXCEPTION << "Destination memory didn't allocate.";
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' did not allocate destination memory";
     if (!srcMemPtr || !srcMemPtr->GetPrimitivePtr())
-        THROW_IE_EXCEPTION << "Input memory didn't allocate.";
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' did not allocate input memory";
+    if (!tsMemPtr || !tsMemPtr->GetPrimitivePtr())
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' did not allocate target shape memory";
+    if (!scaleMemPtr || !scaleMemPtr->GetPrimitivePtr())
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' did not allocate scales memory";
     if (getSelectedPrimitiveDescriptor() == nullptr)
-        THROW_IE_EXCEPTION << "Preferable primitive descriptor is not set.";
+        THROW_IE_EXCEPTION << "Interpolate layer with name '" << getName() << "' did not set preferable primitive descriptor";
 
     auto selectedPD = getSelectedPrimitiveDescriptor();
     Layout selected_layout = selectedPD->getConfig().inConfs[0].desc.getLayout();
@@ -1144,6 +1150,7 @@ void MKLDNNInterpolateNode::execute(mkldnn::stream strm) {
     int *targetShapeData = reinterpret_cast<int*>(targetShapeMemPtr->GetData()) +
             targetShapeMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding;
     int targetShapeLen = getParentEdgeAt(TARGET_SHAPE_ID)->getDesc().getDims()[0];
+    targetShape.resize(targetShapeLen);
     for (int i = 0; i < targetShapeLen; i++) {
         targetShape[i] = targetShapeData[i];
     }
@@ -1151,6 +1158,7 @@ void MKLDNNInterpolateNode::execute(mkldnn::stream strm) {
     float *scalesData = reinterpret_cast<float*>(scalesMemPtr->GetData()) +
             scalesMemPtr->GetDescriptor().data.layout_desc.blocking.offset_padding;
     int scalesLen = getParentEdgeAt(SCALES_ID)->getDesc().getDims()[0];
+    scales.resize(scalesLen);
     for (int i = 0; i < scalesLen; i++) {
         scales[i] = scalesData[i];
     }
@@ -1250,7 +1258,6 @@ void MKLDNNInterpolateNode::execute(mkldnn::stream strm) {
             break;
         }
         case InterpolateMode::linear: {
-            // todo: bf16 convert to fp32
             bool isDownsample = (fx > 1) || (fy > 1) || (fz > 1);
             int kernel_width = 2;
             linearInterpolation(src_data, dst_data, N, C, ID, IH, IW, fx, fy, fz, OD, OH, OW, kernel_width, isDownsample && antialias);
