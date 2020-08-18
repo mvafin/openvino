@@ -1897,7 +1897,7 @@ inline float MKLDNNInterpolateNode::coordTransToInput(int outCoord, float scale,
         }
         case CoordTransMode::align_corners: {
             if (outShape > 1)
-                return (inShape - 1) / (outShape - 1) * outCoord;
+                return static_cast<float>(inShape - 1) / static_cast<float>(outShape - 1) * outCoord;
             else
                 return 0;
             break;
