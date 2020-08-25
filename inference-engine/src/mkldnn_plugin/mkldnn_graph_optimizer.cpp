@@ -1664,12 +1664,7 @@ void MKLDNNGraphOptimizer::FuseInterpolateAndSimpleOperation(MKLDNNGraph &graph)
 
     auto isSuitableParentNode = [](MKLDNNNodePtr node) {
         bool isSuitable = (node->getType() == Interpolate);
-
         if (isSuitable) {
-            auto *interpolateLayer = node->getCnnLayer().get();
-            if (interpolateLayer == nullptr)
-                THROW_IE_EXCEPTION << "Cannot get Interpolate layer " << node->getName();
-
             return node->getChildEdges().size() == 1;
         } else {
             return false;

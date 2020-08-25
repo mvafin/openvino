@@ -16,7 +16,7 @@
 using namespace InferenceEngine;
 
 namespace MKLDNNPlugin {
-
+namespace interpolate {
 enum LayoutType {
     planar,
     block,
@@ -128,6 +128,9 @@ private:
     void cubic(const uint8_t *in_ptr_, uint8_t *out_ptr_, int B, int C, int IH, int IW,
                                     float fx, float fy, int OH, int OW, float a);
 
+    void buildTblNN(SizeVector& srcDimPad5d, SizeVector& dstDim5d, std::vector<float>& dataScales, interpolate::LayoutType layout);
+    void buildTblLinearOnnx(SizeVector& srcDimPad5d, SizeVector& dstDim5d, std::vector<float>& dataScales, interpolate::LayoutType layout);
+
     void setPostOps(mkldnn::primitive_attr &attr, bool initWeights = false);
     inline void applyPostOpsScalar(float &dst_value, int index_c);
 
@@ -136,9 +139,8 @@ private:
     float getValue(const uint8_t *base, size_t offset, InferenceEngine::Precision prec);
     void setValue(uint8_t *base, size_t offset, float value, InferenceEngine::Precision prec);
 
-    SizeVector getPaddedInputShape(SizeVector& srcDim);
-    SizeVector outShapeCalc(SizeVector& srcDim);
-    std::vector<float> getScales(SizeVector& srcDim);
+    SizeVector getPaddedInputShape();
+    std::vector<float> getScales();
 
     const size_t DATA_ID = 0;
     const size_t TARGET_SHAPE_ID = 1;
@@ -155,10 +157,14 @@ private:
     float cubeCoeff = -0.75;
 
     bool isAxesSpecified = false;
+    // axes and scales from buffer, partical size.
     std::vector<int> axes;
     std::vector<float> scales;
-    std::vector<int> targetShape;
+    // target shape is dst dim, full size.
+    SizeVector dstDim;
     std::string shapeInferMode;
+    SizeVector srcDim;
+    SizeVector srcDimPad;
 
     mkldnn::primitive_attr attr;
     std::vector<MKLDNNMemoryPtr> PostOpsIntBlobMemory;
@@ -166,10 +172,13 @@ private:
     InferenceEngine::Precision inputPrec, outputPrec;
     size_t srcDataSize, dstDataSize;
 
+    std::vector<int> indexTable;
+
     std::shared_ptr<jit_uni_interpolate_kernel> interpolateKernel;
     std::vector<std::shared_ptr<mkldnn::impl::cpu::ref_eltwise_scalar_fwd_t>> eltwise_injectors_ref;
     std::vector<std::shared_ptr<mkldnn::impl::cpu::ref_depthwise_scalar_fwd_t>> depthwise_injectors_ref;
 };
 
+}  // namespace interpolate
 }  // namespace MKLDNNPlugin
 
