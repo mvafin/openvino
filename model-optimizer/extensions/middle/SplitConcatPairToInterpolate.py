@@ -77,6 +77,7 @@ def replace_interpolate_pattern(graph: Graph, match: dict):
     scale = int64_array([get_split_scale(split)])
     axis = int(split.in_port(1).get_connection().get_source().node.value)
     split_node_name = split.name
+    axis_node = Const(graph, {'name': split_node_name + '/axis_', 'value': int64_array([axis])}).create_node()
 
     shape_node = Shape(graph, dict(name=split_node_name + '/Shape_')).create_node()
     scales_node = Const(graph, dict(name=split_node_name + '/scales_', value=scale)).create_node()
@@ -98,10 +99,16 @@ def replace_interpolate_pattern(graph: Graph, match: dict):
 
     strided_slice_node.out_port(0).connect(mul_node.in_port(0))
 
-    interp_node = Interpolate(graph, dict(name=split_node_name + '/Interpolate_',
-                                          axes=int64_array([axis]),
-                                          mode='nearest')).create_node()
+    interp_node = Interpolate(graph,
+                              dict(name=split_node_name + '/Interpolate_',
+                                   mode='nearest',
+                                   antialias=0, pads_begin=int64_array([0]), pads_end=int64_array([0]),
+                                   coordinate_transformation_mode='half_pixel', nearest_mode='round_prefer_floor',
+                                   cube_coeff=-0.75, version='opset4', shape_calculation_mode='scales',
+                                   in_ports_count=4)).create_node()
     mul_node.out_port(0).connect(interp_node.in_port(1))
+    scales_node.out_port(0).connect(interp_node.in_port(2))
+    axis_node.out_port(0).connect(interp_node.in_port(3))
 
     match['concat'].out_port(0).get_connection().set_source(interp_node.out_port(0))
 
