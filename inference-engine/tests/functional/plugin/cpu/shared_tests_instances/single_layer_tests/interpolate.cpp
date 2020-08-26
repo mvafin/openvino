@@ -64,7 +64,8 @@ const std::vector<bool> antialias = {
 };
 
 const std::vector<double> cubeCoefs = {
-        0.75f,
+        -0.75f,
+        -0.5f
 };
 
 const auto interpolateCases = ::testing::Combine(
