@@ -69,6 +69,7 @@ set(SRC
     ngraph_api.cpp
     node_input_output.cpp
     op.cpp
+    op_eval/interpolate.cpp
     op_eval/hswish.cpp
     op_eval/matmul.cpp
     op_eval/mish.cpp
@@ -129,6 +130,7 @@ set(SRC
     type_prop/gru_cell.cpp
     type_prop/hard_sigmoid.cpp
     type_prop/hswish.cpp
+    type_prop/interpolate.cpp
     type_prop/lrn.cpp
     type_prop/lstm_cell.cpp
     type_prop/lstm_sequence.cpp

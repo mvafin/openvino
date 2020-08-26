@@ -1707,6 +1707,11 @@ CNNLayer::Ptr NodeConverter<ngraph::op::Interp>::createLayer(const std::shared_p
 }
 
 template <>
+CNNLayer::Ptr NodeConverter<ngraph::op::v0::Interpolate>::createLayer(const std::shared_ptr<ngraph::Node>& layer) const {
+    THROW_IE_EXCEPTION << "Interpolate operation should be converted to Interp";
+}
+
+template <>
 CNNLayer::Ptr NodeConverter<ngraph::op::v4::Interpolate>::createLayer(const std::shared_ptr<ngraph::Node>& layer) const {
     LayerParams params = {layer->get_friendly_name(), "Interpolate",
                           details::convertPrecision(layer->get_output_element_type(0))};
@@ -1805,7 +1810,7 @@ CNNLayer::Ptr NodeConverter<ngraph::op::v4::Interpolate>::createLayer(const std:
             break;
     }
 
-    res->params["antialias"] = attrs.antialias ? "Ture" : "False";
+    res->params["antialias"] = attrs.antialias ? "True" : "False";
 
     std::string value;
     for (const auto& val : attrs.pads_begin) {
