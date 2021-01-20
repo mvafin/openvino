@@ -24,6 +24,7 @@
 #include <ngraph/runtime/reference/sqrt.hpp>
 #include <ngraph/runtime/reference/subtract.hpp>
 #include <ngraph/runtime/reference/sum.hpp>
+#include <ngraph/op/mvn.hpp>
 #include <ngraph/shape.hpp>
 
 namespace ngraph
