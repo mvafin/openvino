@@ -87,22 +87,25 @@ std::shared_ptr<ngraph::opset6::Constant> read_tensor(const paddle::framework::p
     std::vector<float> tensor_data(tensor_length, 0);
 
     std::ifstream is;
+    std::ifstream* stream_ptr;
     if (model->weights_composed) {
-        is = model->weights_stream;
+        stream_ptr = &model->weights_stream;
     } else {
         is = std::ifstream(model->path + "/" + var.name(), std::ios::in | std::ifstream::binary);
         if (!is || !is.is_open())
         {
             std::cout << "File not opened" << std::endl;
         }
+        stream_ptr = &is;
     }
     std::vector<char> leading_zeros(16, 0);
-    model->weights_stream.read(&leading_zeros[0], 16);
+    stream_ptr->read(&leading_zeros[0], 16);
     uint32_t dims_len = 0;
-    model->weights_stream.read(reinterpret_cast<char*>(&dims_len), 4);
+    stream_ptr->read(reinterpret_cast<char*>(&dims_len), 4);
     std::vector<char> dims_struct(dims_len, 0);
-    model->weights_stream.read(&dims_struct[0], dims_len);
-    model->weights_stream.read(reinterpret_cast<char*>(&tensor_data[0]), tensor_length * 4);
+    stream_ptr->read(&dims_struct[0], dims_len);
+    stream_ptr->read(reinterpret_cast<char*>(&tensor_data[0]), tensor_length * 4);
+
     auto shape = std::vector<size_t>(tensor.dims().cbegin(), tensor.dims().cend());
     return ngraph::opset6::Constant::create(
         ngraph::element::f32, ngraph::Shape(shape), tensor_data);
