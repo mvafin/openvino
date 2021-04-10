@@ -27,20 +27,26 @@ namespace frontend {
 
 class NGRAPH_API InputModelPDPD : public InputModel
 {
-    // TODO: replace it by already deserialized proto hidden under some Impl class
-    // TODO: avoid using explicit format-dependent data stuctures here, hide it under some Impl class
-
     friend class FrontEndPDPD;
-    std::vector<std::vector<std::shared_ptr<PlacePDPD>>> places_map;    
+    class InputModelPDPDImpl;
+    std::shared_ptr<InputModelPDPDImpl> _impl;
+
+    //template<typename T>
+    std::vector<float> getWeight(const std::string& name, int64_t tensor_length);
+    std::vector<std::shared_ptr<OpPlacePDPD>> getOpPlaces(int i) const;
+    std::map<std::string, std::shared_ptr<VarPlacePDPD>> getVarPlaces(int i) const;
+    size_t getBlockNumber() const;
 
 public:
-    void* fw_ptr; // TODO: shared_ptr<paddle::framework::proto::ProgramDesc>
-    std::string path;
-    std::ifstream weights_stream;
-    bool weights_composed = false;
-
     InputModelPDPD (const std::string& _path);
-    ~InputModelPDPD ();
+    std::vector<Place::Ptr> getInputs () const;
+    std::vector<Place::Ptr> getOutputs () const;
+    Place::Ptr getPlaceByTensorName (const std::string& tensorName);
+    void overrideAllOutputs (const std::vector<Place::Ptr>& outputs);
+    void overrideAllInputs (const std::vector<Place::Ptr>& inputs);
+    void extractSubgraph (const std::vector<Place::Ptr>& inputs, const std::vector<Place::Ptr>& outputs);
+    void setDefaultShape (Place::Ptr place, const ngraph::Shape&);
+    void setPartialShape (Place::Ptr place, const ngraph::PartialShape&);
 };
 
 } // namespace frontend

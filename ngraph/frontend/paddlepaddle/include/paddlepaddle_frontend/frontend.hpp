@@ -19,13 +19,16 @@
 #include <frontend_manager/frontend_manager.hpp>
 
 #include "model.hpp"
+#include <ngraph/opsets/opset6.hpp>
 
 namespace ngraph {
 namespace frontend {
 
 class NGRAPH_API FrontEndPDPD : public FrontEnd
 {
-    std::shared_ptr<ngraph::Function> convert_model(std::shared_ptr<ngraph::frontend::InputModelPDPD> model) const;
+    std::shared_ptr<Function> convert_model(std::shared_ptr<InputModelPDPD> model) const;
+    std::shared_ptr<opset6::Constant> read_tensor(std::shared_ptr<VarPlacePDPD> place,
+                                                  std::shared_ptr<InputModelPDPD> model) const;
 public:
 
     FrontEndPDPD ()
@@ -37,7 +40,7 @@ public:
         return std::make_shared<InputModelPDPD>(path);
     }
 
-    virtual std::shared_ptr<ngraph::Function> convert (InputModel::Ptr model) const override;
+    virtual std::shared_ptr<Function> convert (InputModel::Ptr model) const override;
 };
 
 } // namespace frontend

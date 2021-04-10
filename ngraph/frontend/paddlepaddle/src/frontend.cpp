@@ -45,20 +45,20 @@ namespace frontend {
 namespace pdpd {
 
 std::shared_ptr<ngraph::Node>
-make_ng_node(std::map<std::string, google::protobuf::RepeatedPtrField<std::string>> &inputs,
-             std::map<std::string, std::shared_ptr<ngraph::Node>> &nodes,
-             const paddle::framework::proto::OpDesc &op,
-             const paddle::framework::proto::BlockDesc &block,
+make_ng_node(std::map<std::string, std::shared_ptr<ngraph::Node>> &nodes,
+             std::shared_ptr<OpPlacePDPD> place,
              const std::map<std::string, CreatorFunction>& CREATORS_MAP) {
-    std::cout << "Making node: " << op.type() << std::endl;
+    auto op = (paddle::framework::proto::OpDesc*)place->op;
+    std::cout << "Making node: " << op->type() << std::endl;
 
-    MY_ASSERT(CREATORS_MAP.find(op.type()) != CREATORS_MAP.end(), "No creator found");
+    MY_ASSERT(CREATORS_MAP.find(op->type()) != CREATORS_MAP.end(), "No creator found");
     std::map<std::string, std::vector<std::shared_ptr<ngraph::Node>>> inputs_preproc;
-    for (const auto &item : inputs) {
+    for (const auto &item : place->inputs) {
         inputs_preproc[item.first] = std::vector<std::shared_ptr<ngraph::Node>>();
-        for (const auto &input_name : item.second) {
+        for (auto& var_place : item.second) {
             // TODO: refactor to not search every time
-            inputs_preproc[item.first].push_back(nodes[input_name]);
+            auto var = (paddle::framework::proto::VarDesc*)var_place.lock()->var;
+            inputs_preproc[item.first].push_back(nodes[var->name()]);
         }
     }
 
@@ -72,44 +72,9 @@ make_ng_node(std::map<std::string, google::protobuf::RepeatedPtrField<std::strin
             named_inputs[input.first].push_back(node);
     }
 
-    OutputVector outputs = CREATORS_MAP.at(op.type())(NodeContext(op, named_inputs));
+    OutputVector outputs = CREATORS_MAP.at(op->type())(NodeContext(*op, named_inputs));
     MY_ASSERT(outputs.size() == 1);
     return outputs[0].get_node_shared_ptr();
-}
-
-std::shared_ptr<ngraph::opset6::Constant> read_tensor(const paddle::framework::proto::VarDesc& var,
-                std::shared_ptr<ngraph::frontend::InputModelPDPD> model)
-{
-    std::cout << "Reading tensor " << var.name() << std::endl;
-    MY_ASSERT(var.type().type() == paddle::framework::proto::VarType::LOD_TENSOR);
-    auto tensor = var.type().lod_tensor().tensor();
-    auto tensor_length = std::accumulate(
-        tensor.dims().cbegin(), tensor.dims().cend(), 1, std::multiplies<int64_t>());
-    std::vector<float> tensor_data(tensor_length, 0);
-
-    std::ifstream is;
-    std::ifstream* stream_ptr;
-    if (model->weights_composed) {
-        stream_ptr = &model->weights_stream;
-    } else {
-        is = std::ifstream(model->path + "/" + var.name(), std::ios::in | std::ifstream::binary);
-        if (!is || !is.is_open())
-        {
-            std::cout << "File not opened" << std::endl;
-        }
-        stream_ptr = &is;
-    }
-    std::vector<char> leading_zeros(16, 0);
-    stream_ptr->read(&leading_zeros[0], 16);
-    uint32_t dims_len = 0;
-    stream_ptr->read(reinterpret_cast<char*>(&dims_len), 4);
-    std::vector<char> dims_struct(dims_len, 0);
-    stream_ptr->read(&dims_struct[0], dims_len);
-    stream_ptr->read(reinterpret_cast<char*>(&tensor_data[0]), tensor_length * 4);
-
-    auto shape = std::vector<size_t>(tensor.dims().cbegin(), tensor.dims().cend());
-    return ngraph::opset6::Constant::create(
-        ngraph::element::f32, ngraph::Shape(shape), tensor_data);
 }
 
 bool endsWith(const std::string &str, const std::string &suffix) {
@@ -121,63 +86,58 @@ bool endsWith(const std::string &str, const std::string &suffix) {
 
 } // namespace pdpd
 
-std::shared_ptr<ngraph::Function>
-    ngraph::frontend::FrontEndPDPD::convert_model(std::shared_ptr<ngraph::frontend::InputModelPDPD> model) const
+std::shared_ptr<opset6::Constant> FrontEndPDPD::read_tensor(std::shared_ptr<VarPlacePDPD> place,
+                std::shared_ptr<InputModelPDPD> model) const
+{
+    auto _var = (paddle::framework::proto::VarDesc*)place->var;
+    std::cout << "Reading tensor " << _var->name() << std::endl;
+    MY_ASSERT(_var->type().type() == paddle::framework::proto::VarType::LOD_TENSOR);
+    auto tensor = _var->type().lod_tensor().tensor();
+    auto tensor_length = std::accumulate(
+        tensor.dims().cbegin(), tensor.dims().cend(), 1, std::multiplies<int64_t>());
+    // TODO: implement for other types
+    auto tensor_data = model->getWeight(_var->name(), tensor_length);    
+
+    auto shape = std::vector<size_t>(tensor.dims().cbegin(), tensor.dims().cend());
+    return opset6::Constant::create(element::f32, Shape(shape), tensor_data);
+}
+
+std::shared_ptr<Function>
+    FrontEndPDPD::convert_model(std::shared_ptr<InputModelPDPD> model) const
 {
     std::cout << "Convert Model Start" << std::endl;    
     
-    std::map<std::string, std::shared_ptr<ngraph::Node>> nodes_dict;
-    ngraph::ParameterVector parameter_nodes;
-    ngraph::ResultVector result_nodes;
+    std::map<std::string, std::shared_ptr<Node>> nodes_dict;
+    ParameterVector parameter_nodes;
+    ResultVector result_nodes;
     
-    auto fw_model = (paddle::framework::proto::ProgramDesc*)model->fw_ptr;
-    std::cout << "Blocks number: " << fw_model->blocks().size() << std::endl;
-    const auto& global_block = fw_model->blocks()[0];
-    // We need to read variables in sorted by name order. This is the order variables written in composed file.
-    std::map<std::string, paddle::framework::proto::VarDesc> sorted_vars;
-    for (auto& var : global_block.vars())
+    const auto& global_var_places = model->getVarPlaces(0);
+    for (const auto& name_var : global_var_places)
     {
-        sorted_vars[var.name()] = var;
-    }
-    for (const auto& name_var : sorted_vars)
-    {
+        auto var = (paddle::framework::proto::VarDesc*)name_var.second->var;
         if (pdpd::endsWith(name_var.first, "feed") || pdpd::endsWith(name_var.first, "fetch"))
             continue;
-        if (!name_var.second.persistable())
+        if (!var->persistable())
             continue;
-        nodes_dict[name_var.first] = pdpd::read_tensor(name_var.second, model);
+        nodes_dict[name_var.first] = read_tensor(name_var.second, model);
     }
     std::cout << "Reading consts finished" << std::endl;
 
     std::map<std::string, pdpd::CreatorFunction> CREATORS_MAP = pdpd::get_supported_ops();
 
-    for (int i = 0; i < fw_model->blocks().size(); i++) {
-        const auto &block = fw_model->blocks()[i];
-        const auto& places = model->places_map[i];
-        std::map<std::string, paddle::framework::proto::VarType> vars_dict;
-        for (const auto &var : block.vars()) {
-            vars_dict[var.name()] = var.type();
-        }
-        for (int j = 0; j < places.size(); j++) {
-            std::cerr << "Observing index i = " << i << "\n";
-            const auto &place = places[j];
-            auto op = (paddle::framework::proto::OpDesc*)place->op;
+    for (int i = 0; i < model->getBlockNumber(); i++) {
+        const auto& op_places = model->getOpPlaces(i);
+        const auto& var_places = model->getVarPlaces(i);
+        for (int j = 0; j < op_places.size(); j++) {
+            std::cerr << "Observing index i = " << j << "\n";
+            const auto &op_place = op_places[j];
+            auto op = (paddle::framework::proto::OpDesc*)op_place->op;
             std::cerr << "Observing " << op->type() << "\n";
-            std::map<std::string, google::protobuf::RepeatedPtrField<std::string>> outputs_dict;
-            for (const auto &output : op->outputs()) {
-                outputs_dict[output.parameter()] = output.arguments();
-                std::cerr << output.parameter() << "\n";
-            }
-            std::map<std::string, google::protobuf::RepeatedPtrField<std::string>> inputs_dict;
-            for (const auto &input : op->inputs()) {
-                inputs_dict[input.parameter()] = input.arguments();
-            }
             if (op->type() == "feed") {
-                auto layer_name = outputs_dict["Out"][0];
-                std::cout << "Creating parameter: " << layer_name << std::endl;
-                auto var = vars_dict[layer_name];
-                MY_ASSERT(var.type() == paddle::framework::proto::VarType::LOD_TENSOR);
-                auto tensor_desc = var.lod_tensor().tensor();
+                auto out_var = op_place->outputs.at("Out")[0];
+                auto var = (paddle::framework::proto::VarDesc*)out_var.lock()->var;
+                MY_ASSERT(var->type().type() == paddle::framework::proto::VarType::LOD_TENSOR);
+                auto tensor_desc = var->type().lod_tensor().tensor();
                 auto dtype = tensor_desc.data_type();
                 std::vector<size_t> shape;
                 // set all -1 dims to 1
@@ -191,31 +151,31 @@ std::shared_ptr<ngraph::Function>
                 }
                 auto param = std::make_shared<ngraph::opset6::Parameter>(TYPE_MAP[dtype],
                                                                          ngraph::Shape(shape));
-                param->set_friendly_name(layer_name);
-                nodes_dict[layer_name] = param;
+                param->set_friendly_name(var->name());
+                nodes_dict[var->name()] = param;
                 parameter_nodes.push_back(param);
                 std::cout << "Parameter created" << std::endl;
             } else if (op->type() == "fetch") {
-                auto input_node = inputs_dict["X"][0];
-                MY_ASSERT(nodes_dict.find(input_node) != nodes_dict.end());
-                auto result = std::make_shared<ngraph::opset6::Result>(nodes_dict[input_node]);
-                result->set_friendly_name(input_node);
+                // TODO: resolve names for multiple outputs from one node
+                auto in_var = op_place->inputs.at("X")[0];
+                auto var = (paddle::framework::proto::VarDesc*)in_var.lock()->var;
+                auto input_var_name = var->name();
+                auto result = std::make_shared<ngraph::opset6::Result>(nodes_dict.at(input_var_name));
+                result->set_friendly_name(input_var_name + "/Result");
                 result_nodes.push_back(result);
             } else {
-                auto node = pdpd::make_ng_node(inputs_dict, nodes_dict, *op, block, CREATORS_MAP);
-                std::string layer_name;
-                for (const auto& outs : outputs_dict) {
-                    for (const auto& fieldName : outs.second) {
-                        layer_name += fieldName;
-                    }
-                }
-                node->set_friendly_name(layer_name);
+                auto node = pdpd::make_ng_node(nodes_dict, op_place, CREATORS_MAP);
+                // set layer name by the name of first output var
+                auto& first_output_var_place = op_place->outputs.begin()->second[0];
+                auto var = (paddle::framework::proto::VarDesc*)first_output_var_place.lock()->var;
+                node->set_friendly_name(var->name());
 
                 std::cerr << "Named with " << node->get_friendly_name() << "\n";
-                for (const auto &item : outputs_dict) {
+                for (const auto &item : op_place->outputs) {
                     MY_ASSERT(item.second.size() <= 1);
                     if (item.second.size() == 1) {
-                        nodes_dict[item.second[0]] = node;
+                        auto var = (paddle::framework::proto::VarDesc*)item.second[0].lock()->var;
+                        nodes_dict[var->name()] = node;
                     }
                 }
             }
