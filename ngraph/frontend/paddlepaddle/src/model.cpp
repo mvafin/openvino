@@ -27,6 +27,7 @@ public:
     void setDefaultShape (Place::Ptr place, const ngraph::Shape&);
     void setPartialShape (Place::Ptr place, const ngraph::PartialShape&);
     void setElementType (Place::Ptr place, const ngraph::element::Type&);
+    void setTensorValue (Place::Ptr place, const void* value);
     
     template<typename T>
     std::vector<T> readWeight(const std::string& name, int64_t tensor_length);
@@ -216,6 +217,22 @@ void InputModelPDPD::InputModelPDPDImpl::setElementType (Place::Ptr place, const
     // TODO: resolve for port places
 }
 
+
+void InputModelPDPD::InputModelPDPDImpl::setTensorValue (Place::Ptr place, const void* value) {
+    auto tensor_place = std::dynamic_cast<TensorPlacePDPD>(place);
+    if (tensor_place) {
+        auto shape = tensor_place->getPartialShape();
+        PDPD_ASSERT(shape.is_static(), "Shape must be static to set tensor value");
+        const auto& len = std::accumulate(shape.cbegin(), shape.cend(), 1, std::multiplies<int64_t>());
+        switch (tensor_place->getElementType()) {
+            case element::fp32:
+                
+            break;
+        }
+    }
+}
+
+
 InputModelPDPD::InputModelPDPD (const std::string& _path) : _impl{std::make_shared<InputModelPDPDImpl>(_path, *this)} {}
 
 std::vector<float> InputModelPDPD::readWeight(const std::string& name, int64_t tensor_length) {
@@ -268,6 +285,10 @@ void InputModelPDPD::setPartialShape (Place::Ptr place, const ngraph::PartialSha
 
 void InputModelPDPD::setElementType (Place::Ptr place, const ngraph::element::Type& type) {
     return _impl->setElementType(place, type);
+}
+
+void InputModelPDPD::setTensorValue (Place::Ptr place, const void* value) {
+    return _impl->setTensorValue(place, value);
 }
 
 } // namespace frontend
