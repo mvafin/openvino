@@ -3,11 +3,14 @@
 //
 
 #include <paddlepaddle_frontend/model.hpp>
+#include <paddlepaddle_frontend/place.hpp>
 #include <paddlepaddle_frontend/utility.hpp>
 
 #include <fstream>
 #include "framework.pb.h"
 #include "decoder.hpp"
+#include "node_context.hpp"
+#include <ngraph/opsets/opset7.hpp>
 
 namespace ngraph {
 namespace frontend {
@@ -27,13 +30,14 @@ public:
     void setDefaultShape (Place::Ptr place, const ngraph::Shape&);
     void setPartialShape (Place::Ptr place, const ngraph::PartialShape&);
     void setElementType (Place::Ptr place, const ngraph::element::Type&);
-    void setTensorValue (Place::Ptr place, const HostTensorPtr& value);
+    void setTensorValue (Place::Ptr place, const void* value);
     
     template<typename T>
     std::vector<T> readWeight(const std::string& name, int64_t tensor_length);
     std::vector<std::shared_ptr<OpPlacePDPD>> getOpPlaces(int i) const { return m_op_places_blocks[i]; }
     std::map<std::string, std::shared_ptr<TensorPlacePDPD>> getVarPlaces(int i) const { return m_var_places_blocks[i]; }
     size_t getBlockNumber() const { return m_op_places_blocks.size(); }
+    std::map<pdpd::TensorName, Output<Node>> getTensorValues() const { return m_tensor_values; };
 
 private:
     std::vector<std::vector<std::shared_ptr<OpPlacePDPD>>> m_op_places_blocks;
@@ -46,6 +50,7 @@ private:
     std::vector<Place::Ptr> m_inputs;
     std::vector<Place::Ptr> m_outputs;
     std::string m_path;
+    std::map<pdpd::TensorName, Output<Node>> m_tensor_values;
 };
 
 InputModelPDPD::InputModelPDPDImpl::InputModelPDPDImpl(const std::string& _path, const InputModel& input_model)
@@ -218,17 +223,12 @@ void InputModelPDPD::InputModelPDPDImpl::setElementType (Place::Ptr place, const
 }
 
 
-void InputModelPDPD::InputModelPDPDImpl::setTensorValue (Place::Ptr place, const HostTensorPtr& value) {
+void InputModelPDPD::InputModelPDPDImpl::setTensorValue (Place::Ptr place, const void* value) {
     auto tensor_place = std::dynamic_pointer_cast<TensorPlacePDPD>(place);
     if (tensor_place) {
-        auto shape = tensor_place->getPartialShape();
-        PDPD_ASSERT(shape.is_static(), "Shape must be static to set tensor value");
-        /*const auto& len = std::accumulate(shape.cbegin(), shape.cend(), 1, std::multiplies<int64_t>());
-        switch (tensor_place->getElementType()) {
-            case element::fp32:
-                
-            break;
-        }*/
+        auto p_shape = tensor_place->getPartialShape();
+        auto type = tensor_place->getElementType();
+        m_tensor_values[tensor_place->getNames()[0]] = opset7::Constant::create(type, p_shape.to_shape(), value);
     }
 }
 
@@ -249,6 +249,10 @@ std::map<std::string, std::shared_ptr<TensorPlacePDPD>> InputModelPDPD::getVarPl
 
 size_t InputModelPDPD::getBlockNumber() const {
     return _impl->getBlockNumber();
+}
+
+std::map<pdpd::TensorName, Output<Node>> InputModelPDPD::getTensorValues() const {
+    return _impl->getTensorValues();
 }
 
 std::vector<Place::Ptr> InputModelPDPD::getInputs () const {
@@ -287,7 +291,7 @@ void InputModelPDPD::setElementType (Place::Ptr place, const ngraph::element::Ty
     return _impl->setElementType(place, type);
 }
 
-void InputModelPDPD::setTensorValue (Place::Ptr place, const HostTensorPtr& value) {
+void InputModelPDPD::setTensorValue (Place::Ptr place, const void* value) {
     return _impl->setTensorValue(place, value);
 }
 
