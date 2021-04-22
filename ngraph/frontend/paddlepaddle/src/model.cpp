@@ -27,7 +27,7 @@ public:
     void setDefaultShape (Place::Ptr place, const ngraph::Shape&);
     void setPartialShape (Place::Ptr place, const ngraph::PartialShape&);
     void setElementType (Place::Ptr place, const ngraph::element::Type&);
-    void setTensorValue (Place::Ptr place, const void* value);
+    void setTensorValue (Place::Ptr place, const HostTensorPtr& value);
     
     template<typename T>
     std::vector<T> readWeight(const std::string& name, int64_t tensor_length);
@@ -218,17 +218,17 @@ void InputModelPDPD::InputModelPDPDImpl::setElementType (Place::Ptr place, const
 }
 
 
-void InputModelPDPD::InputModelPDPDImpl::setTensorValue (Place::Ptr place, const void* value) {
-    auto tensor_place = std::dynamic_cast<TensorPlacePDPD>(place);
+void InputModelPDPD::InputModelPDPDImpl::setTensorValue (Place::Ptr place, const HostTensorPtr& value) {
+    auto tensor_place = std::dynamic_pointer_cast<TensorPlacePDPD>(place);
     if (tensor_place) {
         auto shape = tensor_place->getPartialShape();
         PDPD_ASSERT(shape.is_static(), "Shape must be static to set tensor value");
-        const auto& len = std::accumulate(shape.cbegin(), shape.cend(), 1, std::multiplies<int64_t>());
+        /*const auto& len = std::accumulate(shape.cbegin(), shape.cend(), 1, std::multiplies<int64_t>());
         switch (tensor_place->getElementType()) {
             case element::fp32:
                 
             break;
-        }
+        }*/
     }
 }
 
@@ -287,7 +287,7 @@ void InputModelPDPD::setElementType (Place::Ptr place, const ngraph::element::Ty
     return _impl->setElementType(place, type);
 }
 
-void InputModelPDPD::setTensorValue (Place::Ptr place, const void* value) {
+void InputModelPDPD::setTensorValue (Place::Ptr place, const HostTensorPtr& value) {
     return _impl->setTensorValue(place, value);
 }
 

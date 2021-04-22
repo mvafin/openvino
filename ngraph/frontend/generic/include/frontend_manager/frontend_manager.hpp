@@ -260,7 +260,7 @@ public:
     virtual void setElementType (Place::Ptr place, const ngraph::element::Type&);
 
     /// Freezes a tensor with statically defined value or replace existing value for already constant node or tensor.
-    virtual void setTensorValue (Place::Ptr place, const void* value);
+    virtual void setTensorValue (Place::Ptr place, const HostTensorPtr& value);
 
     /// Defines partial value (lower bound and upper bound) for a tensor place.
     // TODO: more details for minValue and maxValue format; who defines shape?

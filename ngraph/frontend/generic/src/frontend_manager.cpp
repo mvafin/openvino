@@ -157,7 +157,7 @@ namespace ngraph
             FRONT_END_NOT_IMPLEMENTED(setElementType);
         }
 
-        void InputModel::setTensorValue (Place::Ptr place, const void*)
+        void InputModel::setTensorValue (Place::Ptr place, const HostTensorPtr&)
         {
             FRONT_END_NOT_IMPLEMENTED(setTensorValue);
         }

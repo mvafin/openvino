@@ -45,7 +45,7 @@ public:
     void setDefaultShape (Place::Ptr place, const ngraph::Shape&) override;
     void setPartialShape (Place::Ptr place, const ngraph::PartialShape&) override;
     void setElementType (Place::Ptr place, const ngraph::element::Type&) override;
-    void setTensorValue (Place::Ptr place, const void* value) override;
+    void setTensorValue (Place::Ptr place, const HostTensorPtr& value) override;
 
 };
 
