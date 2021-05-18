@@ -42,9 +42,18 @@ public:
         return keys;
     }
 
-    FrontEnd::Ptr loadByModel(const std::string& path, FrontEndCapFlags fec)
+    FrontEnd::Ptr loadByVariants(const std::vector<std::shared_ptr<Variant>>& variants,
+                                 FrontEndCapFlags fec)
     {
-        FRONT_END_NOT_IMPLEMENTED(loadByModel);
+        for (const auto& factory : m_factories)
+        {
+            auto FE = factory.second(fec);
+            if (FE->supported(variants))
+            {
+                return FE;
+            }
+        }
+        return FrontEnd::Ptr();
     }
 
     void registerFrontEnd(const std::string& name, FrontEndFactory creator)
@@ -101,9 +110,11 @@ FrontEnd::Ptr FrontEndManager::load_by_framework(const std::string& framework, F
     return m_impl->loadByFramework(framework, fec);
 }
 
-FrontEnd::Ptr FrontEndManager::load_by_model(const std::string& path, FrontEndCapFlags fec)
+FrontEnd::Ptr
+    FrontEndManager::load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants,
+                                      FrontEndCapFlags fec)
 {
-    return m_impl->loadByModel(path, fec);
+    return m_impl->loadByVariants(variants, fec);
 }
 
 std::vector<std::string> FrontEndManager::get_available_front_ends() const
@@ -122,37 +133,20 @@ FrontEnd::FrontEnd() = default;
 
 FrontEnd::~FrontEnd() = default;
 
+bool FrontEnd::supported(const std::vector<std::shared_ptr<Variant>>& variants) const
+{
+    return false;
+}
+
 InputModel::Ptr FrontEnd::load_from_file(const std::string& path) const
 {
     FRONT_END_NOT_IMPLEMENTED(load_from_file);
 }
 
-InputModel::Ptr FrontEnd::load_from_files(const std::vector<std::string>& paths) const
+InputModel::Ptr FrontEnd::load_impl(const std::vector<std::shared_ptr<Variant>>& params) const
 {
-    FRONT_END_NOT_IMPLEMENTED(load_from_files);
+    FRONT_END_NOT_IMPLEMENTED(load_impl);
 }
-
-InputModel::Ptr FrontEnd::load_from_memory(const void* model) const
-{
-    FRONT_END_NOT_IMPLEMENTED(load_from_memory);
-}
-
-InputModel::Ptr
-    FrontEnd::load_from_memory_fragments(const std::vector<const void*>& modelParts) const
-{
-    FRONT_END_NOT_IMPLEMENTED(load_from_memory_fragments);
-}
-
-InputModel::Ptr FrontEnd::load_from_stream(std::istream& path) const
-{
-    FRONT_END_NOT_IMPLEMENTED(load_from_stream);
-}
-
-InputModel::Ptr FrontEnd::load_from_streams(const std::vector<std::istream*>& paths) const
-{
-    FRONT_END_NOT_IMPLEMENTED(load_from_streams);
-}
-
 std::shared_ptr<ngraph::Function> FrontEnd::convert(InputModel::Ptr model) const
 {
     FRONT_END_NOT_IMPLEMENTED(convert);
@@ -422,3 +416,5 @@ Place::Ptr Place::get_source_tensor(int inputPortIndex) const
 {
     FRONT_END_NOT_IMPLEMENTED(get_source_tensor);
 }
+
+constexpr VariantTypeInfo VariantWrapper<std::shared_ptr<std::istream>>::type_info;

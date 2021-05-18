@@ -9,6 +9,7 @@
 #include <file_utils.h>
 #include <ie_reader.hpp>
 #include <ie_ir_version.hpp>
+#include <frontend_manager/frontend_manager.hpp>
 
 #include <fstream>
 #include <istream>
@@ -151,6 +152,22 @@ void assertIfIRv7LikeModel(std::istream & modelStream) {
 }  // namespace
 
 CNNNetwork details::ReadNetwork(const std::string& modelPath, const std::string& binPath, const std::vector<IExtensionPtr>& exts) {
+    // Try to load with FrontEndManager
+    ngraph::frontend::FrontEndManager manager;
+    ngraph::frontend::FrontEnd::Ptr FE;
+    ngraph::frontend::InputModel::Ptr inputModel;
+    if (!binPath.empty()) {
+        FE = manager.load_by_model(modelPath, binPath);
+        if (FE) inputModel = FE->load(modelPath, binPath);
+    } else {
+        FE = manager.load_by_model(modelPath);
+        if (FE) inputModel = FE->load(modelPath);
+    }
+    if (inputModel) {
+        auto ngFunc = FE->convert(inputModel);
+        return CNNNetwork(ngFunc);
+    }
+
     // Register readers if it is needed
     registerReaders();
 

@@ -23,7 +23,7 @@ namespace ngraph
         virtual std::shared_ptr<ngraph::Variant> init(const std::shared_ptr<ngraph::Node>& node);
         virtual std::shared_ptr<ngraph::Variant> merge(const ngraph::NodeVector& nodes);
     };
-
+    
     template <typename VT>
     class VariantImpl : public Variant
     {
@@ -50,6 +50,11 @@ namespace ngraph
     class VariantWrapper
     {
     };
+
+    template<typename T>
+    std::shared_ptr<Variant> make_variant(const T& p) {
+        return std::make_shared<ngraph::VariantWrapper<T>>(p);
+    }
 
     template <>
     class NGRAPH_API VariantWrapper<std::string> : public VariantImpl<std::string>
