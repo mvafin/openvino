@@ -8,6 +8,7 @@
 #include <string>
 #include "frontend.hpp"
 #include "frontend_manager_defs.hpp"
+#include "ngraph/variant.hpp"
 
 namespace ngraph
 {
@@ -80,8 +81,11 @@ namespace ngraph
             /// which are needed to minimize load time
             ///
             /// \return Frontend interface for further loading of model
-            FrontEnd::Ptr load_by_model(const std::string& path,
-                                        FrontEndCapFlags fec = FrontEndCapabilities::FEC_DEFAULT);
+            template <typename... Types>
+            FrontEnd::Ptr load_by_model(const Types&... vars)
+            {
+                return load_by_variants({make_variant(vars)...});
+            }
 
             /// \brief Gets list of registered frontends
             std::vector<std::string> get_available_front_ends() const;
@@ -96,6 +100,10 @@ namespace ngraph
 
         private:
             class Impl;
+
+            FrontEnd::Ptr
+                load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants,
+                                 FrontEndCapFlags fec = FrontEndCapabilities::FEC_DEFAULT);
 
             std::unique_ptr<Impl> m_impl;
         };
@@ -118,5 +126,18 @@ namespace ngraph
         };
 
     } // namespace frontend
+
+    template <>
+    class NGRAPH_API VariantWrapper<std::shared_ptr<std::istream>>
+        : public VariantImpl<std::shared_ptr<std::istream>>
+    {
+    public:
+        static constexpr VariantTypeInfo type_info{"Variant::std::shared_ptr<std::istream>", 0};
+        const VariantTypeInfo& get_type_info() const override { return type_info; }
+        VariantWrapper(const value_type& value)
+            : VariantImpl<value_type>(value)
+        {
+        }
+    };
 
 } // namespace ngraph

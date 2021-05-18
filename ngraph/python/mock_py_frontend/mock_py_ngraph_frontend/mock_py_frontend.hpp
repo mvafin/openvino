@@ -503,9 +503,10 @@ class MOCK_API FrontEndMockPy : public FrontEnd
 public:
     FrontEndMockPy(FrontEndCapFlags flags) { m_stat.m_load_flags = flags; }
 
-    InputModel::Ptr load_from_file(const std::string& path) const override
+    InputModel::Ptr load_impl(const std::vector<std::shared_ptr<Variant>>& params) const override
     {
-        m_stat.m_load_paths.push_back(path);
+        if (params.size() > 0 && is_type<VariantWrapper<std::string>>(params[0]))
+            m_stat.m_load_paths.push_back(as_type_ptr<VariantWrapper<std::string>>(params[0])->get());
         return std::make_shared<InputModelMockPy>();
     }
 

@@ -74,4 +74,17 @@ namespace ngraph
         {
         }
     };
+
+    template <typename T>
+    inline std::shared_ptr<Variant> make_variant(const T& p)
+    {
+        return std::make_shared<ngraph::VariantWrapper<T>>(p);
+    }
+
+    template <size_t N>
+    inline std::shared_ptr<Variant> make_variant(const char (&s)[N])
+    {
+        return std::make_shared<ngraph::VariantWrapper<std::string>>(s);
+    }
+
 } // namespace ngraph
