@@ -166,7 +166,7 @@ namespace ngraph
             return std::make_shared<ngraph::Function>(result_nodes, parameter_nodes);
         }
 
-        bool FrontEndPDPD::supported_impl(const std::vector<std::shared_ptr<Variant>>& variants) const
+        bool FrontEndPDPD::supported_by_variants(const std::vector<std::shared_ptr<Variant>>& variants) const
         {
             // Validating first path, it must contain a model
             PDPD_ASSERT(variants.size() > 0, "Variants should contain at least one path/stream");

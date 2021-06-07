@@ -10,6 +10,7 @@
 #include "frontend_manager_defs.hpp"
 #include "input_model.hpp"
 #include "ngraph/function.hpp"
+#include "ngraph/variant.hpp"
 
 namespace ngraph
 {
@@ -33,8 +34,10 @@ namespace ngraph
             template <typename... Types>
             bool supported(const Types&... vars) const
             {
-                return supported_impl({make_variant(vars)...});
+                return supported_by_variants({make_variant(vars)...});
             }
+            
+            virtual bool supported_by_variants(const std::vector<std::shared_ptr<Variant>>& variants) const;
 
             /// \brief Loads an input model by specified model file path
             /// If model is stored in several files (e.g. model topology and model weights) -
@@ -87,7 +90,6 @@ namespace ngraph
             virtual void normalize(std::shared_ptr<ngraph::Function> function) const;
 
         protected:
-            virtual bool supported(const std::vector<std::shared_ptr<Variant>>& variants) const;
             virtual InputModel::Ptr
                 load_impl(const std::vector<std::shared_ptr<Variant>>& variants) const;
         };

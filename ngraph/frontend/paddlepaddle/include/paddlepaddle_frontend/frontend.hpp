@@ -20,6 +20,9 @@ namespace ngraph
         public:
             FrontEndPDPD() = default;
 
+            bool supported_by_variants(
+                const std::vector<std::shared_ptr<Variant>>& variants) const override;
+
             /**
              * @brief Reads model from file and deducts file names of weights
              * @param path path to folder which contains __model__ file or path to .pdmodel file
@@ -39,8 +42,6 @@ namespace ngraph
              */
             InputModel::Ptr
                 load_impl(const std::vector<std::shared_ptr<Variant>>& params) const override;
-            bool supported_impl(
-                const std::vector<std::shared_ptr<Variant>>& variants) const override;
 
         };
 

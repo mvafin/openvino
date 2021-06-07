@@ -87,10 +87,6 @@ namespace ngraph
                 return load_by_variants({make_variant(vars)...});
             }
 
-            FrontEnd::Ptr
-                load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants,
-                                 FrontEndCapFlags fec = FrontEndCapabilities::FEC_DEFAULT);
-
             /// \brief Gets list of registered frontends
             std::vector<std::string> get_available_front_ends() const;
 
@@ -104,6 +100,10 @@ namespace ngraph
 
         private:
             class Impl;
+
+            FrontEnd::Ptr
+                load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants,
+                                 FrontEndCapFlags fec = FrontEndCapabilities::FEC_DEFAULT);
 
             std::unique_ptr<Impl> m_impl;
         };

@@ -27,7 +27,7 @@ void FrontEndLoadFromTest::SetUp()
 
 ///////////////////////////////////////////////////////////////////
 
-TEST_P(FrontEndLoadFromTest, testLoadFromFile)
+/*TEST_P(FrontEndLoadFromTest, testLoadFromFile)
 {
     std::vector<std::string> frontends;
     FrontEnd::Ptr fe;
@@ -42,7 +42,7 @@ TEST_P(FrontEndLoadFromTest, testLoadFromFile)
     std::shared_ptr<ngraph::Function> function;
     ASSERT_NO_THROW(function = m_frontEnd->convert(m_inputModel));
     ASSERT_NE(function, nullptr);
-}
+}*/
 
 ///////////////////load from Variants//////////////////////
 

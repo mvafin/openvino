@@ -48,7 +48,7 @@ public:
         for (const auto& factory : m_factories)
         {
             auto FE = factory.second(fec);
-            if (FE->supported(variants))
+            if (FE->supported_by_variants(variants))
             {
                 return FE;
             }
@@ -133,7 +133,7 @@ FrontEnd::FrontEnd() = default;
 
 FrontEnd::~FrontEnd() = default;
 
-bool FrontEnd::supported(const std::vector<std::shared_ptr<Variant>>& variants) const
+bool FrontEnd::supported_by_variants(const std::vector<std::shared_ptr<Variant>>& variants) const
 {
     return false;
 }
