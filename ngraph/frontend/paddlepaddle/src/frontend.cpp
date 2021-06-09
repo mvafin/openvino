@@ -189,6 +189,7 @@ namespace ngraph
                 paddle::framework::proto::ProgramDesc fw;
                 return fw.ParseFromIstream(p_model_stream.get());
             }
+            return false;
         }
 
         InputModel::Ptr
