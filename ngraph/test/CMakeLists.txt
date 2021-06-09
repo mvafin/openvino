@@ -96,6 +96,8 @@ set(SRC
     span.cpp
     specialize_function.cpp
     tensor.cpp
+    type_prop/adaptive_avg_pool.cpp
+    type_prop/adaptive_max_pool.cpp
     type_prop/assign.cpp
     type_prop/avg_pool.cpp
     type_prop/batch_norm.cpp
