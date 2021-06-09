@@ -26,8 +26,7 @@ void regclass_pyngraph_FrontEndManager(py::module m)
             &ngraph::frontend::FrontEndManager::get_available_front_ends);
     fem.def("load_by_framework",
             &ngraph::frontend::FrontEndManager::load_by_framework,
-            py::arg("framework"),
-            py::arg("capabilities") = ngraph::frontend::FrontEndCapabilities::FEC_DEFAULT);
+            py::arg("framework"));
 }
 
 void regclass_pyngraph_FrontEnd(py::module m)
@@ -210,30 +209,6 @@ void regclass_pyngraph_InputModel(py::module m)
            &ngraph::frontend::InputModel::set_element_type,
            py::arg("place"),
            py::arg("type"));
-}
-
-void regclass_pyngraph_FEC(py::module m)
-{
-    class FeCaps
-    {
-    public:
-        int get_caps() const { return m_caps; }
-
-    private:
-        int m_caps;
-    };
-
-    py::class_<FeCaps, std::shared_ptr<FeCaps>> type(m, "FrontEndCapabilities");
-    // type.doc() = "FrontEndCapabilities";
-    type.attr("DEFAULT") = ngraph::frontend::FrontEndCapabilities::FEC_DEFAULT;
-    type.attr("CUT") = ngraph::frontend::FrontEndCapabilities::FEC_CUT;
-    type.attr("NAMES") = ngraph::frontend::FrontEndCapabilities::FEC_NAMES;
-    type.attr("WILDCARDS") = ngraph::frontend::FrontEndCapabilities::FEC_WILDCARDS;
-
-    type.def(
-        "__eq__",
-        [](const FeCaps& a, const FeCaps& b) { return a.get_caps() == b.get_caps(); },
-        py::is_operator());
 }
 
 void regclass_pyngraph_GeneralFailureFrontEnd(py::module m)

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from ngraph import PartialShape
-from ngraph.frontend import FrontEndCapabilities, FrontEndManager, InitializationFailure
+from ngraph.frontend import FrontEndManager, InitializationFailure
 from ngraph.utils.types import get_element_type
 
 mock_available = True
@@ -24,25 +24,6 @@ mock_needed = pytest.mark.skipif(not mock_available,
 
 
 # ---------- FrontEnd tests ---------------
-@mock_needed
-def test_load_by_framework_caps():
-    frontEnds = fem.get_available_front_ends()
-    assert frontEnds is not None
-    assert "mock_py" in frontEnds
-    caps = [FrontEndCapabilities.DEFAULT,
-            FrontEndCapabilities.CUT,
-            FrontEndCapabilities.NAMES,
-            FrontEndCapabilities.WILDCARDS,
-            FrontEndCapabilities.CUT | FrontEndCapabilities.NAMES | FrontEndCapabilities.WILDCARDS]
-    for cap in caps:
-        fe = fem.load_by_framework(framework="mock_py", capabilities=cap)
-        stat = get_fe_stat(fe)
-        assert cap == stat.load_flags
-    for i in range(len(caps) - 1):
-        for j in range(i + 1, len(caps)):
-            assert caps[i] != caps[j]
-
-
 def test_load_by_unknown_framework():
     frontEnds = fem.get_available_front_ends()
     assert not("UnknownFramework" in frontEnds)

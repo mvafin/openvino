@@ -479,7 +479,6 @@ public:
 
 struct MOCK_API FeStat
 {
-    FrontEndCapFlags m_load_flags;
     std::vector<std::string> m_load_paths;
     int m_convert_model = 0;
     int m_convert = 0;
@@ -487,7 +486,6 @@ struct MOCK_API FeStat
     int m_decode = 0;
     int m_normalize = 0;
     // Getters
-    FrontEndCapFlags load_flags() const { return m_load_flags; }
     std::vector<std::string> load_paths() const { return m_load_paths; }
     int convert_model() const { return m_convert_model; }
     int convert() const { return m_convert; }
@@ -501,7 +499,7 @@ class MOCK_API FrontEndMockPy : public FrontEnd
     mutable FeStat m_stat;
 
 public:
-    FrontEndMockPy(FrontEndCapFlags flags) { m_stat.m_load_flags = flags; }
+    FrontEndMockPy() {}
 
     InputModel::Ptr load_impl(const std::vector<std::shared_ptr<Variant>>& params) const override
     {

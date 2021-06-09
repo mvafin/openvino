@@ -23,11 +23,11 @@ public:
 
     ~Impl() = default;
 
-    FrontEnd::Ptr loadByFramework(const std::string& framework, FrontEndCapFlags fec)
+    FrontEnd::Ptr loadByFramework(const std::string& framework)
     {
         FRONT_END_INITIALIZATION_CHECK(
             m_factories.count(framework), "FrontEnd for Framework ", framework, " is not found");
-        return m_factories[framework](fec);
+        return m_factories[framework]();
     }
 
     std::vector<std::string> availableFrontEnds() const
@@ -42,12 +42,11 @@ public:
         return keys;
     }
 
-    FrontEnd::Ptr loadByVariants(const std::vector<std::shared_ptr<Variant>>& variants,
-                                 FrontEndCapFlags fec)
+    FrontEnd::Ptr loadByVariants(const std::vector<std::shared_ptr<Variant>>& variants)
     {
         for (const auto& factory : m_factories)
         {
-            auto FE = factory.second(fec);
+            auto FE = factory.second();
             if (FE->supported_by_variants(variants))
             {
                 return FE;
@@ -105,16 +104,15 @@ FrontEndManager& FrontEndManager::operator=(FrontEndManager&&) = default;
 
 FrontEndManager::~FrontEndManager() = default;
 
-FrontEnd::Ptr FrontEndManager::load_by_framework(const std::string& framework, FrontEndCapFlags fec)
+FrontEnd::Ptr FrontEndManager::load_by_framework(const std::string& framework)
 {
-    return m_impl->loadByFramework(framework, fec);
+    return m_impl->loadByFramework(framework);
 }
 
 FrontEnd::Ptr
-    FrontEndManager::load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants,
-                                      FrontEndCapFlags fec)
+    FrontEndManager::load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants)
 {
-    return m_impl->loadByVariants(variants, fec);
+    return m_impl->loadByVariants(variants);
 }
 
 std::vector<std::string> FrontEndManager::get_available_front_ends() const

@@ -281,6 +281,6 @@ extern "C" PDPD_API void* GetFrontEndData()
 {
     FrontEndPluginInfo* res = new FrontEndPluginInfo();
     res->m_name = "pdpd";
-    res->m_creator = [](FrontEndCapFlags) { return std::make_shared<FrontEndPDPD>(); };
+    res->m_creator = []() { return std::make_shared<FrontEndPDPD>(); };
     return res;
 }

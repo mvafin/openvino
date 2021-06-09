@@ -14,31 +14,8 @@ namespace ngraph
 {
     namespace frontend
     {
-        /// Capabilities for requested FrontEnd
-        /// In general, frontend implementation may be divided into several libraries by capability
-        /// level It will allow faster load of frontend when only limited usage is expected by
-        /// client application as well as binary size can be minimized by removing not needed parts
-        /// from application's package
-        namespace FrontEndCapabilities
-        {
-            /// \brief Just reading and conversion, w/o any modifications; intended to be used in
-            /// Reader
-            static const int FEC_DEFAULT = 0;
-
-            /// \brief Topology cutting capability
-            static const int FEC_CUT = 1;
-
-            /// \brief Query entities by names, renaming and adding new names for operations and
-            /// tensors
-            static const int FEC_NAMES = 2;
-
-            /// \brief Partial model conversion and decoding capability
-            static const int FEC_WILDCARDS = 4;
-        }; // namespace FrontEndCapabilities
-
         // -------------- FrontEndManager -----------------
-        using FrontEndCapFlags = int;
-        using FrontEndFactory = std::function<FrontEnd::Ptr(FrontEndCapFlags fec)>;
+        using FrontEndFactory = std::function<FrontEnd::Ptr()>;
 
         /// \brief Frontend management class, loads available frontend plugins on construction
         /// Allows load of frontends for particular framework, register new and list available
@@ -63,22 +40,15 @@ namespace ngraph
             /// \param framework Framework name. Throws exception if name is not in list of
             /// available frontends
             ///
-            /// \param fec Frontend capabilities. It is recommended to use only
-            /// those capabilities which are needed to minimize load time
-            ///
             /// \return Frontend interface for further loading of models
             FrontEnd::Ptr
-                load_by_framework(const std::string& framework,
-                                  FrontEndCapFlags fec = FrontEndCapabilities::FEC_DEFAULT);
+                load_by_framework(const std::string& framework);
 
             /// \brief Loads frontend by model file path. Selects and loads appropriate frontend
             /// depending on model file extension and other file info (header)
             ///
             /// \param framework
             /// Framework name. Throws exception if name is not in list of available frontends
-            ///
-            /// \param fec Frontend capabilities. It is recommended to use only those capabilities
-            /// which are needed to minimize load time
             ///
             /// \return Frontend interface for further loading of model
             template <typename... Types>
@@ -102,8 +72,7 @@ namespace ngraph
             class Impl;
 
             FrontEnd::Ptr
-                load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants,
-                                 FrontEndCapFlags fec = FrontEndCapabilities::FEC_DEFAULT);
+                load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants);
 
             std::unique_ptr<Impl> m_impl;
         };
