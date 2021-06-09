@@ -138,11 +138,6 @@ bool FrontEnd::supported_by_variants(const std::vector<std::shared_ptr<Variant>>
     return false;
 }
 
-InputModel::Ptr FrontEnd::load_from_file(const std::string& path) const
-{
-    FRONT_END_NOT_IMPLEMENTED(load_from_file);
-}
-
 InputModel::Ptr FrontEnd::load_impl(const std::vector<std::shared_ptr<Variant>>& params) const
 {
     FRONT_END_NOT_IMPLEMENTED(load_impl);
