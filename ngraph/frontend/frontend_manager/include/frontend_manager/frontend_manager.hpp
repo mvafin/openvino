@@ -41,11 +41,11 @@ namespace ngraph
             /// available frontends
             ///
             /// \return Frontend interface for further loading of models
-            FrontEnd::Ptr
-                load_by_framework(const std::string& framework);
+            FrontEnd::Ptr load_by_framework(const std::string& framework);
 
-            /// \brief Loads frontend by model file path. Selects and loads appropriate frontend
-            /// depending on model file extension and other file info (header)
+            /// \brief Loads frontend by model fragments described by each FrontEnd documentation.
+            /// Selects and loads appropriate frontend depending on model file extension and other
+            /// file info (header)
             ///
             /// \param framework
             /// Framework name. Throws exception if name is not in list of available frontends
@@ -71,8 +71,7 @@ namespace ngraph
         private:
             class Impl;
 
-            FrontEnd::Ptr
-                load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants);
+            FrontEnd::Ptr load_by_variants(const std::vector<std::shared_ptr<Variant>>& variants);
 
             std::unique_ptr<Impl> m_impl;
         };
