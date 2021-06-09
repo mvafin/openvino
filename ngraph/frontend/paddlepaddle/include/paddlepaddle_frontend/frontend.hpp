@@ -23,13 +23,6 @@ namespace ngraph
             bool supported_by_variants(
                 const std::vector<std::shared_ptr<Variant>>& variants) const override;
 
-            /**
-             * @brief Reads model from file and deducts file names of weights
-             * @param path path to folder which contains __model__ file or path to .pdmodel file
-             * @return InputModel::Ptr
-             */
-            InputModel::Ptr load_from_file(const std::string& path) const override;
-
             std::shared_ptr<Function> convert(InputModel::Ptr model) const override;
         
         protected:

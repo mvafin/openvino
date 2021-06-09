@@ -39,14 +39,6 @@ namespace ngraph
             
             virtual bool supported_by_variants(const std::vector<std::shared_ptr<Variant>>& variants) const;
 
-            /// \brief Loads an input model by specified model file path
-            /// If model is stored in several files (e.g. model topology and model weights) -
-            /// frontend implementation is responsible to handle this case, generally frontend may
-            /// retrieve other file names from main file
-            /// \param path Main model file path
-            /// \return Loaded input model
-            virtual InputModel::Ptr load_from_file(const std::string& path) const;
-
             /// \brief Loads an input model by any specified arguments. Each FrontEnd separately
             ///  defines what arguments it can accept.
             /// \param vars Any number of parameters of any type

@@ -55,10 +55,10 @@ def test_load_by_unknown_framework():
 
 
 @mock_needed
-def test_load_from_file():
+def test_load():
     fe = fem.load_by_framework(framework="mock_py")
     assert fe is not None
-    model = fe.load_from_file("abc.bin")
+    model = fe.load("abc.bin")
     assert model is not None
     stat = get_fe_stat(fe)
     assert "abc.bin" in stat.load_paths
@@ -68,7 +68,7 @@ def test_load_from_file():
 def test_convert_model():
     fe = fem.load_by_framework(framework="mock_py")
     assert fe is not None
-    model = fe.load_from_file(path="")
+    model = fe.load(path="")
     func = fe.convert(model=model)
     assert func is not None
     stat = get_fe_stat(fe)
@@ -79,7 +79,7 @@ def test_convert_model():
 def test_convert_partially():
     fe = fem.load_by_framework(framework="mock_py")
     assert fe is not None
-    model = fe.load_from_file(path="")
+    model = fe.load(path="")
     func = fe.convert_partially(model=model)
     stat = get_fe_stat(fe)
     assert stat.convert_partially == 1
@@ -92,7 +92,7 @@ def test_convert_partially():
 def test_decode_and_normalize():
     fe = fem.load_by_framework(framework="mock_py")
     assert fe is not None
-    model = fe.load_from_file(path="")
+    model = fe.load(path="")
     func = fe.decode(model=model)
     stat = get_fe_stat(fe)
     assert stat.decode == 1
@@ -106,7 +106,7 @@ def test_decode_and_normalize():
 @mock_needed
 def init_model():
     fe = fem.load_by_framework(framework="mock_py")
-    model = fe.load_from_file(path="")
+    model = fe.load(path="")
     return model
 
 

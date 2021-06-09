@@ -196,11 +196,6 @@ namespace ngraph
             }
         }
 
-        InputModel::Ptr FrontEndPDPD::load_from_file(const std::string& path) const
-        {
-            return load(path);
-        }
-
         InputModel::Ptr
             FrontEndPDPD::load_impl(const std::vector<std::shared_ptr<Variant>>& variants) const
         {
