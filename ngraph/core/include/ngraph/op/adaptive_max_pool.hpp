@@ -25,12 +25,12 @@ namespace ngraph
                 ///
                 /// \brief    Constructs adaptive max pooling operation.
                 ///
-                /// \param    data            Input data
+                /// \param    data                  Input data
                 ///
-                /// \param    output_shape    1D tensor describing output shape for spatial
-                ///                           dimensions.
+                /// \param    output_shape          1D tensor describing output shape for spatial
+                ///                                 dimensions.
                 ///
-                /// \param    output_type     Specifies the output tensor type for indices output
+                /// \param    index_element_type    Specifies the output tensor type for indices output
                 ///
                 AdaptiveMaxPool(
                     const Output<Node>& data,
@@ -40,7 +40,7 @@ namespace ngraph
                 void validate_and_infer_types() override;
                 bool visit_attributes(AttributeVisitor& visitor) override;
 
-                virtual std::shared_ptr<Node>
+                std::shared_ptr<Node>
                     clone_with_new_inputs(const OutputVector& new_args) const override;
 
             protected:

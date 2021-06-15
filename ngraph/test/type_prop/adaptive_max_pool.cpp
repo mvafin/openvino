@@ -93,6 +93,18 @@ TEST(type_prop, adaptive_max_pool_dyn_output_shape)
         {1, 6, Dimension::dynamic(), Dimension::dynamic()}));
 }
 
+TEST(type_prop, adaptive_max_pool_dyn_rank)
+{
+    const PartialShape arg_shape = PartialShape::dynamic();
+
+    auto data = make_shared<op::Parameter>(element::f32, arg_shape);
+    auto out_shape = make_shared<op::Parameter>(element::i64, Shape{2});
+    auto adaptive_pool = make_shared<op::v8::AdaptiveMaxPool>(data, out_shape);
+
+    ASSERT_TRUE(adaptive_pool->get_output_partial_shape(0).same_scheme(PartialShape::dynamic()));
+    ASSERT_TRUE(adaptive_pool->get_output_partial_shape(1).same_scheme(PartialShape::dynamic()));
+}
+
 TEST(type_prop, adaptive_max_pool_unsupported_input_shape)
 {
     const PartialShape arg_shape{1, 6};
