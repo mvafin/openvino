@@ -30,7 +30,8 @@ namespace ngraph
                 /// \param    output_shape          1D tensor describing output shape for spatial
                 ///                                 dimensions.
                 ///
-                /// \param    index_element_type    Specifies the output tensor type for indices output
+                /// \param    index_element_type    Specifies the output tensor type for indices
+                /// output
                 ///
                 AdaptiveMaxPool(
                     const Output<Node>& data,
