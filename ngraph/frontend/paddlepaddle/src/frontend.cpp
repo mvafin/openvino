@@ -163,8 +163,11 @@ namespace ngraph
         bool FrontEndPDPD::supported_by_variants(
             const std::vector<std::shared_ptr<Variant>>& variants) const
         {
+            // FrontEndPDPD can only load model specified by one path, one file or two files.
+            if (variants.empty() || variants.size() > 2)
+                return false;
+
             // Validating first path, it must contain a model
-            PDPD_ASSERT(variants.size() > 0, "Variants should contain at least one path/stream");
             if (is_type<VariantWrapper<std::string>>(variants[0]))
             {
                 std::string suffix = ".pdmodel";

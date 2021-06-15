@@ -65,10 +65,12 @@ TEST(FrontEndManagerTest, testMockPluginFrontEnd)
 TEST(FrontEndManagerTest, testDefaultFrontEnd)
 {
     FrontEndManager fem;
-    ASSERT_ANY_THROW(fem.load_by_model(""));
+    FrontEnd::Ptr fe;
+    ASSERT_NO_THROW(fe = fem.load_by_model(""));
+    ASSERT_FALSE(fe);
 
     std::unique_ptr<FrontEnd> fePtr(new FrontEnd()); // to verify base destructor
-    FrontEnd::Ptr fe = std::make_shared<FrontEnd>();
+    fe = std::make_shared<FrontEnd>();
     ASSERT_ANY_THROW(fe->load(""));
     ASSERT_ANY_THROW(fe->convert(std::shared_ptr<Function>(nullptr)));
     ASSERT_ANY_THROW(fe->convert(InputModel::Ptr(nullptr)));
