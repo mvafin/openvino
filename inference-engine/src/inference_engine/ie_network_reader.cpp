@@ -232,11 +232,16 @@ CNNNetwork details::ReadNetwork(const std::string& modelPath, const std::string&
     ngraph::frontend::FrontEnd::Ptr FE;
     ngraph::frontend::InputModel::Ptr inputModel;
     if (!binPath.empty()) {
-        FE = manager.load_by_model(modelPath, binPath);
-        if (FE) inputModel = FE->load(modelPath, binPath);
+#if defined(ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
+        std::wstring weights_path = FileUtils::multiByteCharToWString(binPath.c_str());
+#else
+        std::string weights_path = binPath;
+#endif
+        FE = manager.load_by_model(model_path, weights_path);
+        if (FE) inputModel = FE->load(model_path, weights_path);
     } else {
-        FE = manager.load_by_model(modelPath);
-        if (FE) inputModel = FE->load(modelPath);
+        FE = manager.load_by_model(model_path);
+        if (FE) inputModel = FE->load(model_path);
     }
     if (inputModel) {
         auto ngFunc = FE->convert(inputModel);
