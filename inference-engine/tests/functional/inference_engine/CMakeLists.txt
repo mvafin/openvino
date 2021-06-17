@@ -54,6 +54,12 @@ if(NGRAPH_ONNX_IMPORT_ENABLE)
     add_dependencies(${TARGET_NAME} inference_engine_onnx_reader)
 endif()
 
+if(NGRAPH_PDPD_FRONTEND_ENABLE)
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        NGRAPH_PDPD_FRONTEND_ENABLE
+        PDPD_TEST_MODELS="${CMAKE_CURRENT_SOURCE_DIR}/pdpd_reader/models/")
+endif()
+
 ie_faster_build(${TARGET_NAME}
     PCH PRIVATE "precomp.hpp"
 )
