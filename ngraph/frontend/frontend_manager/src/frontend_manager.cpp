@@ -411,3 +411,7 @@ Place::Ptr Place::get_source_tensor(int inputPortIndex) const
 }
 
 constexpr VariantTypeInfo VariantWrapper<std::shared_ptr<std::istream>>::type_info;
+
+#if defined(ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
+constexpr VariantTypeInfo VariantWrapper<std::wstring>::type_info;
+#endif

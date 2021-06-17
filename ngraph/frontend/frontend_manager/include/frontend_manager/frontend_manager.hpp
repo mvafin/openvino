@@ -107,5 +107,19 @@ namespace ngraph
         {
         }
     };
+        
+#if defined(ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
+    template <>
+    class NGRAPH_API VariantWrapper<std::wstring> : public VariantImpl<std::wstring>
+    {
+    public:
+        static constexpr VariantTypeInfo type_info{"Variant::std::wstring", 0};
+        const VariantTypeInfo& get_type_info() const override { return type_info; }
+        VariantWrapper(const value_type& value)
+            : VariantImpl<value_type>(value)
+        {
+        }
+    };
+#endif
 
 } // namespace ngraph

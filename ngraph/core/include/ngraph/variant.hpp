@@ -78,13 +78,14 @@ namespace ngraph
     template <typename T>
     inline std::shared_ptr<Variant> make_variant(const T& p)
     {
-        return std::make_shared<ngraph::VariantWrapper<T>>(p);
+        return std::dynamic_pointer_cast<VariantImpl<T>>(std::make_shared<VariantWrapper<T>>(p));
     }
 
     template <size_t N>
     inline std::shared_ptr<Variant> make_variant(const char (&s)[N])
     {
-        return std::make_shared<ngraph::VariantWrapper<std::string>>(s);
+        return std::dynamic_pointer_cast<VariantImpl<std::string>>(
+            std::make_shared<VariantWrapper<std::string>>(s));
     }
 
 } // namespace ngraph
