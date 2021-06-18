@@ -107,7 +107,7 @@ namespace ngraph
         {
         }
     };
-        
+
 #if defined(ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
     template <>
     class NGRAPH_API VariantWrapper<std::wstring> : public VariantImpl<std::wstring>
