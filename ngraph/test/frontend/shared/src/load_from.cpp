@@ -29,13 +29,14 @@ void FrontEndLoadFromTest::SetUp()
 
 TEST_P(FrontEndLoadFromTest, testLoadFromFilePath)
 {
+    std::string model_path = m_param.m_modelsPath + m_param.m_file;
     std::vector<std::string> frontends;
     FrontEnd::Ptr fe;
     ASSERT_NO_THROW(frontends = m_fem.get_available_front_ends());
-    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_framework(m_param.m_frontEndName));
+    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_model(model_path));
     ASSERT_NE(m_frontEnd, nullptr);
 
-    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(m_param.m_modelsPath + m_param.m_file));
+    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(model_path));
     ASSERT_NE(m_inputModel, nullptr);
 
     std::shared_ptr<ngraph::Function> function;
@@ -45,14 +46,15 @@ TEST_P(FrontEndLoadFromTest, testLoadFromFilePath)
 
 TEST_P(FrontEndLoadFromTest, testLoadFromTwoFiles)
 {
+    std::string model_path = m_param.m_modelsPath + m_param.m_files[0];
+    std::string weights_path = m_param.m_modelsPath + m_param.m_files[1];
     std::vector<std::string> frontends;
     FrontEnd::Ptr fe;
     ASSERT_NO_THROW(frontends = m_fem.get_available_front_ends());
-    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_framework(m_param.m_frontEndName));
+    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_model(model_path, weights_path));
     ASSERT_NE(m_frontEnd, nullptr);
 
-    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(m_param.m_modelsPath + m_param.m_files[0],
-                                                    m_param.m_modelsPath + m_param.m_files[1]));
+    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(model_path, weights_path));
     ASSERT_NE(m_inputModel, nullptr);
 
     std::shared_ptr<ngraph::Function> function;
@@ -62,14 +64,16 @@ TEST_P(FrontEndLoadFromTest, testLoadFromTwoFiles)
 
 TEST_P(FrontEndLoadFromTest, testLoadFromStream)
 {
+    auto ifs = std::make_shared<std::ifstream>(m_param.m_modelsPath + m_param.m_stream,
+                                                      std::ios::in | std::ifstream::binary);
+    auto is = std::dynamic_pointer_cast<std::istream>(ifs);
     std::vector<std::string> frontends;
     FrontEnd::Ptr fe;
     ASSERT_NO_THROW(frontends = m_fem.get_available_front_ends());
-    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_framework(m_param.m_frontEndName));
+    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_model(is));
     ASSERT_NE(m_frontEnd, nullptr);
 
-    auto is = std::make_shared<std::ifstream>(m_param.m_modelsPath + m_param.m_stream, std::ios::in | std::ifstream::binary);
-    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(std::dynamic_pointer_cast<std::istream>(is)));
+    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(is));
     ASSERT_NE(m_inputModel, nullptr);
 
     std::shared_ptr<ngraph::Function> function;
@@ -79,17 +83,20 @@ TEST_P(FrontEndLoadFromTest, testLoadFromStream)
 
 TEST_P(FrontEndLoadFromTest, testLoadFromTwoStreams)
 {
+    auto model_ifs = std::make_shared<std::ifstream>(m_param.m_modelsPath + m_param.m_streams[0],
+                                                     std::ios::in | std::ifstream::binary);
+    auto weights_ifs = std::make_shared<std::ifstream>(m_param.m_modelsPath + m_param.m_streams[1],
+                                                       std::ios::in | std::ifstream::binary);
+    auto model_is = std::dynamic_pointer_cast<std::istream>(model_ifs);
+    auto weights_is = std::dynamic_pointer_cast<std::istream>(weights_ifs);
+
     std::vector<std::string> frontends;
     FrontEnd::Ptr fe;
     ASSERT_NO_THROW(frontends = m_fem.get_available_front_ends());
-    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_framework(m_param.m_frontEndName));
+    ASSERT_NO_THROW(m_frontEnd = m_fem.load_by_model(model_is, weights_is));
     ASSERT_NE(m_frontEnd, nullptr);
 
-    std::vector<std::shared_ptr<std::ifstream>> is_vec;
-    auto p1 = std::make_shared<std::ifstream>(m_param.m_modelsPath + m_param.m_streams[0], std::ios::in | std::ifstream::binary);
-    auto p2 = std::make_shared<std::ifstream>(m_param.m_modelsPath + m_param.m_streams[1], std::ios::in | std::ifstream::binary);
-    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(std::dynamic_pointer_cast<std::istream>(p1),
-                                                    std::dynamic_pointer_cast<std::istream>(p2)));
+    ASSERT_NO_THROW(m_inputModel = m_frontEnd->load(model_is, weights_is));
     ASSERT_NE(m_inputModel, nullptr);
 
     std::shared_ptr<ngraph::Function> function;
