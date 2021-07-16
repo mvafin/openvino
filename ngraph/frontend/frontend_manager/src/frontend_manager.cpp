@@ -411,6 +411,33 @@ Place::Ptr Place::get_source_tensor(int inputPortIndex) const
     FRONT_END_NOT_IMPLEMENTED(get_source_tensor);
 }
 
+template <>
+class FRONTEND_API VariantWrapper<std::shared_ptr<std::istream>>
+    : public VariantImpl<std::shared_ptr<std::istream>>
+{
+public:
+    static constexpr VariantTypeInfo type_info{"Variant::std::shared_ptr<std::istream>", 0};
+    const VariantTypeInfo& get_type_info() const override { return type_info; }
+    VariantWrapper(const value_type& value)
+        : VariantImpl<value_type>(value)
+    {
+    }
+};
+
+#if defined(ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
+template <>
+class FRONTEND_API VariantWrapper<std::wstring> : public VariantImpl<std::wstring>
+{
+public:
+    static constexpr VariantTypeInfo type_info{"Variant::std::wstring", 0};
+    const VariantTypeInfo& get_type_info() const override { return type_info; }
+    VariantWrapper(const value_type& value)
+        : VariantImpl<value_type>(value)
+    {
+    }
+};
+#endif
+
 constexpr VariantTypeInfo VariantWrapper<std::shared_ptr<std::istream>>::type_info;
 
 #if defined(ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
