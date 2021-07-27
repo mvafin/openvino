@@ -146,7 +146,7 @@ namespace ngraph
                     {"split", op::split},
                     {"transpose2", op::transpose2},
                 };
-
+            }
         } // namespace pdpd
     }     // namespace frontend
 } // namespace ngraph
