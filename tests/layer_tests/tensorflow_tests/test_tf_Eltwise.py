@@ -4,6 +4,7 @@
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestEltwise(CommonTFLayerTest):
@@ -29,7 +30,7 @@ class TestEltwise(CommonTFLayerTest):
             shapes = shape.copy()
             # reshaping
             if len(shapes) >= 4:
-                shapes.append(shapes.pop(1))
+                reshape(shapes)
 
             x = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')
             y = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')     # Input_1 in graph_def

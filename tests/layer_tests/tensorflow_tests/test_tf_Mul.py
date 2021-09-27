@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
-
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 class TestMul(CommonTFLayerTest):
     def create_mul_placeholder_const_net(self, x_shape, y_shape, ir_version):
@@ -32,7 +32,7 @@ class TestMul(CommonTFLayerTest):
             tf_y_shape = y_shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                tf_x_shape.append(tf_x_shape.pop(1))
+                reshape(tf_x_shape)
             if len(tf_y_shape) >= 3:
                 tf_y_shape.append(tf_y_shape.pop(1))
 

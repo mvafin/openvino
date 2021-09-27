@@ -4,6 +4,7 @@
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestBiasAdd(CommonTFLayerTest):
@@ -31,7 +32,7 @@ class TestBiasAdd(CommonTFLayerTest):
             tf_x_shape = shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                tf_x_shape.append(tf_x_shape.pop(1))
+                reshape(tf_x_shape)
             tf_y_shape = tf_x_shape[-1:]
 
             x = tf.compat.v1.placeholder(tf.float32, tf_x_shape, 'Input')
@@ -84,7 +85,7 @@ class TestBiasAdd(CommonTFLayerTest):
             tf_x_shape = shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                tf_x_shape.append(tf_x_shape.pop(1))
+                reshape(tf_x_shape)
             tf_y_shape = tf_x_shape[-1:]
 
             constant_value_x = np.random.randint(-256, 256, tf_x_shape).astype(np.float32)

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestRsqrt(CommonTFLayerTest):
@@ -34,7 +35,7 @@ class TestRsqrt(CommonTFLayerTest):
             shapes = shape.copy()
             # reshaping
             if len(shapes) >= 3:
-                shapes.append(shapes.pop(1))
+                reshape(shapes)
             input = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')
 
             tf.math.rsqrt(input, name='Operation')

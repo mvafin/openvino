@@ -5,6 +5,7 @@ import pytest
 
 from common.layer_test_class import check_ir_version
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 from unit_tests.utils.graph import build_graph
 
 
@@ -30,7 +31,7 @@ class TestReLU6(CommonTFLayerTest):
             shapes = shape.copy()
             # reshaping
             if len(shapes) >= 3:
-                shapes.append(shapes.pop(1))
+                reshape(shapes)
             input = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')
 
             tf.nn.relu6(input, name='Operation')

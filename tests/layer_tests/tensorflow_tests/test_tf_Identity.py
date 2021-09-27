@@ -5,6 +5,7 @@ import pytest
 
 from common.layer_test_class import check_ir_version
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 from unit_tests.utils.graph import build_graph
 
 
@@ -30,7 +31,7 @@ class TestIdentity(CommonTFLayerTest):
             x_shape = shape.copy()
             # reshaping
             if len(x_shape) >= 3:
-                x_shape.append(x_shape.pop(1))
+                reshape(x_shape)
 
             x = tf.compat.v1.placeholder(tf.float32, x_shape, 'Input')
             id = tf.identity(x, name="Operation")

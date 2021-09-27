@@ -1,6 +1,7 @@
 import pytest
 import tensorflow as tf
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestTFRoll(CommonTFLayerTest):
@@ -12,7 +13,7 @@ class TestTFRoll(CommonTFLayerTest):
             tf_x_shape = x_shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                tf_x_shape.append(tf_x_shape.pop(1))
+                reshape(tf_x_shape)
 
             x = tf.compat.v1.placeholder(input_type, tf_x_shape, 'Input')
             roll = tf.roll(x, shift=shift, axis=axis)

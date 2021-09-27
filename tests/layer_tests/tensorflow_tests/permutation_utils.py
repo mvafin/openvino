@@ -20,3 +20,7 @@ def permute_nchw_to_nhwc(shape):
 
 def permute_axis(axis, permutation_inv):
     return permutation_inv[axis]
+
+
+def reshape(shape):
+    shape.append(shape.pop(1))

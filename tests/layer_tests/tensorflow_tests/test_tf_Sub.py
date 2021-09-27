@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestSub(CommonTFLayerTest):
@@ -32,7 +33,7 @@ class TestSub(CommonTFLayerTest):
             tf_y_shape = y_shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                tf_x_shape.append(tf_x_shape.pop(1))
+                reshape(tf_x_shape)
             if len(tf_y_shape) >= 3:
                 tf_y_shape.append(tf_y_shape.pop(1))
 

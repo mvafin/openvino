@@ -4,6 +4,7 @@
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestSqueeze(CommonTFLayerTest):
@@ -28,7 +29,7 @@ class TestSqueeze(CommonTFLayerTest):
             x_shape = shape.copy()
             # reshaping
             if len(x_shape) >= 3:
-                x_shape.append(x_shape.pop(1))
+                reshape(x_shape)
 
             x = tf.compat.v1.placeholder(tf.float32, x_shape, 'Input')
             squeeze = tf.squeeze(x, axis=axis, name="Operation")

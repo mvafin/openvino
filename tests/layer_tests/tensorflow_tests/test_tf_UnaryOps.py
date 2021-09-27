@@ -5,6 +5,7 @@ import pytest
 from common.layer_test_class import check_ir_version
 from common.tf_layer_test_class import CommonTFLayerTest
 from unit_tests.utils.graph import build_graph
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 import numpy as np
 
@@ -95,8 +96,9 @@ class TestUnaryOps(CommonTFLayerTest):
         with tf.compat.v1.Session() as sess:
             shapes = shape.copy()
             # reshaping
-            # if len(shapes) >= 4:
-            #    shapes.append(shapes.pop(1))
+
+            if len(shapes) >= 4:
+                reshape(shapes)
             input = tf.compat.v1.placeholder(type, shapes, 'Input')
             op_type_to_tf[self.current_op_type](input, name='Operation')
 

@@ -4,7 +4,7 @@
 import pytest
 
 from common.tf_layer_test_class import CommonTFLayerTest
-
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 class TestConcat(CommonTFLayerTest):
     def create_concat_net(self, shape, axis, ir_version):
@@ -31,7 +31,7 @@ class TestConcat(CommonTFLayerTest):
             input_shape_x = shape.copy()
             # reshaping
             if len(input_shape_x) >= 3:
-                input_shape_x.append(input_shape_x.pop(1))
+                reshape(input_shape_x)
 
             # TODO: add concat with const inputs to check fusing (as in ONNX)
 

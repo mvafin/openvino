@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from common.layer_test_class import check_ir_version
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 from mo.front.common.partial_infer.utils import int64_array
 from unit_tests.utils.graph import build_graph
 
@@ -33,7 +34,7 @@ class TestLogSoftmax(CommonTFLayerTest):
             shapes = shape.copy()
             # reshaping
             if len(shapes) >= 3:
-                shapes.append(shapes.pop(1))
+                reshape(shapes)
             input = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')
             if LooseVersion(tf.__version__) < LooseVersion('2.0.0'):
                 tf.nn.log_softmax(input, name='Operation', axis=reduction_axis)

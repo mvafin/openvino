@@ -5,6 +5,7 @@ import pytest
 import numpy as np
 
 from common.tf_layer_test_class import CommonTFLayerTest
+from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestReduceOps(CommonTFLayerTest):
@@ -25,7 +26,7 @@ class TestReduceOps(CommonTFLayerTest):
         with tf.compat.v1.Session() as sess:
             shapes = shape.copy()
             if len(shapes) >= 4:
-                shapes.append(shapes.pop(1))
+                reshape(shapes)
 
             x = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')
             fn_mapping[operation](x, axis=axis, keepdims=keep_dims, name='Operation')
