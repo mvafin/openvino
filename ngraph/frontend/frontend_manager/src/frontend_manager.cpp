@@ -72,7 +72,7 @@ private:
                 }
             }
         };
-        std::string env_path = ngraph::getenv_string("OV_FRONTEND_PATH");
+        std::string env_path = "/home/itikhonov/OpenVINO/openvino/bin/intel64/Debug/lib/";//ngraph::getenv_string("OV_FRONTEND_PATH");
         if (!env_path.empty()) {
             auto start = 0u;
             auto sep_pos = env_path.find(PathSeparator, start);

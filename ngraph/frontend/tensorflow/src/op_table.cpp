@@ -35,6 +35,7 @@ OP_CONVERTER(TranslateConv3DOp);
 OP_CONVERTER(TranslateCumsumOp);
 OP_CONVERTER(TranslateDepthToSpaceOp);
 OP_CONVERTER(TranslateDepthwiseConv2dNativeOp);
+OP_CONVERTER(TranslateEluOp);
 OP_CONVERTER(TranslateExpandDimsOp);
 OP_CONVERTER(TranslateFillOp);
 OP_CONVERTER(TranslateFloorDivOp);
@@ -160,6 +161,7 @@ const std::map<const std::string, const CreatorFunction> get_supported_ops() {
         {"Cumsum", TranslateCumsumOp},
         {"DepthToSpace", TranslateDepthToSpaceOp},
         {"DepthwiseConv2dNative", TranslateDepthwiseConv2dNativeOp},
+        {"Elu", TranslateEluOp},
         {"ExpandDims", TranslateExpandDimsOp},
         {"Fill", TranslateFillOp},
         {"FloorDiv", TranslateFloorDivOp},

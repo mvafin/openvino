@@ -41,21 +41,11 @@ class CommonTFLayerTest(CommonLayerTest):
                 input = dict()
                 for key in inputs_dict.keys():
                     data = inputs_dict.get(key)
-                    if len(data.shape) == 4:        # reshaping for 4D tensors
-                        input[key+':0'] = data.transpose(0, 2, 3, 1)
-                    elif len(data.shape) == 5:      # reshaping for 5D tensors
-                        input[key+':0'] = data.transpose(0, 2, 3, 4, 1)
-                    else:
-                        input[key+':0'] = data
+                    input[key+':0'] = data
                 tf_res = sess.run([out + ":0" for out in outputs_list], input)
 
                 result = dict()
                 for i, output in enumerate(outputs_list):
                     _tf_res = tf_res[i]
-                    if len(_tf_res.shape) == 4:      # reshaping for 4D tensors
-                        result[output] = _tf_res.transpose(0, 3, 1, 2) # 2, 0, 1
-                    elif len(_tf_res.shape) == 5:    # reshaping for 5D tensors
-                        result[output] = _tf_res.transpose(0, 4, 1, 2, 3)  # 3, 0, 1, 2
-                    else:
-                        result[output] = _tf_res
+                    result[output] = _tf_res
                 return result
