@@ -8,7 +8,7 @@ from common.tf_layer_test_class import CommonTFLayerTest
 from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 class TestMul(CommonTFLayerTest):
-    def create_mul_placeholder_const_net(self, x_shape, y_shape, ir_version):
+    def create_mul_placeholder_const_net(self, x_shape, y_shape, ir_version, use_mo_extractors):
         """
             Tensorflow net                  IR net
 
@@ -32,9 +32,9 @@ class TestMul(CommonTFLayerTest):
             tf_y_shape = y_shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                reshape(tf_x_shape)
+                tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
             if len(tf_y_shape) >= 3:
-                tf_y_shape.append(tf_y_shape.pop(1))
+                tf_y_shape = reshape(tf_y_shape, use_mo_extractors)
 
             x = tf.compat.v1.placeholder(tf.float32, tf_x_shape, 'Input')
             constant_value = np.random.randint(-255, 255, tf_y_shape).astype(np.float32)
@@ -87,9 +87,9 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_1D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_1D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_1D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_2D = [
         # Power
@@ -104,9 +104,9 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_2D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_2D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_2D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_3D = [
         # Power
@@ -122,9 +122,9 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_3D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_3D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_3D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_4D = [
         # Power
@@ -139,9 +139,9 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_4D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_4D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_4D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_5D = [
         # Power
@@ -158,9 +158,9 @@ class TestMul(CommonTFLayerTest):
     # TODO mark as precommit (after successfully passing in nightly)
     @pytest.mark.parametrize("params", test_data_5D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_5D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_5D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     ###############################################################################################
     #                                                                                             #
@@ -174,9 +174,9 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_broadcast_1D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_broadcast_1D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_broadcast_1D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_broadcast_2D = [
         # Power
@@ -193,9 +193,9 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_broadcast_2D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_broadcast_2D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_broadcast_2D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_broadcast_3D = [
         # Power
@@ -217,9 +217,9 @@ class TestMul(CommonTFLayerTest):
     # TODO mark as precommit (after successfully passing in nightly)
     @pytest.mark.parametrize("params", test_data_broadcast_3D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_broadcast_3D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_broadcast_3D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_broadcast_4D = [
         # Power
@@ -247,9 +247,9 @@ class TestMul(CommonTFLayerTest):
     @pytest.mark.parametrize("params", test_data_broadcast_4D)
     @pytest.mark.nightly
     @pytest.mark.precommit
-    def test_mul_placeholder_const_broadcast_4D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_broadcast_4D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data_broadcast_5D = [
         # Power
@@ -274,6 +274,6 @@ class TestMul(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_broadcast_5D)
     @pytest.mark.nightly
-    def test_mul_placeholder_const_broadcast_5D(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_mul_placeholder_const_broadcast_5D(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_mul_placeholder_const_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)

@@ -10,7 +10,7 @@ from unit_tests.utils.graph import build_graph
 
 
 class TestSwish(CommonTFLayerTest):
-    def create_swish_net(self, shape, ir_version):
+    def create_swish_net(self, shape, ir_version, use_mo_extractors):
         """
             Tensorflow net                 IR net
 
@@ -28,11 +28,11 @@ class TestSwish(CommonTFLayerTest):
 
         # Create the graph and model
         with tf.Session() as sess:
-            shapes = shape.copy()
+            tf_x_shape = shape.copy()
             # reshaping
-            if len(shapes) > 3:
-                reshape(shapes)
-            input = tf.placeholder(tf.float32, shapes, 'Input')
+            if len(tf_x_shape) > 3:
+                tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
+            input = tf.placeholder(tf.float32, tf_x_shape, 'Input')
 
             tf.nn.swish(input)
 
@@ -72,9 +72,9 @@ class TestSwish(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_precommit)
     @pytest.mark.precommit
-    def test_swish_precommit(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_swish_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_swish_precommit(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_swish_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data = [dict(shape=[1]),
                  dict(shape=[1, 224]),
@@ -84,6 +84,6 @@ class TestSwish(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data)
     @pytest.mark.nightly
-    def test_swish(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_swish_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_swish(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_swish_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)

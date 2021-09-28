@@ -22,5 +22,9 @@ def permute_axis(axis, permutation_inv):
     return permutation_inv[axis]
 
 
-def reshape(shape):
-    shape.append(shape.pop(1))
+def reshape(shape, use_mo_extractors):
+    if use_mo_extractors:
+        print(use_mo_extractors)
+        shape.append(shape.pop(1))
+    print("XXXXX TF SHAPE {}".format(shape))
+    return shape

@@ -5,7 +5,7 @@ from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestTFRoll(CommonTFLayerTest):
-    def create_tf_roll_net(self, shift, axis, x_shape, input_type, ir_version):
+    def create_tf_roll_net(self, shift, axis, x_shape, input_type, ir_version, use_mo_extractors):
         tf.compat.v1.reset_default_graph()
 
         # Create the graph and model
@@ -13,7 +13,7 @@ class TestTFRoll(CommonTFLayerTest):
             tf_x_shape = x_shape.copy()
             # reshaping
             if len(tf_x_shape) >= 3:
-                reshape(tf_x_shape)
+                tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
 
             x = tf.compat.v1.placeholder(input_type, tf_x_shape, 'Input')
             roll = tf.roll(x, shift=shift, axis=axis)
@@ -36,8 +36,8 @@ class TestTFRoll(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data)
     @pytest.mark.nightly
-    def test_tf_roll(self, params, ie_device, precision, ir_version, temp_dir):
+    def test_tf_roll(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
         if ie_device == 'GPU':
             pytest.skip("Roll is not supported on GPU")
-        self._test(*self.create_tf_roll_net(**params, ir_version=ir_version), ie_device, precision,
-                   temp_dir=temp_dir, ir_version=ir_version, **params)
+        self._test(*self.create_tf_roll_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors), ie_device, precision,
+                   temp_dir=temp_dir, ir_version=ir_version, **params, use_mo_extractors=use_mo_extractors)

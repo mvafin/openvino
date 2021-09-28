@@ -4,8 +4,34 @@
 import os
 
 from common.layer_test_class import CommonLayerTest
-
 from common.utils.tf_utils import summarize_graph
+
+
+def do_transpose_before(data, use_mo_extractors):
+    if not use_mo_extractors:
+        print("XXXX RETURN DATA")
+        return data
+
+    if len(data.shape) == 4:  # reshaping for 4D tensors
+        return data.transpose(0, 2, 3, 1)
+    elif len(data.shape) == 5:  # reshaping for 5D tensors
+        return data.transpose(0, 2, 3, 4, 1)
+    else:
+        return data
+
+
+def do_transpose_after(data, use_mo_extractors):
+    print("XXXX DO TR {}".format(use_mo_extractors))
+    if not use_mo_extractors:
+        print("XXXX RETURN DATA")
+        return data
+
+    if len(data.shape) == 4:  # reshaping for 4D tensors
+        return data.transpose(0, 3, 1, 2)  # 2, 0, 1
+    elif len(data.shape) == 5:  # reshaping for 5D tensors
+        return data.transpose(0, 4, 1, 2, 3)  # 3, 0, 1, 2
+    else:
+        return data
 
 
 def save_to_pb(tf_model, path_to_saved_tf_model):
@@ -30,7 +56,7 @@ class CommonTFLayerTest(CommonLayerTest):
         outputs_list = graph_summary["outputs"]
 
         tf.compat.v1.reset_default_graph()
-
+        print("XXXXXXX {}".format(self.use_mo_extractors))
         with tf.compat.v1.Session() as sess:
             with gfile.FastGFile(model_path, 'rb') as f:
                 graph_def = tf.compat.v1.GraphDef()
@@ -41,21 +67,11 @@ class CommonTFLayerTest(CommonLayerTest):
                 input = dict()
                 for key in inputs_dict.keys():
                     data = inputs_dict.get(key)
-                    if len(data.shape) == 4:  # reshaping for 4D tensors
-                        input[key + ':0'] = data.transpose(0, 2, 3, 1)
-                    elif len(data.shape) == 5:  # reshaping for 5D tensors
-                        input[key + ':0'] = data.transpose(0, 2, 3, 4, 1)
-                    else:
-                        input[key + ':0'] = data
+                    input[key + ':0'] = do_transpose_before(data, self.use_mo_extractors)
                 tf_res = sess.run([out + ":0" for out in outputs_list], input)
 
                 result = dict()
                 for i, output in enumerate(outputs_list):
                     _tf_res = tf_res[i]
-                    if len(_tf_res.shape) == 4:  # reshaping for 4D tensors
-                        result[output] = _tf_res.transpose(0, 3, 1, 2)  # 2, 0, 1
-                    elif len(_tf_res.shape) == 5:  # reshaping for 5D tensors
-                        result[output] = _tf_res.transpose(0, 4, 1, 2, 3)  # 3, 0, 1, 2
-                    else:
-                        result[output] = _tf_res
+                    result[output] = do_transpose_after(_tf_res, self.use_mo_extractors)
                 return result

@@ -14,7 +14,7 @@ class TestRsqrt(CommonTFLayerTest):
             inputs_dict[input] = np.random.randint(1, 256, inputs_dict[input]).astype(np.float32)
         return inputs_dict
 
-    def create_rsqrt_net(self, shape, ir_version):
+    def create_rsqrt_net(self, shape, ir_version, use_mo_extractors):
         """
             Tensorflow net                 IR net
 
@@ -32,11 +32,11 @@ class TestRsqrt(CommonTFLayerTest):
 
         # Create the graph and model
         with tf.compat.v1.Session() as sess:
-            shapes = shape.copy()
+            tf_x_shape = shape.copy()
             # reshaping
-            if len(shapes) >= 3:
-                reshape(shapes)
-            input = tf.compat.v1.placeholder(tf.float32, shapes, 'Input')
+            if len(tf_x_shape) >= 3:
+                tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
+            input = tf.compat.v1.placeholder(tf.float32, tf_x_shape, 'Input')
 
             tf.math.rsqrt(input, name='Operation')
 
@@ -57,9 +57,9 @@ class TestRsqrt(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_precommit)
     @pytest.mark.precommit
-    def test_rsqrt_precommit(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_rsqrt_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_rsqrt_precommit(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_rsqrt_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
 
     test_data = [dict(shape=[1]),
                  dict(shape=[1, 224]),
@@ -69,6 +69,6 @@ class TestRsqrt(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data)
     @pytest.mark.nightly
-    def test_rsqrt(self, params, ie_device, precision, ir_version, temp_dir):
-        self._test(*self.create_rsqrt_net(**params, ir_version=ir_version),
-                   ie_device, precision, ir_version, temp_dir=temp_dir)
+    def test_rsqrt(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+        self._test(*self.create_rsqrt_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)

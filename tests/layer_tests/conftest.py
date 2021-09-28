@@ -59,12 +59,23 @@ def pytest_addoption(parser):
         required=True,
         action="store",
         help="Version of IR to generate by Model Optimizer")
+    parser.addoption(
+        "--use_mo_extractors",
+        required=False,
+        action="store_true",
+        help="Use ModelOptimizer to extract operations")
 
 
 @pytest.fixture(scope="session")
 def ir_version(request):
     """Fixture function for command-line option."""
     return request.config.getoption('ir_version')
+
+
+@pytest.fixture(scope="session")
+def use_mo_extractors(request):
+    """Fixture function for command-line option."""
+    return request.config.getoption('use_mo_extractors')
 
 
 @pytest.fixture(scope="function")
