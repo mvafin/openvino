@@ -231,7 +231,7 @@ class TestAdd(CommonTFLayerTest):
         # ScaleShift
         dict(x_shape=[1, 3, 1, 1], y_shape=[3]),
         # ScaleShift
-        dict(x_shape=[1, 3, 100, 224], y_shape=[3]),
+        dict(x_shape=[1, 224, 100, 3], y_shape=[3]),
         # Eltwise
         dict(x_shape=[1, 1, 1, 3], y_shape=[3]),
         # Eltwise

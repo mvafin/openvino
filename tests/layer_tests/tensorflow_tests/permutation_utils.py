@@ -26,5 +26,4 @@ def reshape(shape, use_mo_extractors):
     if use_mo_extractors:
         print(use_mo_extractors)
         shape.append(shape.pop(1))
-    print("XXXXX TF SHAPE {}".format(shape))
     return shape

@@ -35,7 +35,7 @@ class TestSub(CommonTFLayerTest):
             if len(tf_x_shape) >= 3:
                 tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
             if len(tf_y_shape) >= 3:
-                tf_y_shape.append(tf_y_shape.pop(1))
+                reshape(tf_y_shape.append, use_mo_extractors)
 
             x = tf.compat.v1.placeholder(tf.float32, tf_x_shape, 'Input')
             constant_value = np.random.randint(-256, 256, tf_y_shape).astype(np.float32)

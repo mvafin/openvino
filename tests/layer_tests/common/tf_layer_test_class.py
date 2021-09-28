@@ -9,7 +9,6 @@ from common.utils.tf_utils import summarize_graph
 
 def do_transpose_before(data, use_mo_extractors):
     if not use_mo_extractors:
-        print("XXXX RETURN DATA")
         return data
 
     if len(data.shape) == 4:  # reshaping for 4D tensors
@@ -21,9 +20,7 @@ def do_transpose_before(data, use_mo_extractors):
 
 
 def do_transpose_after(data, use_mo_extractors):
-    print("XXXX DO TR {}".format(use_mo_extractors))
     if not use_mo_extractors:
-        print("XXXX RETURN DATA")
         return data
 
     if len(data.shape) == 4:  # reshaping for 4D tensors
@@ -56,7 +53,6 @@ class CommonTFLayerTest(CommonLayerTest):
         outputs_list = graph_summary["outputs"]
 
         tf.compat.v1.reset_default_graph()
-        print("XXXXXXX {}".format(self.use_mo_extractors))
         with tf.compat.v1.Session() as sess:
             with gfile.FastGFile(model_path, 'rb') as f:
                 graph_def = tf.compat.v1.GraphDef()
