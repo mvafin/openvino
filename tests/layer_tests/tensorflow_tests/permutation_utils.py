@@ -22,8 +22,7 @@ def permute_axis(axis, permutation_inv):
     return permutation_inv[axis]
 
 
-def reshape(shape, use_mo_extractors):
-    if use_mo_extractors:
-        print(use_mo_extractors)
+def reshape(shape, use_new_frontend):
+    if not use_new_frontend:
         shape.append(shape.pop(1))
     return shape

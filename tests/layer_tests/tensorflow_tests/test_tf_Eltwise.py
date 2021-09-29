@@ -8,7 +8,7 @@ from layer_tests.tensorflow_tests.permutation_utils import reshape
 
 
 class TestEltwise(CommonTFLayerTest):
-    def create_eltwise_net(self, shape, operation, ir_version, use_mo_extractors):
+    def create_eltwise_net(self, shape, operation, ir_version, use_new_frontend):
         """
             Tensorflow net                 IR net
 
@@ -30,7 +30,7 @@ class TestEltwise(CommonTFLayerTest):
             tf_x_shape = shape.copy()
             # reshaping
             if len(tf_x_shape) >= 4:
-                tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
+                tf_x_shape = reshape(tf_x_shape, use_new_frontend)
 
             x = tf.compat.v1.placeholder(tf.float32, tf_x_shape, 'Input')
             y = tf.compat.v1.placeholder(tf.float32, tf_x_shape, 'Input')     # Input_1 in graph_def
@@ -63,9 +63,9 @@ class TestEltwise(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data)
     @pytest.mark.nightly
-    def test_eltwise(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
-        self._test(*self.create_eltwise_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
-                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
+    def test_eltwise(self, params, ie_device, precision, ir_version, temp_dir, use_new_frontend):
+        self._test(*self.create_eltwise_net(**params, ir_version=ir_version, use_new_frontend=use_new_frontend),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)
 
     test_data_5D = []
     for operation in ['sum', 'max', 'mul']:
@@ -73,8 +73,8 @@ class TestEltwise(CommonTFLayerTest):
 
     @pytest.mark.parametrize("params", test_data_5D)
     @pytest.mark.precommit
-    def test_eltwise_5D_precommit(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+    def test_eltwise_5D_precommit(self, params, ie_device, precision, ir_version, temp_dir, use_new_frontend):
         if ie_device == 'GPU':
             pytest.skip("5D tensors is not supported on GPU")
-        self._test(*self.create_eltwise_net(**params, ir_version=ir_version, use_mo_extractors=use_mo_extractors),
-                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
+        self._test(*self.create_eltwise_net(**params, ir_version=ir_version, use_new_frontend=use_new_frontend),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)

@@ -45,7 +45,7 @@ class TestUnaryOps(CommonTFLayerTest):
 
         return inputs_dict
 
-    def create_net_with_unary_op(self, shape, ir_version, op_type, use_mo_extractors):
+    def create_net_with_unary_op(self, shape, ir_version, op_type, use_new_frontend):
         """
             Tensorflow net                 IR net
 
@@ -97,7 +97,7 @@ class TestUnaryOps(CommonTFLayerTest):
             # reshaping
 
             if len(tf_x_shape) >= 4:
-                tf_x_shape = reshape(tf_x_shape, use_mo_extractors)
+                tf_x_shape = reshape(tf_x_shape, use_new_frontend)
             input = tf.compat.v1.placeholder(type, tf_x_shape, 'Input')
             op_type_to_tf[self.current_op_type](input, name='Operation')
 
@@ -160,12 +160,12 @@ class TestUnaryOps(CommonTFLayerTest):
                                          'LogicalNot',
                                          ])
     @pytest.mark.precommit
-    def test_unary_op_precommit(self, params, ie_device, precision, ir_version, temp_dir, op_type, use_mo_extractors):
+    def test_unary_op_precommit(self, params, ie_device, precision, ir_version, temp_dir, op_type, use_new_frontend):
         if ie_device == 'GPU':
             pytest.skip("5D tensors is not supported on GPU")
         self._test(*self.create_net_with_unary_op(**params, ir_version=ir_version, op_type=op_type,
-                                                  use_mo_extractors=use_mo_extractors),
-                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
+                                                  use_new_frontend=use_new_frontend),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)
 
     test_data = [dict(shape=[10, 12]),
                  dict(shape=[8, 10, 12]),
@@ -199,9 +199,9 @@ class TestUnaryOps(CommonTFLayerTest):
                                          'Acosh',
                                          'Asinh'])
     @pytest.mark.nightly
-    def test_unary_op(self, params, ie_device, precision, ir_version, temp_dir, op_type, use_mo_extractors):
+    def test_unary_op(self, params, ie_device, precision, ir_version, temp_dir, op_type, use_new_frontend):
         if ie_device == 'GPU':
             pytest.skip("5D tensors is not supported on GPU")
         self._test(*self.create_net_with_unary_op(**params, ir_version=ir_version, op_type=op_type,
-                                                  use_mo_extractors=use_mo_extractors),
-                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
+                                                  use_new_frontend=use_new_frontend),
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)

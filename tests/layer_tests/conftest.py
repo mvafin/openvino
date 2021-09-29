@@ -60,10 +60,10 @@ def pytest_addoption(parser):
         action="store",
         help="Version of IR to generate by Model Optimizer")
     parser.addoption(
-        "--use_mo_extractors",
+        "--use_new_frontend",
         required=False,
         action="store_true",
-        help="Use ModelOptimizer to extract operations")
+        help="Use FrontEnd API to extract operations")
 
 
 @pytest.fixture(scope="session")
@@ -73,9 +73,9 @@ def ir_version(request):
 
 
 @pytest.fixture(scope="session")
-def use_mo_extractors(request):
+def use_new_frontend(request):
     """Fixture function for command-line option."""
-    return request.config.getoption('use_mo_extractors')
+    return request.config.getoption('use_new_frontend')
 
 
 @pytest.fixture(scope="function")

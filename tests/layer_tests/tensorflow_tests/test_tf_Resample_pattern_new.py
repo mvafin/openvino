@@ -76,6 +76,6 @@ class TestResamplePattern(CommonTFLayerTest):
     @pytest.mark.parametrize("params", test_data)
     @pytest.mark.nightly
     @pytest.mark.xfail(reason="*-22273")
-    def test_resample(self, params, ie_device, precision, ir_version, temp_dir, use_mo_extractors):
+    def test_resample(self, params, ie_device, precision, ir_version, temp_dir, use_new_frontend):
         self._test(*self.create_resample_net(params['shape'], params['factor']),
-                   ie_device, precision, ir_version, temp_dir=temp_dir, use_mo_extractors=use_mo_extractors)
+                   ie_device, precision, ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)
