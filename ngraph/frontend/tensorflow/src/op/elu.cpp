@@ -5,6 +5,7 @@
 #include <default_opset.h>
 
 #include <op_table.hpp>
+
 #include "node_context.hpp"
 
 using namespace std;
