@@ -27,7 +27,7 @@ class CommonLayerTest:
     def _test(self, framework_model, ref_net, ie_device, precision, ir_version, temp_dir, use_new_frontend=False,
               infer_timeout=60, enabled_transforms='', disabled_transforms='', **kwargs):
         """
-        :param enabled_transforms/disabled_transforms: string with idxs of tra'nsforms that should be enabled/disabled.
+        :param enabled_transforms/disabled_transforms: string with idxs of transforms that should be enabled/disabled.
                                                        Example: "transform_1,transform_2"
         """
         model_path = self.produce_model_path(framework_model=framework_model, save_path=temp_dir)
