@@ -7,7 +7,7 @@ from common.layer_test_class import CommonLayerTest
 from common.utils.tf_utils import summarize_graph
 
 
-def do_transpose_before(data, use_new_frontend):
+def transpose_to_nhwc(data, use_new_frontend):
     if use_new_frontend:
         return data
 
@@ -19,7 +19,7 @@ def do_transpose_before(data, use_new_frontend):
         return data
 
 
-def do_transpose_after(data, use_new_frontend):
+def transpose_to_nchw(data, use_new_frontend):
     if use_new_frontend:
         return data
 
@@ -63,11 +63,11 @@ class CommonTFLayerTest(CommonLayerTest):
                 input = dict()
                 for key in inputs_dict.keys():
                     data = inputs_dict.get(key)
-                    input[key + ':0'] = do_transpose_before(data, self.use_new_frontend)
+                    input[key + ':0'] = transpose_to_nhwc(data, self.use_new_frontend)
                 tf_res = sess.run([out + ":0" for out in outputs_list], input)
 
                 result = dict()
                 for i, output in enumerate(outputs_list):
                     _tf_res = tf_res[i]
-                    result[output] = do_transpose_after(_tf_res, self.use_new_frontend)
+                    result[output] = transpose_to_nchw(_tf_res, self.use_new_frontend)
                 return result

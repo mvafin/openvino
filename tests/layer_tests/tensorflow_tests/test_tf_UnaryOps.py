@@ -95,9 +95,9 @@ class TestUnaryOps(CommonTFLayerTest):
         with tf.compat.v1.Session() as sess:
             tf_x_shape = shape.copy()
             # reshaping
-
             if len(tf_x_shape) >= 4:
                 tf_x_shape = reshape(tf_x_shape, use_new_frontend)
+
             input = tf.compat.v1.placeholder(type, tf_x_shape, 'Input')
             op_type_to_tf[self.current_op_type](input, name='Operation')
 

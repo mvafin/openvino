@@ -9,7 +9,6 @@
 
 using namespace std;
 using namespace ngraph;
-using namespace ngraph::frontend::tensorflow::detail;
 
 namespace tensorflow {
 namespace ngraph_bridge {
