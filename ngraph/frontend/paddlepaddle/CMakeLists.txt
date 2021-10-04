@@ -77,6 +77,7 @@ endif()
 link_system_libraries(${TARGET_NAME} PRIVATE ${Protobuf_LITE_LIBRARIES})
 
 target_link_libraries(${TARGET_NAME} PRIVATE frontend_manager::static
+                                     PRIVATE openvino::frontend::common
                                      PRIVATE ngraph::builder inference_engine_transformations)
 
 add_clang_format_target(${TARGET_NAME}_clang FOR_TARGETS ${TARGET_NAME}

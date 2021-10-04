@@ -11,6 +11,7 @@
 #include <paddlepaddle_frontend/frontend.hpp>
 #include <paddlepaddle_frontend/model.hpp>
 #include <paddlepaddle_frontend/place.hpp>
+#include <common_utils.hpp>
 #include <string>
 #include <vector>
 
@@ -19,7 +20,6 @@
 #include "node_context.hpp"
 #include "op_table.hpp"
 #include "pdpd_fw_node.hpp"
-#include "pdpd_utils.hpp"
 
 using namespace ngraph::opset7;
 using namespace ngraph;
@@ -211,8 +211,8 @@ bool FrontEndPDPD::supported_impl(const std::vector<std::shared_ptr<Variant>>& v
     if (ov::is_type<VariantWrapper<std::string>>(variants[0])) {
         std::string suffix = ".pdmodel";
         std::string model_path = ov::as_type_ptr<VariantWrapper<std::string>>(variants[0])->get();
-        if (!pdpd::endsWith(model_path, suffix)) {
-            model_path += pdpd::get_path_sep<char>() + "__model__";
+        if (!common::ends_with(model_path, suffix)) {
+            model_path += common::get_path_sep<char>() + "__model__";
         }
         std::ifstream model_str(model_path, std::ios::in | std::ifstream::binary);
         // It is possible to validate here that protobuf can read model from the stream,
@@ -223,8 +223,8 @@ bool FrontEndPDPD::supported_impl(const std::vector<std::shared_ptr<Variant>>& v
     else if (ov::is_type<VariantWrapper<std::wstring>>(variants[0])) {
         std::wstring suffix = L".pdmodel";
         std::wstring model_path = ov::as_type_ptr<VariantWrapper<std::wstring>>(variants[0])->get();
-        if (!pdpd::endsWith(model_path, suffix)) {
-            model_path += pdpd::get_path_sep<wchar_t>() + L"__model__";
+        if (!common::ends_with(model_path, suffix)) {
+            model_path += common::get_path_sep<wchar_t>() + L"__model__";
         }
         std::ifstream model_str(model_path, std::ios::in | std::ifstream::binary);
         // It is possible to validate here that protobuf can read model from the stream,

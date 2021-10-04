@@ -7,12 +7,12 @@
 #include <paddlepaddle_frontend/exceptions.hpp>
 #include <paddlepaddle_frontend/model.hpp>
 #include <paddlepaddle_frontend/place.hpp>
+#include <common_utils.hpp>
 #include <queue>
 
 #include "decoder.hpp"
 #include "framework.pb.h"
 #include "node_context.hpp"
-#include "pdpd_utils.hpp"
 
 #if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
 #    include <codecvt>
@@ -145,7 +145,7 @@ bool read_tensor(std::istream& is, char* data, size_t len) {
 
 template <typename T>
 std::basic_string<T> get_const_path(const std::basic_string<T>& folder_with_weights, const std::string& name) {
-    return folder_with_weights + pdpd::get_path_sep<T>() + name;
+    return folder_with_weights + common::get_path_sep<T>() + name;
 }
 
 #if defined(OPENVINO_ENABLE_UNICODE_PATH_SUPPORT) && defined(_WIN32)
@@ -153,7 +153,7 @@ template <>
 std::basic_string<wchar_t> get_const_path(const std::basic_string<wchar_t>& folder, const std::string& name) {
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
     std::wstring _name = converter.from_bytes(name);
-    return folder + pdpd::get_path_sep<wchar_t>() + _name;
+    return folder + common::get_path_sep<wchar_t>() + _name;
 }
 #endif
 
@@ -161,7 +161,7 @@ template <typename T>
 std::basic_string<T> get_model_path(const std::basic_string<T>& path, std::ifstream* weights_stream) {
     std::string model_file{path};
     std::string ext = ".pdmodel";
-    if (pdpd::endsWith(model_file, ext)) {
+    if (common::ends_with(model_file, ext)) {
         std::string params_ext = ".pdiparams";
         std::string weights_file{path};
         weights_file.replace(weights_file.size() - ext.size(), ext.size(), params_ext);
@@ -169,7 +169,7 @@ std::basic_string<T> get_model_path(const std::basic_string<T>& path, std::ifstr
         // Don't throw error if file isn't opened
         // It may mean that model don't have constants
     } else {
-        model_file += pdpd::get_path_sep<T>() + "__model__";
+        model_file += common::get_path_sep<T>() + "__model__";
     }
     return model_file;
 }
@@ -179,7 +179,7 @@ template <>
 std::basic_string<wchar_t> get_model_path(const std::basic_string<wchar_t>& path, std::ifstream* weights_stream) {
     std::wstring model_file{path};
     std::wstring ext = L".pdmodel";
-    if (pdpd::endsWith(model_file, ext)) {
+    if (common::ends_with(model_file, ext)) {
         std::wstring params_ext = L".pdiparams";
         std::wstring weights_file{path};
         weights_file.replace(weights_file.size() - ext.size(), ext.size(), params_ext);
@@ -187,7 +187,7 @@ std::basic_string<wchar_t> get_model_path(const std::basic_string<wchar_t>& path
         // Don't throw error if file isn't opened
         // It may mean that model don't have constants
     } else {
-        model_file += pdpd::get_path_sep<wchar_t>() + L"__model__";
+        model_file += common::get_path_sep<wchar_t>() + L"__model__";
     }
     return model_file;
 }
@@ -246,7 +246,7 @@ void InputModelPDPD::InputModelPDPDImpl::loadConsts(const std::basic_string<T>& 
     for (const auto& item : m_var_places) {
         const auto& var_desc = item.second->get_desc();
         const auto& name = item.first;
-        if (pdpd::endsWith(name, std::string{"feed"}) || pdpd::endsWith(name, std::string{"fetch"}))
+        if (common::ends_with(name, std::string{"feed"}) || common::ends_with(name, std::string{"fetch"}))
             continue;
         if (!var_desc.persistable())
             continue;
