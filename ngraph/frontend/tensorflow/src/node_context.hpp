@@ -79,7 +79,7 @@ public:
     /// Check if an attribute of a given name exists
     template <typename T>
     bool has_attribute(const std::string& name) const {
-        return m_decoder.get_attribute(name, VariantWrapper<T>::type_info) != nullptr;
+        return m_decoder.get_attribute(name, VariantWrapper<T>::get_type_info_static()) != nullptr;
     }
 
     /// Detects if there is at least one input attached with a given name
