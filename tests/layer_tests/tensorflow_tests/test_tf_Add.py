@@ -231,7 +231,7 @@ class TestAdd(CommonTFLayerTest):
         # ScaleShift
         dict(x_shape=[1, 3, 1, 1], y_shape=[3]),
         # ScaleShift
-        dict(x_shape=[1, 224, 100, 3], y_shape=[3]),
+        dict(x_shape=[1, 3, 100, 224], y_shape=[3]),
         # Eltwise
         dict(x_shape=[1, 1, 1, 3], y_shape=[3]),
         # Eltwise
@@ -250,6 +250,9 @@ class TestAdd(CommonTFLayerTest):
     @pytest.mark.nightly
     @pytest.mark.precommit
     def test_add_placeholder_const_broadcast_4D(self, params, ie_device, precision, ir_version, temp_dir, use_new_frontend):
+        # we do not perform transpose in the test in case of new frontend
+        if params['x_shape'] == [1, 3, 100, 224] and params['y_shape'] == [3] and use_new_frontend:
+            params['x_shape'] = [1, 224, 100, 3]
         self._test(*self.create_add_placeholder_const_net(**params, ir_version=ir_version, use_new_frontend=use_new_frontend),
                    ie_device, precision, ir_version=ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)
 
@@ -278,5 +281,8 @@ class TestAdd(CommonTFLayerTest):
     @pytest.mark.nightly
     @pytest.mark.precommit
     def test_add_placeholder_const_broadcast_5D(self, params, ie_device, precision, ir_version, temp_dir, use_new_frontend):
+        # we do not perform transpose in the test in case of new frontend
+        if params['x_shape'] == [1, 3, 5, 1, 2] and params['y_shape'] == [5, 3, 2, 1] and use_new_frontend:
+            params['x_shape'] = [1, 5, 3, 1, 2]
         self._test(*self.create_add_placeholder_const_net(**params, ir_version=ir_version, use_new_frontend=use_new_frontend), ie_device, precision,
                    ir_version=ir_version, temp_dir=temp_dir, use_new_frontend=use_new_frontend)
