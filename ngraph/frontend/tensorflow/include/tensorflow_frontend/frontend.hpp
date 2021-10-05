@@ -53,7 +53,7 @@ public:
 
     /// \brief Gets name of this FrontEnd. Can be used by clients
     std::string get_name() const override {
-        return "tensorflow";
+        return "tf";
     }
 
 protected:
