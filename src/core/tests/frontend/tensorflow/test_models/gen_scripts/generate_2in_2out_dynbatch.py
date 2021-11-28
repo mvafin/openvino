@@ -7,8 +7,8 @@ tf.compat.v1.reset_default_graph()
 
 # Create the graph and model
 with tf.compat.v1.Session() as sess:
-    input1 = tf.compat.v1.placeholder(tf.float32, [-1, 3, 3, 1], 'inputX1')
-    input2 = tf.compat.v1.placeholder(tf.float32, [-1, 3, 3, 1], 'inputX2')
+    input1 = tf.compat.v1.placeholder(tf.float32, [None, 3, 3, 1], 'inputX1')
+    input2 = tf.compat.v1.placeholder(tf.float32, [None, 3, 3, 1], 'inputX2')
 
     kernel1 = tf.constant(np.random.randn(1, 1, 1, 1), dtype=tf.float32)
     kernel2 = tf.constant(np.random.randn(1, 1, 1, 1), dtype=tf.float32)

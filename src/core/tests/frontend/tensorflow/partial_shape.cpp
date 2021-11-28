@@ -59,7 +59,7 @@ static PartShape getTestShape_conv2d_relu() {
 INSTANTIATE_TEST_SUITE_P(
     PDPDPartialShapeTest,
     FrontEndPartialShapeTest,
-    ::testing::Combine(::testing::Values(BaseFEParam{PADDLE_FE, std::string(TEST_TENSORFLOW_MODELS_DIRNAME)}),
+    ::testing::Combine(::testing::Values(BaseFEParam{TF_FE, std::string(TEST_TENSORFLOW_MODELS_DIRNAME)}),
                        ::testing::ValuesIn(std::vector<PartShape>{getTestShape_2in_2out(),
                                                                   getTestShape_conv2d_relu(),
                                                                   getTestShape_conv2d(),
