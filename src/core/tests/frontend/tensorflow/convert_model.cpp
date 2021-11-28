@@ -12,7 +12,10 @@ using namespace ov::frontend;
 using TFConvertModelTest = FrontEndConvertModelTest;
 
 static const std::vector<std::string> models{
+    std::string("conv2d_s/conv2d.pb"),
+    std::string("conv2d_relu/conv2d_relu.pb"),
     std::string("2in_2out/2in_2out.pb"),
+    std::string("2in_2out_dynbatch/2in_2out_dynbatch.pb"),
 };
 
 INSTANTIATE_TEST_SUITE_P(TFConvertModelTest,
