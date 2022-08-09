@@ -22,7 +22,6 @@ static CutModelParam getTestData_2in_2out() {
     res.m_newOutputs = {"add2"};
     res.m_tensorValueName = "inputX2";
     res.m_tensorValue = {1, 2, 3, 4, 5, 6, 7, 8, 9};
-    res.m_op_before_name = "InputX2:0";
     return res;
 }
 
