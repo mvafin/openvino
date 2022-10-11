@@ -32,9 +32,9 @@ op::Parameter::Parameter(const element::Type& element_type,
     // If element_type is custom, it doesn't mean that it is really custom, it may be just a way to hide normal type
     // under Any In some circumstances it is simpler to wrap a regular type in Any and then pass through multi-layer API
     // that works with Any only
-    std::cout << "Parameter of custom type: attempt to detect simple type\n";
+    //std::cout << "Parameter of custom type: attempt to detect simple type\n";
     if (element_custom_type.is<element::Type>()) {
-        std::cout << "Parameter of custom type is simple type: " << element_custom_type.as<element::Type>() << "\n";
+        //std::cout << "Parameter of custom type is simple type: " << element_custom_type.as<element::Type>() << "\n";
         m_element_type = element_custom_type.as<element::Type>();
     } else {
         m_element_type = element_type;  // custom

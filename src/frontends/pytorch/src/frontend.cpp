@@ -85,7 +85,7 @@ void FrontEnd::normalize(const std::shared_ptr<ov::Model>& model) const {
 
     manager.run_passes(model);
 
-    apply_pytorch_conversion_transforms(model);
+    //apply_pytorch_conversion_transforms(model);
 }
 
 void FrontEnd::add_extension(const std::shared_ptr<ov::Extension>& extension) {
