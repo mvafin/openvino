@@ -41,6 +41,7 @@ try:
             Decoder.__init__(self)
             # We store every decoder created by this decoder so that all them are not deleted until the first decoder is deleted
             self.m_decoders = []
+            self.m_const_outputs = []
             self.pt_module = pt_module
 
         def inputs(self):

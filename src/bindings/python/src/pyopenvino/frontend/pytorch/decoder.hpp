@@ -52,10 +52,10 @@ namespace py = pybind11;
     bool input_is_none (size_t index) const override
     { PYBIND11_OVERRIDE_PURE(bool, Decoder, input_is_none, index); }
 
-    OutputVector as_constant () override
+    OutputVector as_constant () const override
     { PYBIND11_OVERRIDE_PURE(OutputVector, Decoder, as_constant); }
 
-    std::string as_string () override
+    std::string as_string () const override
     { PYBIND11_OVERRIDE_PURE(std::string, Decoder, as_string); }
 
     std::string get_op_type() const override
