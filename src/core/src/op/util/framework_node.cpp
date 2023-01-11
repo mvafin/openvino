@@ -158,7 +158,7 @@ void ov::op::util::FrameworkNode::validate_and_infer_types() {
             } else {
                 NODE_VALIDATION_CHECK(this,
                                       std::get<0>(m_inputs_desc[i]).compatible(input_pshape) &&
-                                          std::get<1>(m_inputs_desc[i]) == input_type,
+                                          std::get<1>(m_inputs_desc[i]).compatible(input_type),
                                       get_error_message());
             }
         }
