@@ -14,7 +14,7 @@ namespace op {
 OutputVector translate_loop(NodeContext& context) {
     auto loop = std::make_shared<opset8::Loop>(context.get_input(0), context.get_input(1));
     auto decoder = context.get_decoder();
-    OV_FRONTEND_REQUIRE(decoder->get_subgraph_size() == 1);
+    FRONT_END_OP_CONVERSION_CHECK(decoder->get_subgraph_size() == 1, "Loop must have 1 subgraph.");
     auto subgraph_decoder = decoder->get_subgraph_decoder(0);
     auto body = context.convert_subgraph(0);
     loop->set_function(body);

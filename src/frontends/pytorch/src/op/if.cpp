@@ -15,7 +15,7 @@ OutputVector translate_if(NodeContext& context) {
     auto if_node = std::make_shared<opset8::If>(context.get_input(0));
     context.mark_node(if_node);
     auto decoder = context.get_decoder();
-    OV_FRONTEND_REQUIRE(decoder->get_subgraph_size() == 2);
+    FRONT_END_OP_CONVERSION_CHECK(decoder->get_subgraph_size() == 2, "If must have 2 subgraphs.");
 
     auto then_decoder = decoder->get_subgraph_decoder(0);
     auto then_body = context.convert_subgraph(0);

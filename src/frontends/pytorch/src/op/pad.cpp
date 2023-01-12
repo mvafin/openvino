@@ -24,7 +24,6 @@ OutputVector translate_pad(NodeContext& context) {
     auto pad_size_half = paddings.size() / 2;
     std::vector<int64_t> pad_b(pad_size_half, 0);
     std::vector<int64_t> pad_e(pad_size_half, 0);
-    auto pad_mode = ov::op::PadMode::CONSTANT;
     for (int i = 0; i < pad_size_half; i++) {
         pad_b[i] = paddings[paddings.size() - 2 - 2 * i];
         pad_e[i] = paddings[paddings.size() - 1 - 2 * i];

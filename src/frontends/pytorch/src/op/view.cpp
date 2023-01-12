@@ -22,7 +22,7 @@ OutputVector translate_view(NodeContext& context) {
         auto axis_0 = context.mark_node(opset8::Constant::create(element::i64, Shape{}, {0}));
         for (auto& input : shape_node->inputs()) {
             auto rank = input.get_partial_shape().rank();
-            OV_FRONTEND_REQUIRE(rank.is_dynamic() || rank.get_length() == 0);
+            FRONT_END_OP_CONVERSION_CHECK(rank.is_dynamic() || rank.get_length() == 0, "Rank must be 0");
             auto unsqueeze = context.mark_node(std::make_shared<opset8::Unsqueeze>(input.get_source_output(), axis_0));
             inputs.push_back(unsqueeze);
         }

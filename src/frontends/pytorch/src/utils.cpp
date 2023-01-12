@@ -7,7 +7,6 @@
 #include <openvino/frontend/pytorch/decoder.hpp>
 #include <openvino/frontend/pytorch/node_context.hpp>
 
-#include "exception.hpp"
 #include "op_table.hpp"
 #include "pt_framework_node.hpp"
 
@@ -299,7 +298,7 @@ std::shared_ptr<ov::Model> convert_pytorch_model(std::shared_ptr<Decoder> pytorc
             parameters.push_back(parameter);
             auto order = pytorch_model->get_input_transpose_order(i);
             if (order.size() > 0 && !std::is_sorted(order.begin(), order.end())) {
-                OV_FRONTEND_REQUIRE(ps.is_static());  // TODO: make dynamic
+                FRONT_END_GENERAL_CHECK(ps.is_static(), "Shape must be static.");  // TODO: make dynamic
                 auto sh = ps.get_shape();
                 Shape new_shape(sh.size());
                 for (int i = 0; i < sh.size(); i++) {
@@ -368,7 +367,7 @@ std::shared_ptr<ov::Model> convert_pytorch_model(std::shared_ptr<Decoder> pytorc
             }
         };
 
-        OV_FRONTEND_REQUIRE(pytorch_model->get_subgraph_size() == 1);
+        FRONT_END_GENERAL_CHECK(pytorch_model->get_subgraph_size() == 1, "Model should have exactly 1 subgraph.");
         pytorch_model->visit_subgraph(node_visitor);
 
         ResultVector results;
@@ -401,7 +400,10 @@ std::shared_ptr<ov::Model> convert_pytorch_model(std::shared_ptr<Decoder> pytorc
         }
         for (const auto& tensor_id : mutated_tensors) {
             if (param_names.count(tensor_id)) {
-                OV_FRONTEND_REQUIRE(tensor_map.count(tensor_id));
+                FRONT_END_GENERAL_CHECK(tensor_map.count(tensor_id),
+                                        "Tensor with id: ",
+                                        tensor_id,
+                                        " doesn't exist in tensor map.");
                 // model input was mutated we need to make a result for it
                 auto mutated_tensor = tensor_map.at(tensor_id);
                 // empty external_tensor_map means this is main body of the model and we don't want to create
