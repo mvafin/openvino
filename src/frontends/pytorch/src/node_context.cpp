@@ -6,7 +6,7 @@
 
 #include "openvino/frontend/exception.hpp"
 #include "openvino/frontend/pytorch/decoder.hpp"
-#include "openvino/opsets/opset8.hpp"
+#include "openvino/opsets/opset10.hpp"
 
 #include "pt_framework_node.hpp"
 #include "utils.hpp"
@@ -20,7 +20,7 @@ Output<Node> NodeContext::get_tensor_from_model_or_create_input(size_t index) {
         return m_tensor_map->at(index);
     } else {
         // nested subgraphs case
-        auto parameter = std::make_shared<opset8::Parameter>(element::dynamic, PartialShape::dynamic());
+        auto parameter = std::make_shared<opset10::Parameter>(element::dynamic, PartialShape::dynamic());
         parameter->get_output_tensor(0).add_names({std::to_string(index)});
         (*m_tensor_map)[index] = parameter;
         m_external_parameters->push_back(parameter);
@@ -33,7 +33,7 @@ Output<Node> NodeContext::get_input_from_visible_context(size_t index) const {
     FRONT_END_GENERAL_CHECK(index < get_input_size(), "Index is lower then number of inputs.");
     auto input_tensor = get_input(index);
     auto input_node = input_tensor.get_node_shared_ptr();
-    if (std::dynamic_pointer_cast<opset8::Parameter>(input_node)) {
+    if (std::dynamic_pointer_cast<opset10::Parameter>(input_node)) {
         // We need to look into external context for inputs that would be feed into this parameter
         auto name = input_node->get_output_tensor(0).get_any_name();
         size_t tensor_idx = (size_t)std::stoll(name);
@@ -70,10 +70,10 @@ std::shared_ptr<ov::Model> NodeContext::convert_subgraph(size_t index) {
 }
 
 namespace {
-std::shared_ptr<opset8::Constant> get_constant_at_input(const NodeContext& ctx, size_t index) {
+std::shared_ptr<opset10::Constant> get_constant_at_input(const NodeContext& ctx, size_t index) {
     FRONT_END_GENERAL_CHECK(!ctx.input_is_none(index), "Input with index: ", index, " is none.");
     auto input_node = ctx.get_input_from_visible_context(index).get_node_shared_ptr();
-    auto input = std::dynamic_pointer_cast<opset8::Constant>(input_node);
+    auto input = std::dynamic_pointer_cast<opset10::Constant>(input_node);
     FRONT_END_GENERAL_CHECK(input, "Input with index ", index, " cannot be interpreted as Constant: ", input_node);
     return input;
 }
