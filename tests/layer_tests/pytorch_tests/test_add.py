@@ -31,6 +31,7 @@ class TestAdd(PytorchLayerTest):
         return aten_add(alpha), ref_net, "aten::add"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_add(self, ie_device, precision, ir_version, alpha, input_rhs):
         self.input_rhs = input_rhs
         self._test(*self.create_model(alpha), ie_device, precision, ir_version)

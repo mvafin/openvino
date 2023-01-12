@@ -37,11 +37,13 @@ class TestLen(PytorchLayerTest):
         return aten_len(), ref_net, "aten::len"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_len(self, ie_device, precision, ir_version, input_tensor):
         self.input_tensor = input_tensor
         self._test(*self.create_model(), ie_device, precision, ir_version)
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_len_int_list(self, ie_device, precision, ir_version, input_tensor):
         self.input_tensor = input_tensor
         self._test(*self.create_model_int_list(),

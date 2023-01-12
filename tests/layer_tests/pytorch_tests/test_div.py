@@ -68,6 +68,7 @@ class TestDiv(PytorchLayerTest):
         "trunc"
     ]))
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_div_pt_spec(self, input_array, other_array, rounding_mode, ie_device, precision, ir_version):
         self.input_array = input_array
         self.input_type = np.float32

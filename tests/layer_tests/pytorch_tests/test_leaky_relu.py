@@ -30,5 +30,6 @@ class TestLeakyRelu(PytorchLayerTest):
 
     @pytest.mark.parametrize("alpha,inplace", [(0.01, True), (0.01, False), (1.01, True), (1.01, False), (-0.01, True), (-0.01, False)])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_leaky_relu(self, alpha, inplace, ie_device, precision, ir_version):
         self._test(*self.create_model(alpha, inplace), ie_device, precision, ir_version)

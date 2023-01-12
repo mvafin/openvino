@@ -29,5 +29,6 @@ class TestRelu(PytorchLayerTest):
 
     @pytest.mark.parametrize("repeats", [(4, 3), (1, 1), (1, 2, 3), (1, 2, 2, 3)])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_relu(self, repeats, ie_device, precision, ir_version):
         self._test(*self.create_model(repeats), ie_device, precision, ir_version)

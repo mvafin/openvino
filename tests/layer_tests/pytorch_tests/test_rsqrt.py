@@ -25,5 +25,6 @@ class TestRSqrt(PytorchLayerTest):
         return aten_rsqrt(), ref_net, "aten::rsqrt"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_relu(self, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version)

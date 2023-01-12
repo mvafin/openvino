@@ -30,5 +30,6 @@ class TestStrides(PytorchLayerTest):
         return strided_const(), ref_net, None
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_strides(self, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version)

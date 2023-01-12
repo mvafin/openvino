@@ -37,6 +37,7 @@ class TestPow(PytorchLayerTest):
         return aten_pow(), ref_net, "aten::pow"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_pow(self, ie_device, precision, ir_version, test_input):
         self.test_input = test_input
         self._test(*self.create_model(), ie_device, precision, ir_version)

@@ -80,6 +80,7 @@ class TestFull(PytorchLayerTest):
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("value", [0, 1, -1, 0.5])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_full(self, shape, value, ie_device, precision, ir_version):
         self._test(*self.create_model(shape), ie_device, precision,
                    ir_version, kwargs_to_prepare_input={'value': value})
@@ -154,6 +155,7 @@ class TestFullLike(PytorchLayerTest):
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("value", [0, 1, -1, 0.5])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_full_like(self, shape, value, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version,
                    kwargs_to_prepare_input={'value': value, 'shape': shape})
@@ -221,6 +223,7 @@ class TestNewFull(PytorchLayerTest):
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("value,input_dtype", [(0, np.uint8), (1, np.int32), (-1, np.float32), (0.5, np.float64)])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_new_full(self, shape, value, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape), ie_device, precision, ir_version,
                    kwargs_to_prepare_input={'value': value, 'input_dtype': input_dtype})
@@ -349,6 +352,7 @@ class TestZerosAndOnes(PytorchLayerTest):
     @pytest.mark.parametrize("shape", [(1, 1), (1, 2), (1, 2, 3), (1, 2, 3, 4), (2, 3, 4, 5, 6)])
     @pytest.mark.parametrize("op_type", ["aten::zeros", "aten::ones", "aten::zeros_like", "aten::ones_like"])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_fill(self, op_type, shape, ie_device, precision, ir_version):
         self._test(*self.create_model(op_type), ie_device, precision,
                    ir_version, kwargs_to_prepare_input={'shape': shape})
@@ -434,6 +438,7 @@ class TestNewZeros(PytorchLayerTest):
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("input_dtype", [np.uint8, np.int8, np.int32, np.int64, np.float32, np.float64])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_new_zeros(self, shape, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape), ie_device, precision, ir_version,
                    kwargs_to_prepare_input={'input_dtype': input_dtype})
@@ -493,6 +498,7 @@ class TestNewOnes(PytorchLayerTest):
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("input_dtype", [np.uint8, np.int8, np.int32, np.int64, np.float32, np.float64])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_new_ones(self, shape, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape), ie_device, precision, ir_version,
                    kwargs_to_prepare_input={'input_dtype': input_dtype})

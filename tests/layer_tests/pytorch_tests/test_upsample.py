@@ -52,5 +52,6 @@ class TestUpsample2D(PytorchLayerTest):
         ('bicubic', None, (1.2, 0.8))]
     )
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_upsample(self, mode, size, scale, ie_device, precision, ir_version):
         self._test(*self.create_model(size, scale, mode), ie_device, precision, ir_version, trace_model=True)

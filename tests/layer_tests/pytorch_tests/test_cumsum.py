@@ -28,5 +28,6 @@ class TestCumSum(PytorchLayerTest):
 
     @pytest.mark.parametrize("axis", [0, 1, 2, 3, -1, -2, -3, -4])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_cumsum(self, axis, ie_device, precision, ir_version):
         self._test(*self.create_model(axis), ie_device, precision, ir_version)

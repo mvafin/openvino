@@ -25,5 +25,6 @@ class TestSqrt(PytorchLayerTest):
         return aten_sqrt(), ref_net, "aten::sqrt"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_sqrt(self, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version)

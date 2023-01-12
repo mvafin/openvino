@@ -25,6 +25,7 @@ class TestViewListConstruct(PytorchLayerTest):
         return aten_view_list_construct(), ref_net, "aten::view"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_view_list_construct(self, ie_device, precision, ir_version, input_data):
         self.input_data = input_data
         self._test(*self.create_model(), ie_device, precision, ir_version)
@@ -54,6 +55,7 @@ class TestView(PytorchLayerTest):
         return aten_view(self.input_data), ref_net, "aten::view"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_view(self, ie_device, precision, ir_version, input_data):
         self.input_data = input_data
         self._test(*self.create_model(), ie_device, precision, ir_version)

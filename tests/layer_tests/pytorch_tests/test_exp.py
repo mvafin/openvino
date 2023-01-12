@@ -23,5 +23,6 @@ class TestExp(PytorchLayerTest):
         return aten_exp(), ref_net, "aten::exp"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_exp(self, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version)

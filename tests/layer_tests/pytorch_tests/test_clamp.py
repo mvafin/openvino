@@ -90,5 +90,6 @@ class TestClampMax(PytorchLayerTest):
     @pytest.mark.parametrize("maximum", [0., 1., -1., 0.5])
     @pytest.mark.parametrize("as_tensor", [True, False])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_clamp(self, maximum, as_tensor, ie_device, precision, ir_version):
         self._test(*self.create_model(maximum, as_tensor), ie_device, precision, ir_version)

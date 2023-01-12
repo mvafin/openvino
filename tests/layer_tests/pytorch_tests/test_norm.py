@@ -32,6 +32,7 @@ class TestNorm(PytorchLayerTest):
         return aten_norm(p, dim, keepdim), ref_net, "aten::norm"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_norm(self, ie_device, precision, ir_version, p, dim, keepdim):
         self._test(*self.create_model(p, dim, keepdim),
                    ie_device, precision, ir_version)

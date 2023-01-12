@@ -54,5 +54,6 @@ class TestComp(PytorchLayerTest):
 
     @pytest.mark.parametrize("op", ["eq", "ne", "lt", "gt", "le", "ge"])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_comp(self, op, ie_device, precision, ir_version):
         self._test(*self.create_model(op), ie_device, precision, ir_version)

@@ -46,6 +46,7 @@ class TestAdaptiveMaxPool2D(PytorchLayerTest):
         True,
     ]))
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_adaptive_max_pool2d(self, ie_device, precision, ir_version, input_tensor, output_size, return_indices):
         self.input_tensor = input_tensor
         self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version)

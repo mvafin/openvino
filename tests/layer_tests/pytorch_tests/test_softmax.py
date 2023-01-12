@@ -29,5 +29,6 @@ class TestSoftmax(PytorchLayerTest):
 
     @pytest.mark.parametrize("dim", [-1, 3])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_softmax(self, dim, ie_device, precision, ir_version):
         self._test(*self.create_model(dim), ie_device, precision, ir_version)

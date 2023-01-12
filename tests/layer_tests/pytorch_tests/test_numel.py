@@ -31,5 +31,6 @@ class TestNumel(PytorchLayerTest):
         {'input_shape': (1, 2, 3, 4, 5)}
     ])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_numel(self, kwargs_to_prepare_input, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input)

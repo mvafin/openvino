@@ -36,6 +36,7 @@ class TestRoll(PytorchLayerTest):
             [1, None],
     ])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_roll(self, shifts, dim, ie_device, precision, ir_version):
         self._test(*self.create_model(shifts, dim), ie_device, precision, ir_version)
 

@@ -35,6 +35,7 @@ class TestIm2Col(PytorchLayerTest):
         return aten_im2col(kernel_size, dilation, padding, stride), ref_net, "aten::im2col"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     @pytest.mark.parametrize("kernel_size", [[2, 3], [3, 2], [3, 3], [2, 2], [1, 1]])
     @pytest.mark.parametrize("dilation", [1, 2, 3, (1, 2)])
     @pytest.mark.parametrize("padding", [0, 5, 1, [2, 3]])

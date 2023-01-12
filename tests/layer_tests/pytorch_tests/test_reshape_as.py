@@ -27,6 +27,7 @@ class TestReshapeAs(PytorchLayerTest):
         return aten_reshape_as(), ref_net, "aten::reshape_as"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_reshape_as(self, ie_device, precision, ir_version, input_tesnors):
         self.input_tesnors = input_tesnors
         self._test(*self.create_model(), ie_device, precision, ir_version)

@@ -100,6 +100,7 @@ class TestExp(PytorchLayerTest):
         self._test(*self.create_model(dtype, 2), ie_device, precision, ir_version, kwargs_to_prepare_input={"end": end, "start": start, "dtype": "float32"})
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     @pytest.mark.parametrize("dtype", [None, "float32", "float64", "int32", "int64", "int8"])
     @pytest.mark.parametrize("start,end,step", [(0, 1, 1), (-2, 1, 1.25), (1, -5, -1), (1, 10, 2), (-1, -5, -2)])
     def test_arange_start_end_step(self, dtype, end, start, step, ie_device, precision, ir_version):

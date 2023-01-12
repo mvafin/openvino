@@ -49,6 +49,7 @@ class TestMaskedFill(PytorchLayerTest):
     @pytest.mark.parametrize("mask_dtype", [np.uint8, bool]) # np.float32 incorrectly casted to bool
     @pytest.mark.parametrize("inplace", [True, False])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_masked_fill(self, value, mask_fill, mask_dtype, inplace, ie_device, precision, ir_version):
         self._test(*self.create_model(value, inplace),
                    ie_device, precision, ir_version, kwargs_to_prepare_input={'mask_fill': mask_fill, 'mask_dtype': mask_dtype})

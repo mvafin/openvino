@@ -54,6 +54,7 @@ class TestPad(PytorchLayerTest):
         ((-5, -8, 0, 0), "circular", None),
         ])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_pad4d(self, pads, mode, value, ie_device, precision, ir_version):
         self._test(*self.create_model(pads, mode, value), ie_device, precision, ir_version, kwargs_to_prepare_input={'ndim': 4})
 

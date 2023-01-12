@@ -28,5 +28,6 @@ class TestPermute(PytorchLayerTest):
 
     @pytest.mark.parametrize("order", [[0, 2, 3, 1], [0, 3, 1, 2]])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_relu(self, order, ie_device, precision, ir_version):
         self._test(*self.create_model(order), ie_device, precision, ir_version)

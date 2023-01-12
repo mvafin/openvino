@@ -31,6 +31,7 @@ class TestSelect(PytorchLayerTest):
         return aten_select(input_dim, input_index), ref_net, "aten::select"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_select(self, ie_device, precision, ir_version, input_dim, input_index):
         self._test(*self.create_model(input_dim, input_index),
                    ie_device, precision, ir_version)

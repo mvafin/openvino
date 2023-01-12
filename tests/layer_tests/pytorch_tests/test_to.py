@@ -36,6 +36,7 @@ class TestAtenTo(PytorchLayerTest):
     @pytest.mark.parametrize("input_type", [np.int32, np.float32, np.float64])
     @pytest.mark.parametrize("output_type", [torch.uint8, torch.int8, torch.int16, torch.int32, torch.float32, torch.int64])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_aten_to(self, input_type, output_type, ie_device, precision, ir_version):
         self.input_type = input_type
         self._test(*self.create_model(output_type), ie_device, precision, ir_version)

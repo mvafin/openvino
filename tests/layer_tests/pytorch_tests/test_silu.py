@@ -27,5 +27,6 @@ class TestSilu(PytorchLayerTest):
         return aten_silu(), ref_net, "aten::silu"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_silu(self, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version)

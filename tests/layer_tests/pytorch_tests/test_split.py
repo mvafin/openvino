@@ -59,6 +59,7 @@ class TestSplit(PytorchLayerTest):
     @pytest.mark.parametrize("params", test_cases)
     @pytest.mark.parametrize("getitem", [-5, -2, -1, 0, 1, 4])
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_split_getitem(self, params, getitem, ie_device, precision, ir_version):
         (self.split_param, self.axis) = params
         self.getitem = getitem
@@ -66,6 +67,7 @@ class TestSplit(PytorchLayerTest):
 
     @pytest.mark.parametrize("params", test_cases)
     @pytest.mark.nightly
+    @pytest.mark.precommit
     def test_split_listunpack(self, params, ie_device, precision, ir_version):
         (self.split_param, self.axis) = params
         self._test(

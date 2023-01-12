@@ -28,6 +28,7 @@ class TestSilu(PytorchLayerTest):
         return aten_selu(inplace), ref_net, "aten::selu" if not inplace else "aten::selu_"
 
     @pytest.mark.nightly
+    @pytest.mark.precommit
     @pytest.mark.parametrize("inplace", [True, False])
     def test_silu(self, inplace, ie_device, precision, ir_version):
         self._test(*self.create_model(inplace), ie_device, precision, ir_version)
