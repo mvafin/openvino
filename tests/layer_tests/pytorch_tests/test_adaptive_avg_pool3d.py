@@ -1,10 +1,11 @@
 # Copyright (C) 2018-2023 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-from pytorch_layer_test_class import PytorchLayerTest
 import numpy as np
+import pytest
 import torch
+
+from pytorch_layer_test_class import PytorchLayerTest
 
 
 @pytest.mark.parametrize('input_tensor', (np.random.randn(1, 2, 8, 9, 10).astype(np.float32),
@@ -16,7 +17,6 @@ class TestAdaptiveAvgPool3D(PytorchLayerTest):
         return (self.input_tensor,)
 
     def create_model(self, output_size):
-
         class aten_adaptive_avg_pool3d(torch.nn.Module):
 
             def __init__(self, output_size) -> None:

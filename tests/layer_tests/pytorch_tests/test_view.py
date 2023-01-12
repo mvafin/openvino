@@ -1,10 +1,11 @@
 # Copyright (C) 2018-2023 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-from pytorch_layer_test_class import PytorchLayerTest
 import numpy as np
+import pytest
 import torch
+
+from pytorch_layer_test_class import PytorchLayerTest
 
 
 @pytest.mark.parametrize('input_data', [(np.random.randn(2, 3, 2), np.array(2), np.array(6)),
@@ -39,7 +40,6 @@ class TestView(PytorchLayerTest):
         return (self.input_data[0],)
 
     def create_model(self):
-
         class aten_view(torch.nn.Module):
 
             def __init__(self, input_data) -> None:

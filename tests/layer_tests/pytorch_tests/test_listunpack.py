@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import List
-import pytest
-import numpy as np
-import torch
 
+import numpy as np
+import pytest
+import torch
 
 from pytorch_layer_test_class import PytorchLayerTest
 
@@ -42,7 +42,7 @@ class TestListUnpack(PytorchLayerTest):
                 super(prim_listunpack, self).__init__()
 
             def forward(self, in1, in2, in3, in4):
-                a, b = in1.size()[self.start : self.stop : self.step]
+                a, b = in1.size()[self.start: self.stop: self.step]
                 return a, b
 
         ref_net = None
@@ -116,7 +116,7 @@ class TestListUnpack(PytorchLayerTest):
     @pytest.mark.nightly
     @pytest.mark.precommit
     def test_listconstruct_getitem_listunpack(
-        self, idx, ie_device, precision, ir_version
+            self, idx, ie_device, precision, ir_version
     ):
         self._test(
             *self.create_model_listconstruct_getitem_listunpack(idx),

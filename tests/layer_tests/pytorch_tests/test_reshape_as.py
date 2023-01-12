@@ -1,10 +1,11 @@
 # Copyright (C) 2018-2023 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-from pytorch_layer_test_class import PytorchLayerTest
 import numpy as np
+import pytest
 import torch
+
+from pytorch_layer_test_class import PytorchLayerTest
 
 
 @pytest.mark.parametrize('input_tesnors', ((np.ones((3, 6)), np.ones((2, 9))),
@@ -16,7 +17,6 @@ class TestReshapeAs(PytorchLayerTest):
         return self.input_tesnors
 
     def create_model(self):
-
         class aten_reshape_as(torch.nn.Module):
 
             def forward(self, input_tensor, shape_tensor):

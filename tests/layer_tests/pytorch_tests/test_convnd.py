@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+
 from pytorch_layer_test_class import PytorchLayerTest
 
 
@@ -11,7 +12,6 @@ class TestConv2D(PytorchLayerTest):
         return (np.random.randn(2, 3, 25, 25).astype(np.float32),)
 
     def create_model(self, weights_shape, strides, pads, dilations, groups, bias):
-
         import torch
         import torch.nn.functional as F
 
@@ -39,13 +39,17 @@ class TestConv2D(PytorchLayerTest):
                               {'weights_shape': [1, 3, 3, 3], 'strides': 2, 'pads': 0, 'dilations': 1, 'groups': 1},
                               {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': 1, 'dilations': 1, 'groups': 1},
                               {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': 0, 'dilations': 2, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': [0, 1], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': [1, 0], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': 'same', 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': 'valid', 'dilations': 1, 'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': [0, 1], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': [1, 0], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': 'same', 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3], 'strides': 1, 'pads': 'valid', 'dilations': 1,
+                               'groups': 1},
                               # doesn't work because input shape is dynamic which makes kernel shape dynamic
                               # {'weights_shape': [2, 3, 3, 3], 'strides': 1, 'pads': 0, 'dilations': 1, 'groups': 2},
-                             ])
+                              ])
     @pytest.mark.parametrize("bias", [True, False])
     @pytest.mark.nightly
     @pytest.mark.precommit
@@ -60,7 +64,6 @@ class TestConv1D(PytorchLayerTest):
         return (np.random.randn(2, 3, 25).astype(np.float32),)
 
     def create_model(self, weights_shape, strides, pads, dilations, groups, bias):
-
         import torch
         import torch.nn.functional as F
 
@@ -92,7 +95,7 @@ class TestConv1D(PytorchLayerTest):
                               {'weights_shape': [3, 3, 3], 'strides': 1, 'pads': 'valid', 'dilations': 1, 'groups': 1},
                               # doesn't work because input shape is dynamic which makes kernel shape dynamic
                               # {'weights_shape': [3, 3, 3], 'strides': 1, 'pads': 0, 'dilations': 1, 'groups': 2},
-                             ])
+                              ])
     @pytest.mark.parametrize("bias", [True, False])
     @pytest.mark.nightly
     @pytest.mark.precommit
@@ -107,7 +110,6 @@ class TestConv3D(PytorchLayerTest):
         return (np.random.randn(2, 3, 25, 25, 25).astype(np.float32),)
 
     def create_model(self, weights_shape, strides, pads, dilations, groups, bias):
-
         import torch
         import torch.nn.functional as F
 
@@ -135,17 +137,25 @@ class TestConv3D(PytorchLayerTest):
                               {'weights_shape': [1, 3, 3, 3, 3], 'strides': 2, 'pads': 0, 'dilations': 1, 'groups': 1},
                               {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': 1, 'dilations': 1, 'groups': 1},
                               {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': 0, 'dilations': 2, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [0, 1, 0], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [1, 0, 0], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [0, 0, 1], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [1, 1, 0], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [0, 1, 1], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [1, 0, 1], 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': 'same', 'dilations': 1, 'groups': 1},
-                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': 'valid', 'dilations': 1, 'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [0, 1, 0], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [1, 0, 0], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [0, 0, 1], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [1, 1, 0], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [0, 1, 1], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': [1, 0, 1], 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': 'same', 'dilations': 1,
+                               'groups': 1},
+                              {'weights_shape': [1, 3, 3, 3, 3], 'strides': 1, 'pads': 'valid', 'dilations': 1,
+                               'groups': 1},
                               # doesn't work because input shape is dynamic which makes kernel shape dynamic
                               # {'weights_shape': [2, 3, 3, 3], 'strides': 1, 'pads': 0, 'dilations': 1, 'groups': 2},
-                             ])
+                              ])
     @pytest.mark.parametrize("bias", [True, False])
     @pytest.mark.nightly
     @pytest.mark.precommit

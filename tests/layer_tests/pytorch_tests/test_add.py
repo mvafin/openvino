@@ -1,10 +1,11 @@
 # Copyright (C) 2018-2023 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-from pytorch_layer_test_class import PytorchLayerTest
 import numpy as np
+import pytest
 import torch
+
+from pytorch_layer_test_class import PytorchLayerTest
 
 
 @pytest.mark.parametrize('alpha', (-0.5, 0, 0.5, 1, 2))

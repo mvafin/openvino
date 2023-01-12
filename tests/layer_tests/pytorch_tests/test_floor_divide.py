@@ -1,8 +1,9 @@
 # Copyright (C) 2018-2023 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
 import numpy as np
+import pytest
+
 from pytorch_layer_test_class import PytorchLayerTest
 
 
@@ -11,7 +12,6 @@ class TestFloorDivide(PytorchLayerTest):
         return (self.input_tensor, self.other_tensor)
 
     def create_model(self):
-
         import torch
 
         class aten_floor_divide(torch.nn.Module):
@@ -40,6 +40,6 @@ class TestFloorDivide(PytorchLayerTest):
     @pytest.mark.nightly
     @pytest.mark.precommit
     def test_floor_divide(self, input_tensor, other_tensor, ie_device, precision, ir_version):
-        self.input_tensor = input_tensor 
-        self.other_tensor = other_tensor 
+        self.input_tensor = input_tensor
+        self.other_tensor = other_tensor
         self._test(*self.create_model(), ie_device, precision, ir_version)

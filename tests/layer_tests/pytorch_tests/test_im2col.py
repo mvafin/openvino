@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+
 from pytorch_layer_test_class import PytorchLayerTest
 
 
@@ -23,12 +24,12 @@ class TestIm2Col(PytorchLayerTest):
 
             def forward(self, x):
                 return torch.nn.functional.unfold(
-                    x, 
-                    kernel_size=self.kernel_size, 
-                    dilation=self.dilation, 
-                    padding=self.padding, 
+                    x,
+                    kernel_size=self.kernel_size,
+                    dilation=self.dilation,
+                    padding=self.padding,
                     stride=self.stride
-                    )
+                )
 
         ref_net = None
 

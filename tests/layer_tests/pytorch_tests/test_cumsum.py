@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+
 from pytorch_layer_test_class import PytorchLayerTest
 
 
@@ -20,11 +21,10 @@ class TestCumSum(PytorchLayerTest):
 
             def forward(self, x):
                 return torch.cumsum(x, self.axis)
-            
+
         ref_net = None
 
         return aten_cumsum(axis), ref_net, "aten::cumsum"
-
 
     @pytest.mark.parametrize("axis", [0, 1, 2, 3, -1, -2, -3, -4])
     @pytest.mark.nightly

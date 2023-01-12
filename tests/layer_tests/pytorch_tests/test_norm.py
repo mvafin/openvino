@@ -1,10 +1,11 @@
 # Copyright (C) 2018-2023 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
-from pytorch_layer_test_class import PytorchLayerTest
 import numpy as np
+import pytest
 import torch
+
+from pytorch_layer_test_class import PytorchLayerTest
 
 
 @pytest.mark.parametrize('p', [-2, -1, 0, 1, 2, 2.5, float('inf'), float('-inf')])
@@ -13,7 +14,7 @@ import torch
 class TestNorm(PytorchLayerTest):
 
     def _prepare_input(self):
-        return (np.random.randn(2, 3, 4, 5), )
+        return (np.random.randn(2, 3, 4, 5),)
 
     def create_model(self, p, dim, keepdim):
         class aten_norm(torch.nn.Module):
