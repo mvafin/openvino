@@ -35,7 +35,8 @@ OutputVector translate_pad(NodeContext& context) {
     auto pads_remaining = context.mark_node(std::make_shared<opset10::Broadcast>(zero, pads_diff));
     auto pads_begins =
         context.mark_node(std::make_shared<opset10::Concat>(NodeVector{pads_remaining, pads_begin_short}, 0));
-    auto pads_ends = context.mark_node(std::make_shared<opset10::Concat>(NodeVector{pads_remaining, pads_end_short}, 0));
+    auto pads_ends =
+        context.mark_node(std::make_shared<opset10::Concat>(NodeVector{pads_remaining, pads_end_short}, 0));
     if (!context.input_is_none(2)) {
         mode = context.const_input<std::string>(2);
     }
