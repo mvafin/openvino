@@ -35,13 +35,7 @@ void regclass_frontend_FrontEnd(py::module m) {
                 return self.load(model_path);
             } catch (...) {
                 // Extended for one argument only for this time
-                // TODO: Remove this excplicit dependency on specific Pytorch FE dependent type
-                if (py::isinstance<pytorch::Decoder>(path)) {
-                    auto decoder = path.cast<std::shared_ptr<pytorch::Decoder>>();
-                    return self.load({Any(decoder)});
-                }
-                // no idea what this object is, let it throw
-                throw;
+                return self.load({py_object_to_any(path)});
             }
         },
         py::arg("path"),

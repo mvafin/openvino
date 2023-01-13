@@ -12,7 +12,10 @@
 #include <vector>
 
 #include "Python.h"
+
+#ifdef ENABLE_OV_PYTORCH_FRONTEND
 #include "openvino/frontend/pytorch/decoder.hpp"
+#endif
 
 namespace Common {
 namespace utils {
@@ -227,13 +230,20 @@ ov::Any py_object_to_any(const py::object& py_obj) {
         return py::cast<ov::streams::Num>(py_obj);
     } else if (py::isinstance<ov::Affinity>(py_obj)) {
         return py::cast<ov::Affinity>(py_obj);
-        // Custom PT FE Types
+    }
+#ifdef ENABLE_OV_PYTORCH_FRONTEND
+    // PyTorch FE Decoder
+    else if (py::isinstance<ov::frontend::pytorch::Decoder>(py_obj)) {
+        return py::cast<std::shared_ptr<ov::frontend::pytorch::Decoder>>(py_obj);
+        // Custom PyTorch FE Types
     } else if (py::isinstance<ov::frontend::pytorch::type::Tensor>(py_obj)) {
         return py::cast<ov::frontend::pytorch::type::Tensor>(py_obj);
     } else if (py::isinstance<ov::frontend::pytorch::type::List>(py_obj)) {
         return py::cast<ov::frontend::pytorch::type::List>(py_obj);
-        // If there is no match fallback to py::object
-    } else if (py::isinstance<py::object>(py_obj)) {
+    }
+#endif
+    // If there is no match fallback to py::object
+    else if (py::isinstance<py::object>(py_obj)) {
         return py_obj;
     }
     OPENVINO_ASSERT(false, "Unsupported attribute type.");

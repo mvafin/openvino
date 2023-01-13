@@ -97,7 +97,7 @@ public:
 
     Any get_attribute_as_any(const std::string&) const override {
         throw std::runtime_error(
-            "There is no any named attributes in Pytorch node, query by attribute name is not implemented");
+            "There is no any named attributes in PyTorch node, query by attribute name is not implemented");
     }
 
     void mutate_input(size_t index, Output<Node> ov_output) {

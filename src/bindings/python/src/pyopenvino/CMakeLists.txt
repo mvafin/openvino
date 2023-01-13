@@ -83,10 +83,12 @@ endif()
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 if(ENABLE_OV_PYTORCH_FRONTEND)
-    list(APPEND DEPENDENCIES openvino::frontend::pytorch)
+    list(APPEND DEPENDENCIES openvino::frontend::pytorch)    
+    list(APPEND DEFINITIONS ENABLE_OV_PYTORCH_FRONTEND)
 endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE ${DEPENDENCIES})
+target_compile_definitions(${PROJECT_NAME} PRIVATE ${DEFINITIONS})
 set_target_properties(${PROJECT_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE ${ENABLE_LTO} OUTPUT_NAME "_pyopenvino")
 
 addVersionDefines(pyopenvino.cpp CI_BUILD_NUMBER)

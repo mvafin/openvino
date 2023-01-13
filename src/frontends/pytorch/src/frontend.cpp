@@ -116,7 +116,7 @@ void FrontEnd::normalize(const std::shared_ptr<ov::Model>& model) const {
             //             "used and treated as `self`\n";
             model->remove_parameter(self);
         } else {
-            std::cout << "[ WARNING ] Couldn't remove parameter[0] in converted Pytorch model\n";
+            std::cout << "[ WARNING ] Couldn't remove parameter[0] in converted PyTorch model\n";
         }
     }
 }
@@ -131,7 +131,7 @@ bool FrontEnd::supported_impl(const std::vector<ov::Any>& variants) const {
 
 ov::frontend::InputModel::Ptr FrontEnd::load_impl(const std::vector<ov::Any>& variants) const {
     if (variants.size() != 1) {
-        throw std::runtime_error("Pytorch frontend supports exactly one parameter in model representation, got " +
+        throw std::runtime_error("PyTorch Frontend supports exactly one parameter in model representation, got " +
                                  std::to_string(variants.size()) + " instead.");
     }
     auto decoder = variants[0].as<std::shared_ptr<Decoder>>();
