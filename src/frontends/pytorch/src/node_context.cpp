@@ -23,7 +23,7 @@ Output<Node> NodeContext::get_tensor_from_model_or_create_input(size_t index) {
         parameter->get_output_tensor(0).add_names({std::to_string(index)});
         (*m_tensor_map)[index] = parameter;
         m_external_parameters->push_back(parameter);
-        OPENVINO_DEBUG << "Nested case, created: " << parameter << "\n";
+        OPENVINO_DEBUG << "Nested case, created: " << parameter << '\n';
         return parameter;
     }
 }
@@ -60,7 +60,8 @@ std::shared_ptr<ov::Model> NodeContext::convert_subgraph(size_t index) {
         auto parameter = model->get_parameters()[i];
         if (parameter->output(0).get_target_inputs().empty()) {
             // There is no consumers: safe to remove
-            OPENVINO_DEBUG << "Removing parameter " << parameter << " in converted Pytorch model, because it is never used\n";
+            OPENVINO_DEBUG << "Removing parameter " << parameter
+                           << " in converted Pytorch model, because it is never used\n";
             model->remove_parameter(parameter);
         }
     }

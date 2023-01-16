@@ -24,7 +24,6 @@ void regclass_frontend_pytorch_decoder(py::module m) {
     auto type_module = m.def_submodule("_Type");
 
     // Register classes for TorchScript type system
-
     py::class_<type::Tensor>(type_module, "Tensor").
         def(py::init<Any>());
     py::class_<type::List>(type_module, "List").

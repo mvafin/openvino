@@ -47,7 +47,7 @@ std::shared_ptr<Model> FrontEnd::convert(const InputModel::Ptr& model) const {
     std::set<std::string> unconverted_ops_types = get_unconverted_types_from_model(converted_model);
     std::stringstream ops_str;
     for (auto&& op_type : unconverted_ops_types) {
-        ops_str << op_type << "\n";
+        ops_str << op_type << '\n';
     }
     FRONT_END_OP_CONVERSION_CHECK(unconverted_ops_types.size() == 0,
                                   "Model wasn't fully converted. Unconverted operation types:\n" + ops_str.str());
@@ -65,7 +65,7 @@ std::shared_ptr<Model> FrontEnd::convert_partially(const ov::frontend::InputMode
 
         return model;
     } catch (const std::runtime_error& e) {
-        std::cerr << "[ ERROR ] Unexpected error while converting pytorch model: " << e.what() << "\n";
+        std::cerr << "[ ERROR ] Unexpected error while converting pytorch model: " << e.what() << '\n';
         std::cerr << "Rethrowing. Misleading error message from pybind11 may come next. TODO.";
         throw;
     }
