@@ -4,18 +4,10 @@
 
 #include "openvino/frontend/pytorch/frontend.hpp"
 
-#include <exception>
-#include <limits>
-#include <map>
-#include <memory>
-#include <string>
-
 #include "input_model.hpp"
-#include "op_table.hpp"
-#include "openvino/frontend/exception.hpp"
-#include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/util/multi_subgraph_base.hpp"
 #include "openvino/pass/constant_folding.hpp"
+#include "openvino/util/log.hpp"
 #include "pt_framework_node.hpp"
 #include "transformations/control_flow/unroll_if.hpp"
 #include "transforms.hpp"
@@ -25,7 +17,6 @@
 #include "transforms/max_prim_list_construct_replacer.hpp"
 #include "transforms/prim_list_unpack_replacer.hpp"
 #include "transforms/prim_tuple_construct_replacer.hpp"
-#include "utils.hpp"
 
 namespace ov {
 namespace frontend {
@@ -103,7 +94,6 @@ void FrontEnd::normalize(const std::shared_ptr<ov::Model>& model) const {
 
     apply_pytorch_conversion_transforms(model);
 
-    // TODO: Propose better solution for the next code block
     // Usually if nn.Module.forward is given as a source model for conversion, there is the first Parameter
     // that represents original `self` argument in forward(self, ...). `self` shouldn't play any role in model
     // inference if model is completelly frozed and all methods are inlined. So we check if it doesn't have any
@@ -112,11 +102,11 @@ void FrontEnd::normalize(const std::shared_ptr<ov::Model>& model) const {
         auto self = model->get_parameters()[0];
         if (self->output(0).get_target_inputs().empty()) {
             // There is no consumers: safe to remove
-            // std::cout << "[ WARNING ] Removing parameter[0] in converted Pytorch model, because it is never "
-            //             "used and treated as `self`\n";
+            OPENVINO_DEBUG << "[ WARNING ] Removing parameter[0] in converted Pytorch model, because it is never used "
+                              "and treated as `self`\n";
             model->remove_parameter(self);
         } else {
-            std::cout << "[ WARNING ] Couldn't remove parameter[0] in converted PyTorch model\n";
+            OPENVINO_DEBUG << "[ WARNING ] Couldn't remove parameter[0] in converted PyTorch model\n";
         }
     }
 }
@@ -130,13 +120,13 @@ bool FrontEnd::supported_impl(const std::vector<ov::Any>& variants) const {
 }
 
 ov::frontend::InputModel::Ptr FrontEnd::load_impl(const std::vector<ov::Any>& variants) const {
-    if (variants.size() != 1) {
-        throw std::runtime_error("PyTorch Frontend supports exactly one parameter in model representation, got " +
-                                 std::to_string(variants.size()) + " instead.");
-    }
+    FRONT_END_GENERAL_CHECK(variants.size() == 1,
+                            "PyTorch Frontend supports exactly one parameter in model representation, got ",
+                            std::to_string(variants.size()),
+                            " instead.");
     auto decoder = variants[0].as<std::shared_ptr<IDecoder>>();
     auto tdecoder = std::dynamic_pointer_cast<TorchDecoder>(decoder);
-    FRONT_END_GENERAL_CHECK(tdecoder, "Couldn't cast");
+    FRONT_END_GENERAL_CHECK(tdecoder, "Couldn't cast ov::Any to TorchDecoder");
     return std::make_shared<pytorch::InputModel>(tdecoder);
 }
 
