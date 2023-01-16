@@ -16,7 +16,7 @@ typedef std::unordered_map<size_t, Output<Node>> TensorMap;
 
 class NodeContext : public frontend::NodeContext {
 public:
-    NodeContext(std::shared_ptr<Decoder> decoder,
+    NodeContext(std::shared_ptr<TorchDecoder> decoder,
                 TensorMap* tensor_map,
                 ParameterVector* external_parameters,
                 const TensorMap& ext_tensor_map)
@@ -115,7 +115,7 @@ public:
         return m_mutated_tensors;
     }
 
-    std::shared_ptr<Decoder> get_decoder() const {
+    std::shared_ptr<TorchDecoder> get_decoder() const {
         return m_decoder;
     }
 
@@ -140,7 +140,7 @@ public:
     std::shared_ptr<ov::Model> convert_subgraph(size_t index);
 
 private:
-    std::shared_ptr<Decoder> m_decoder;
+    std::shared_ptr<TorchDecoder> m_decoder;
     std::set<size_t> m_mutated_tensors;
     TensorMap* m_tensor_map;
     const TensorMap& m_ext_tensor_map;
