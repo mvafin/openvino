@@ -112,7 +112,7 @@ class Node:
         if not self.out_port(idx).disconnected():
             self.out_port(idx).disconnect()
         del self._out_ports[idx]
-        # update in_ports_count for consistency but it is unlikely have any effect somewhere in the code
+        # update in_ports_count for consistency, but it is unlikely have any effect somewhere in the code
         self['out_ports_count'] = len(self._out_ports)
 
     def add_output_port(self, idx, skip_if_exist=False, **kwargs):
@@ -185,13 +185,15 @@ class Node:
         return self.graph.node[self.node]
 
     def has(self, k):
-        return k in self.graph.node[self.node]
+        return k in self.attrs()
 
     def has_valid(self, k):
-        return self.has(k) and not self.graph.node[self.node][k] is None
+        node_attrs = self.attrs()
+        return k in node_attrs and node_attrs[k] is not None
 
     def has_and_set(self, k):
-        return self.has_valid(k) and self[k]
+        node_attrs = self.attrs()
+        return k in node_attrs and node_attrs[k]
 
     def in_nodes_edges(self, control_flow: bool = False):
         return dict_to_ordered_dict({x[1]['in']: (Node(self.graph, x[0]), x[1]) for x in
@@ -281,7 +283,9 @@ class Node:
                       key=lambda x: x[1]['out'])
 
     def soft_get(self, k, default='<UNKNOWN>'):
-        return self[k] if self.has_valid(k) else default
+        node_attrs = self.graph.node[self.node]
+        _has_valid = k in node_attrs and node_attrs[k] is not None
+        return node_attrs[k] if _has_valid else default
 
     def edges(self, attrs: dict = None):
         """ Get a single edge with specified set of attributes.
@@ -947,16 +951,21 @@ class Graph(nx.MultiDiGraph):
         :return: list of nodes in the DFS-visit order.
         """
         order = []
-        stack = [node_name]
+        stack = collections.deque()
+        stack.append(node_name)
+        #stack = [node_name]
         while len(stack) != 0:
-            node_name = stack[0]
-            stack.pop(0)
+            #node_name = stack[0]
+            #stack.pop(0)
+            node_name = stack.popleft()
             visited.add(node_name)
             has_child = False
             for _, out_node_name in self.out_edges(node_name):
                 if out_node_name not in visited:
-                    stack.insert(0, node_name)
-                    stack.insert(0, out_node_name)
+                    #stack.insert(0, node_name)
+                    #stack.insert(0, out_node_name)
+                    stack.appendleft(node_name)
+                    stack.appendleft(out_node_name)
                     has_child = True
                     break
             if not has_child:

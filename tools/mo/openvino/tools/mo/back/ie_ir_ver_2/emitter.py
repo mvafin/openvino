@@ -56,41 +56,42 @@ def update_offset_size_in_const_node(node: Node):
 def serialize_constants_recursively(graph: Graph, bin_file, data_type, bin_hashes):
     nodes = sorted(graph.nodes())
     for node in nodes:
-        node = Node(graph, node)
+        _node = Node(graph, node)
+        node_attrs = _node.attrs()
 
-        if node.kind == 'data' and node.value is not None and \
-                any('bin' in d for u, v, d in graph.out_edges(node.node, data=True)):
+        if node_attrs['kind'] == 'data' and node_attrs['value'] is not None and \
+                any('bin' in d for u, v, d in graph.out_edges(node, data=True)):
             # avoid array copying while taking hash
-            blob = node.value if node.value.ndim > 0 else node.value.reshape((1))
+            blob = node_attrs['value'] if node_attrs['value'].ndim > 0 else node_attrs['value'].reshape((1))
             assert is_fully_defined(blob), 'The constant value cannot contain dynamic values'
             if isinstance(blob, np.ma.masked_array):
                 blob = np.ma.getdata(blob)
             blob_hash = hashlib.sha512(np.ascontiguousarray(blob).view(np.uint8)).hexdigest()
 
-            if blob_hash in bin_hashes and np.array_equal(blob, bin_hashes[blob_hash]['blob']):
-                graph.node[node.node]['offset'] = bin_hashes[blob_hash]['offset']
-                graph.node[node.node]['size'] = bin_hashes[blob_hash]['size']
-                graph.node[node.node]['blob_precision'] = np_data_type_to_precision(blob.dtype)
-                update_offset_size_in_const_node(node)
+            blob_from_hash = bin_hashes[blob_hash] if blob_hash in bin_hashes else None
+            if blob_from_hash is not None and np.array_equal(blob, blob_from_hash['blob']):
+                graph.node[node].update({'offset': blob_from_hash['offset'],
+                                              'size': blob_from_hash['size'],
+                                              'blob_precision': np_data_type_to_precision(blob.dtype)})
+                update_offset_size_in_const_node(_node)
             else:
                 start = bin_file.tell()
                 blob.tofile(bin_file)
-                end = bin_file.tell()
+                size = bin_file.tell() - start
 
-                graph.node[node.node]['offset'] = start
-                graph.node[node.node]['size'] = end - start
-                graph.node[node.node]['blob_precision'] = np_data_type_to_precision(blob.dtype)
+                graph.node[node].update({'offset': start,
+                                              'size': size,
+                                              'blob_precision': np_data_type_to_precision(blob.dtype)})
 
-                bin_hashes[blob_hash] = {'offset': graph.node[node.node]['offset'],
-                                         'size': graph.node[node.node]['size'], 'blob': blob}
-                update_offset_size_in_const_node(node)
+                bin_hashes[blob_hash] = {'offset': start, 'size': size, 'blob': blob}
+                update_offset_size_in_const_node(_node)
 
-                assert (blob.dtype.itemsize * np.prod(node.shape) == end - start) or \
-                       node.has_valid('force_shape'), node.attrs()
+                assert (blob.dtype.itemsize * np.prod(node_attrs['shape']) == size) or \
+                       _node.has_valid('force_shape'), node_attrs
 
             log.debug(
                 "Detected binary for graph: '{}', node: '{}', id: {}, shape: '{}', offset: '{}', size: '{}'".format(
-                    graph, node.soft_get('name'), node.id, node.shape, node.offset, node.size))
+                    graph, _node.soft_get('name'), _node.id, node_attrs['shape'], node_attrs['offset'], node_attrs['size']))
 
     # separate loop for sub-graph to dump them after all blobs for more natural blob offset ordering
     # TODO: implement strict order for all blobs in entier IR
