@@ -6,6 +6,7 @@
 
 #include "ngraph/graph_util.hpp"
 #include "ngraph/opsets/opset5.hpp"
+#include "openvino/util/log.hpp"
 
 ov::op::util::MultiSubGraphOp::InputDescription::InputDescription(uint64_t input_index, uint64_t body_parameter_index)
     : m_input_index(input_index),
