@@ -91,14 +91,14 @@ pt_to_ov_type_map = {
 
 
 class TorchScriptPythonDecoder (Decoder):
-    def __init__(self, pt_module, graph_element=None, example_input=None, freeze=True):
+    def __init__(self, pt_module, graph_element=None, example_input=None):
         Decoder.__init__(self)
         # We store every decoder created by this decoder so that all them are not deleted until the first decoder is deleted
         self.m_decoders = []
         self._input_signature = None
         if graph_element is None:
             try:
-                pt_module = self._get_scripted_model(pt_module, example_input, freeze)
+                pt_module = self._get_scripted_model(pt_module, example_input)
             except Exception as e:
                 if example_input is not None:
                     msg = "tracing or scripting"
@@ -156,6 +156,7 @@ class TorchScriptPythonDecoder (Decoder):
             input_signature = list(inspect.signature(pt_module.forward).parameters.keys())
             if example_inputs is None:
                 scripted = torch.jit.script(pt_module)
+                scripted = torch.jit.freeze(scripted)
             else:
                 inputs, input_signature = prepare_example_inputs(example_inputs, input_signature)
                 try:
@@ -163,20 +164,14 @@ class TorchScriptPythonDecoder (Decoder):
                 except Exception:
                     try:
                         scripted = torch.jit.script(pt_module)
+                        scripted = torch.jit.freeze(scripted)
                     except Exception:
                         scripted = torch.jit.trace(pt_module, inputs, strict=False)
+            ts_model = scripted
         else:
-            scripted = pt_module
-        if freeze:
-            try:
-                f_model = torch.jit.freeze(scripted)
-            except Exception:
-                # usually freezing failed when model already frozen for inference
-                f_model = scripted
-        else:
-            f_model = scripted
+            ts_model = pt_module
         self._input_signature = input_signature
-        return f_model
+        return ts_model
 
     def inputs(self) -> list:
         return [x.unique() for x in self.raw_inputs]
