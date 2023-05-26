@@ -311,6 +311,8 @@ class TorchScriptPythonDecoder (Decoder):
         return self.outputs()[index]
 
     def mark_node(self, node):
+        if self.graph_element.scopeName():
+            node.set_friendly_name(self.graph_element.scopeName() + "/" + self.graph_element.kind() + "/" + node.get_type_name())
         return node
 
     def try_decode_get_attr(self):
