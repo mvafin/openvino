@@ -144,6 +144,9 @@ eva02_base_patch14_224.mim_in22k,None
 eva02_base_patch16_clip_224.merged2b,None
 eva02_large_patch14_clip_224.merged2b,None
 fastvit_ma36.apple_dist_in1k,None
+fastvit_mci0.apple_mclip,None
+fastvit_mci1.apple_mclip,None
+fastvit_mci2.apple_mclip,None,xfail,Accuracy validation failed
 fastvit_s12.apple_dist_in1k,None
 fastvit_sa12.apple_dist_in1k,None
 fastvit_sa24.apple_dist_in1k,None
@@ -188,6 +191,8 @@ hgnetv2_b3.ssld_stage1_in22k_in1k,None
 hgnetv2_b4.ssld_stage1_in22k_in1k,None
 hgnetv2_b5.ssld_stage1_in22k_in1k,None
 hgnetv2_b6.ssld_stage1_in22k_in1k,None
+hiera_base_224.mae,None
+hiera_base_plus_224.mae,None
 hrnet_w18_small.gluon_in1k,None
 hrnet_w18_small_v2.gluon_in1k,None
 hrnet_w18_ssld.paddle_in1k,None
@@ -236,6 +241,9 @@ mobilenetv2_110d.ra_in1k,None
 mobilenetv2_120d.ra_in1k,None
 mobilenetv3_rw.rmsp_in1k,None
 mobilenetv3_small_050.lamb_in1k,None
+mobilenetv4_conv_blur_medium.e500_r224_in1k,None
+mobilenetv4_conv_small.e1200_r224_in1k,None
+mobilenetv4_hybrid_medium.e500_r224_in1k,None
 mobileone_s0.apple_in1k,None
 mobileone_s1.apple_in1k,None
 mobileone_s2.apple_in1k,None
@@ -324,6 +332,8 @@ resnest50d.in1k,None
 resnest50d_1s4x24d.in1k,None
 resnest50d_4s2x40d.in1k,None
 resnet101.a1_in1k,None
+resnet101_clip.openai,None
+resnet101_clip_gap.openai,None
 resnet101c.gluon_in1k,None
 resnet101d.gluon_in1k,None
 resnet101s.gluon_in1k,None
@@ -344,10 +354,18 @@ resnet33ts.ra2_in1k,None
 resnet34.a1_in1k,None
 resnet34d.ra2_in1k,None
 resnet50.a1_in1k,None
+resnet50_clip.openai,None
+resnet50_clip_gap.openai,None
 resnet50_gn.a1h_in1k,None
 resnet50c.gluon_in1k,None
 resnet50d.a1_in1k,None
 resnet50s.gluon_in1k,None
+resnet50x16_clip.openai,None
+resnet50x16_clip_gap.openai,None
+resnet50x4_clip.openai,None
+resnet50x4_clip_gap.openai,None
+resnet50x64_clip.openai,None
+resnet50x64_clip_gap.openai,None
 resnet51q.ra2_in1k,None
 resnet61q.ra2_in1k,None
 resnetaa101d.sw_in12k,None
@@ -467,25 +485,39 @@ vgg16_bn.tv_in1k,None
 vgg19.tv_in1k,None
 vgg19_bn.tv_in1k,None
 visformer_tiny.in1k,None
+vit_base_mci_224.apple_mclip,None
 vit_base_patch14_dinov2.lvd142m,None
 vit_base_patch14_reg4_dinov2.lvd142m,None
 vit_base_patch16_224.augreg2_in21k_ft_in1k,None
 vit_base_patch16_224_miil.in21k,None
 vit_base_patch16_clip_224.datacompxl,None
 vit_base_patch16_clip_quickgelu_224.metaclip_2pt5b,None
+vit_base_patch16_rope_reg1_gap_256.sbb_in1k,None,xfail,Argument shapes are inconsistent
 vit_base_patch16_rpn_224.sw_in1k,None
 vit_base_patch16_siglip_224.webli,None
+vit_base_patch16_siglip_gap_224.webli,None
 vit_base_patch32_224.augreg_in1k,None
 vit_base_patch32_clip_224.datacompxl,None
 vit_base_patch32_clip_quickgelu_224.metaclip_2pt5b,None
 vit_base_patch8_224.augreg2_in21k_ft_in1k,None
 vit_base_r50_s16_224.orig_in21k,None
+vit_betwixt_patch16_reg1_gap_256.sbb_in1k,None
+vit_betwixt_patch16_reg4_gap_256.sbb_in12k,None
+vit_betwixt_patch16_rope_reg4_gap_256.sbb_in1k,None,xfail,Argument shapes are inconsistent
+vit_betwixt_patch32_clip_224.tinyclip_laion400m,None
 vit_huge_patch14_224.mae,None
 vit_huge_patch14_gap_224.in1k_ijepa,None
 vit_large_patch14_clip_224.datacompxl,None
 vit_large_patch14_clip_quickgelu_224.dfn2b,None
 vit_large_r50_s32_224.augreg_in21k,None
+vit_little_patch16_reg1_gap_256.sbb_in12k,None
+vit_little_patch16_reg4_gap_256.sbb_in1k,None
 vit_medium_patch16_gap_240.sw_in12k,None
+vit_medium_patch16_reg1_gap_256.sbb_in1k,None
+vit_medium_patch16_reg4_gap_256.sbb_in12k,None
+vit_mediumd_patch16_reg4_gap_256.sbb_in12k,None
+vit_mediumd_patch16_rope_reg1_gap_256.sbb_in1k,None,xfail,Argument shapes are inconsistent
+vit_pwee_patch16_reg1_gap_256.sbb_in1k,None
 vit_relpos_base_patch16_224.sw_in1k,None
 vit_relpos_base_patch16_clsgap_224.sw_in1k,None
 vit_relpos_base_patch32_plus_rpn_256.sw_in1k,None
@@ -493,13 +525,18 @@ vit_relpos_medium_patch16_cls_224.sw_in1k,None
 vit_relpos_medium_patch16_rpn_224.sw_in1k,None
 vit_small_r26_s32_224.augreg_in21k,None
 vit_so400m_patch14_siglip_224.webli,None
+vit_so400m_patch14_siglip_gap_224.pali_mix,None,skip,Access to model google/paligemma-3b-mix-224-jax is restricted
 vit_srelpos_small_patch16_224.sw_in1k,None
 vit_tiny_r_s16_p8_224.augreg_in21k,None
-volo_d1_224.sail_in1k,None
-volo_d2_224.sail_in1k,None
-volo_d3_224.sail_in1k,None
-volo_d4_224.sail_in1k,None
-volo_d5_224.sail_in1k,None
+vit_wee_patch16_reg1_gap_256.sbb_in1k,None
+vit_xsmall_patch16_clip_224.tinyclip_yfcc15m,None
+vitamin_base_224.datacomp1b_clip,None,xfail,RuntimeError Error in loading state_dict for VisionTransformer
+vitamin_large2_224.datacomp1b_clip,None
+volo_d1_224.sail_in1k,None,xfail,Cannot get length of dynamic dimension
+volo_d2_224.sail_in1k,None,xfail,Cannot get length of dynamic dimension
+volo_d3_224.sail_in1k,None,xfail,Cannot get length of dynamic dimension
+volo_d4_224.sail_in1k,None,xfail,Cannot get length of dynamic dimension
+volo_d5_224.sail_in1k,None,xfail,Cannot get length of dynamic dimension
 wide_resnet101_2.tv2_in1k,None
 wide_resnet50_2.racm_in1k,None
 xception41.tf_in1k,None
