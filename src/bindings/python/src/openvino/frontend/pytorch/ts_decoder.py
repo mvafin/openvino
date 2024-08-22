@@ -6,6 +6,7 @@
 
 from openvino.frontend.pytorch.py_pytorch_frontend import _FrontEndPytorchDecoder as Decoder
 from openvino.frontend.pytorch.py_pytorch_frontend import _Type as DecoderType
+from openvino.frontend.pytorch.py_pytorch_frontend import WeightsDispatcher
 from openvino.runtime import op, PartialShape, Type as OVType, OVAny
 from openvino.frontend.pytorch.utils import (
     ivalue_to_constant,
@@ -36,6 +37,7 @@ class TorchScriptPythonDecoder(Decoder):
         skip_freeze=False,
         constant_cache=None,
         module_extensions=None,
+        weights_dispatcher=None,
     ):
         super().__init__()
         # We store every decoder created by this decoder so that all them are not deleted until the first decoder is deleted
@@ -47,12 +49,14 @@ class TorchScriptPythonDecoder(Decoder):
         self.module_extensions = module_extensions
         self.config = None
         self.out_debug_name_overwrites = {}
+        self.weights_dispatcher = weights_dispatcher
         if graph_element is None:
+            offload_info = None
             if hasattr(pt_module, "config"):
                 self.config = pt_module.config.to_dict() if not isinstance(
                     pt_module.config, dict) else pt_module.config
             try:
-                pt_module = self._get_scripted_model(
+                ts_module = self._get_scripted_model(
                     pt_module, example_input, skip_freeze)
             except Exception as e:
                 if example_input is not None:
@@ -67,14 +71,28 @@ class TorchScriptPythonDecoder(Decoder):
                     f"Couldn't get TorchScript module by {msg}. With exception:\n{e}\n{help_msg} "
                     "You can also provide TorchScript module that you obtained"
                     " yourself, please refer to PyTorch documentation: "
-                    "https://pytorch.org/tutorials/beginner/Intro_to_TorchScript_tutorial.html."
-                )
-            self.graph_element = pt_module.inlined_graph
+                    "https://pytorch.org/tutorials/beginner/Intro_to_TorchScript_tutorial.html.")
+            self.graph_element = ts_module.inlined_graph
             self.alias_db = self.graph_element.alias_db()
+            self.pt_module = ts_module
+            for _, m in pt_module.named_modules():
+                if hasattr(m, "_hf_hook"):
+                    from accelerate.hooks import AlignDevicesHook
+                    if isinstance(m._hf_hook, AlignDevicesHook) and hasattr(m._hf_hook, "weights_map"):
+                        # weight_map contains info about paths to weights
+                        dataset = getattr(
+                            m._hf_hook.weights_map, "dataset", None)
+                        if dataset is not None:
+                            offload_info = getattr(dataset, "index", None) if offload_info is None else offload_info.update(
+                                getattr(dataset, "index", None))
+                            # single index contain all required data
+                            break
+            if offload_info is not None:
+                self.weights_dispatcher = WeightsDispatcher(offload_info)
         else:
             self.graph_element = graph_element
             self.alias_db = alias_db
-        self.pt_module = pt_module
+            self.pt_module = pt_module
         self.raw_inputs = list(self.graph_element.inputs())
         self.raw_outputs = list(self.graph_element.outputs())
         if self._input_signature is not None:
@@ -280,6 +298,7 @@ class TorchScriptPythonDecoder(Decoder):
                 shared_memory=self._shared_memory,
                 constant_cache=self.constant_cache,
                 module_extensions=self.module_extensions,
+                weights_dispatcher=self.weights_dispatcher,
             )
             self.m_decoders.append(decoder)
             node_visitor(decoder)
@@ -300,10 +319,12 @@ class TorchScriptPythonDecoder(Decoder):
         return list(self.graph_element.blocks())
 
     def get_subgraph_decoder(self, index: int):
-        decoder = TorchScriptPythonDecoder(
-            self.pt_module, self.get_subgraphs(
-            )[index], alias_db=self.alias_db, shared_memory=self._shared_memory, module_extensions=self.module_extensions
-        )
+        decoder = TorchScriptPythonDecoder(self.pt_module,
+                                           self.get_subgraphs()[index],
+                                           alias_db=self.alias_db,
+                                           shared_memory=self._shared_memory,
+                                           module_extensions=self.module_extensions,
+                                           weights_dispatcher=self.weights_dispatcher)
         self.m_decoders.append(decoder)
         return decoder
 
@@ -410,11 +431,18 @@ class TorchScriptPythonDecoder(Decoder):
         elif not isinstance(pt_value, (torch.jit.ScriptModule, torch.jit.TracedModule)):
             # this tensor can be used multiple times in the model, so we have to reuse constants
             if name in self.constant_cache:
-                const = self.constant_cache[name]
+                return self.constant_cache[name]
+            if getattr(pt_value, "device", None) == torch.device("meta"):
+                """from safetensors import safe_open
+                info = self.offload_info[name]
+                with safe_open(info["safetensors_file"], framework="pt") as f:
+                    tensor = f.get_tensor(info.get("weight_name", name))
+                const = ivalue_to_constant(tensor, shared_memory=False)"""
+                const = self.weights_dispatcher.get_constant_for_name(name)
             else:
                 const = ivalue_to_constant(
                     pt_value, shared_memory=self._shared_memory)
-                self._add_name_to_const_and_cache(const, name)
+            self._add_name_to_const_and_cache(const, name)
             return const
         else:
             return []

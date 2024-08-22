@@ -6,6 +6,7 @@
 
 #include "decoder.hpp"
 #include "extension.hpp"
+#include "weights_dispatcher.hpp"
 
 namespace py = pybind11;
 
@@ -13,4 +14,5 @@ PYBIND11_MODULE(py_pytorch_frontend, m) {
     regclass_frontend_pytorch_decoder(m);
     regclass_frontend_pytorch_ConversionExtension(m);
     regclass_frontend_pytorch_OpExtension(m);
+    regclass_frontend_pytorch_WeightsDispatcher(m);
 }
