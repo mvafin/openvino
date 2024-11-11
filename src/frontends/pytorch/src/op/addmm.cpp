@@ -63,7 +63,7 @@ OutputVector translate_addmm_fx(const NodeContext& context) {
     return {translate_addmm_common(context, std::move(beta), std::move(alpha))};
 };
 
-OutputVector translate_conv1d_ext(const NodeContext& context) {
+OutputVector translate_transformers_conv1d_ext(const NodeContext& context) {
     // not really a convolution, implemented based on
     // https://github.com/huggingface/transformers/blob/0ed3ffcb4461a244b87781a24e5ebd0a78f98142/src/transformers/pytorch_utils.py#L84
     num_inputs_check(context, 3, 3);

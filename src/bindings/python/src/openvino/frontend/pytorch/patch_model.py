@@ -75,6 +75,15 @@ def unpatch_model(model, orig_forward_name):
                             "Depending on the exact issue it may lead to broken original model.\n"
                             "Original exception details:\n%s", error)
 
+def conv_shape(module, x):
+    b, _, h, w = x.shape
+    kernel_size = module.kernel_size
+    stride = module.stride
+    padding = module.padding
+    dilation = module.dilation
+    h_out = ((h + 2 * padding[0] - dilation[0] * (kernel_size[0] - 1) - 1) // stride[0] + 1)
+    w_out = ((w + 2 * padding[1] - dilation[1] * (kernel_size[1] - 1) - 1) // stride[1] + 1)
+    return b, module.out_channels, h_out, w_out
 
 def __make_16bit_traceable(model: torch.nn.Module):
     """
@@ -89,7 +98,7 @@ def __make_16bit_traceable(model: torch.nn.Module):
                                                                          module.weight,
                                                                          module.bias),
             evaluate=lambda module, *args, **kwargs: torch.full(
-                list(args[0].shape[:-1]) + [module.out_features], 0.5, dtype=torch.float32)),
+                args[0].shape[:-1] + (module.out_features,), 0.5, dtype=torch.float32)),
         torch.nn.Embedding: ModuleExtension(
             torch.nn.Embedding, "ov_ext::embedding",
             convert=lambda module, target_op, *args, **kwargs: target_op(module.weight,
@@ -98,17 +107,28 @@ def __make_16bit_traceable(model: torch.nn.Module):
                                                                          module.scale_grad_by_freq,
                                                                          module.sparse),
             evaluate=lambda module, *args, **kwargs: torch.full(
-                list(args[1].shape) + [module.embedding_dim], 0.5, dtype=torch.float32)),
+                args[1].shape + (module.embedding_dim,), 0.5, dtype=torch.float32)),
+        torch.nn.Conv2d: ModuleExtension(
+            torch.nn.Conv2d, "ov_ext::conv2d",
+            convert=lambda module, target_op, *args, **kwargs: target_op(args[0],
+                                                                         module.weight,
+                                                                         module.bias if module.bias is not None else torch.tensor(0, dtype=torch.float32),
+                                                                         torch.tensor(module.stride),
+                                                                         torch.tensor(module.padding),
+                                                                         torch.tensor(module.dilation),
+                                                                         torch.tensor(module.groups)),
+            evaluate=lambda module, *args, **kwargs: torch.full(conv_shape(module, args[0]),
+                                                                0.5, dtype=torch.float32)),
     }
     try:
         from transformers.pytorch_utils import Conv1D
         extensions[Conv1D] = ModuleExtension(
-            Conv1D, "ov_ext::conv1d",
+            Conv1D, "ov_ext::transformers_conv1d",
             convert=lambda module, target_op, *args, **kwargs: target_op(args[0],
                                                                          module.weight,
                                                                          module.bias),
             evaluate=lambda module, *args, **kwargs: torch.full(
-                list(args[0].shape[:-1]) + [module.nf], 0.5, dtype=torch.float32))
+                args[0].shape[:-1] + (module.nf,), 0.5, dtype=torch.float32))
     except ImportError:
         pass
     patch_model(model, extensions,

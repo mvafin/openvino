@@ -15,8 +15,14 @@ namespace op {
 
 using namespace ov::op;
 
-OutputVector translate_convnd(const NodeContext& context) {
+namespace {
+OutputVector translate_convnd_common(const NodeContext& context, bool convert_weight = false) {
     num_inputs_check(context, 7, 7);
+    auto input = context.get_input(0);
+    auto weight = context.get_input(1);
+    if (convert_weight) {
+        weight = context.mark_node(std::make_shared<v1::ConvertLike>(weight, input));
+    }
     auto strides = context.const_input<Strides>(3);
     // In torch pads at beginning are same as at end
     auto pads = CoordinateDiff(strides.size(), 0);
@@ -33,16 +39,10 @@ OutputVector translate_convnd(const NodeContext& context) {
 
     std::shared_ptr<ov::Node> conv;
     if (groups == 1) {
-        conv = std::make_shared<v1::Convolution>(context.get_input(0),
-                                                 context.get_input(1),
-                                                 strides,
-                                                 pads,
-                                                 pads,
-                                                 dilations,
-                                                 pad_type);
+        conv = std::make_shared<v1::Convolution>(input, weight, strides, pads, pads, dilations, pad_type);
     } else {
-        conv = std::make_shared<v1::GroupConvolution>(context.get_input(0),
-                                                      reshape_kernel_for_group(context, context.get_input(1), groups),
+        conv = std::make_shared<v1::GroupConvolution>(input,
+                                                      reshape_kernel_for_group(context, weight, groups),
                                                       strides,
                                                       pads,
                                                       pads,
@@ -60,11 +60,23 @@ OutputVector translate_convnd(const NodeContext& context) {
         if (bias_rank == 1) {
             bias = reshape_channelwise(context, bias, conv);
         }
+        if (convert_weight) {
+            bias = context.mark_node(std::make_shared<v1::ConvertLike>(bias, input));
+        }
         conv = context.mark_node(std::make_shared<v1::Add>(conv, bias));
     }
 
     return {conv};
 };
+}  // namespace
+
+OutputVector translate_convnd(const NodeContext& context) {
+    return translate_convnd_common(context);
+}
+
+OutputVector translate_convnd_ext(const NodeContext& context) {
+    return translate_convnd_common(context, true);
+}
 
 }  // namespace op
 }  // namespace pytorch
