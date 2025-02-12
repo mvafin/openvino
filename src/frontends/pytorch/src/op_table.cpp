@@ -46,7 +46,6 @@ OP_CONVERTER(translate_atan2);
 OP_CONVERTER(translate_avg_pool1d);
 OP_CONVERTER(translate_avg_pool2d);
 OP_CONVERTER(translate_avg_pool3d);
-OP_CONVERTER(translate_bool);
 OP_CONVERTER(translate_batch_norm);
 OP_CONVERTER(translate_bernoulli);
 OP_CONVERTER(translate_bitwise_and);
@@ -120,7 +119,6 @@ OP_CONVERTER(translate_index_fill_);
 OP_CONVERTER(translate_index_put);
 OP_CONVERTER(translate_index_select);
 OP_CONVERTER(translate_instance_norm);
-OP_CONVERTER(translate_int);
 OP_CONVERTER(translate_inverse);
 OP_CONVERTER(translate_is_nonzero);
 OP_CONVERTER(translate_layer_norm);
@@ -415,7 +413,7 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_ts() {
         {"aten::bitwise_or", op::translate_bitwise_or},
         {"aten::bitwise_xor", op::translate_bitwise_xor},
         {"aten::bmm", op::translate_1to1_match_2_inputs<opset10::MatMul>},
-        {"aten::Bool", op::translate_bool},
+        {"aten::Bool", op::convert_to_scalar<element::boolean>},
         // aten::broadcast_tensors - Supported in limited set of patterns
         {"aten::broadcast_to", op::translate_expand},
         {"aten::bucketize", op::translate_bucketize},
@@ -485,6 +483,7 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_ts() {
         {"aten::fill_diagonal", op::translate_fill_diagonal},
         {"aten::flatten", op::quantizable_op<op::translate_flatten>},
         {"aten::flip", op::translate_flip},
+        {"aten::Float", op::convert_to_scalar<element::f32>},
         {"aten::floor", op::optional_out<op::translate_1to1_match_1_inputs<opset10::Floor>, 1>},
         {"aten::floor_", op::inplace_op<op::translate_1to1_match_1_inputs<opset10::Floor>>},
         {"aten::floor_divide", op::translate_floor_divide},
@@ -516,8 +515,8 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_ts() {
         {"aten::index_select", op::translate_index_select},
         {"aten::instance_norm", op::translate_instance_norm},
         {"aten::inverse", op::translate_inverse},
-        {"aten::Int", op::translate_int},
-        {"aten::IntImplicit", op::translate_int},
+        {"aten::Int", op::convert_to_scalar<element::i64>},
+        {"aten::IntImplicit", op::convert_to_scalar<element::i64>},
         {"aten::is_grad_enabled", op::return_false_scalar},
         {"aten::is_nonzero", op::translate_is_nonzero},
         {"aten::isfinite", op::translate_1to1_match_1_inputs<opset10::IsFinite>},
@@ -782,6 +781,9 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.abs.default", op::translate_1to1_match_1_inputs<opset10::Abs>},
         {"aten.acos.default", op::translate_1to1_match_1_inputs_with_fp32_type_alignment<opset10::Acos>},
         {"aten.acosh.default", op::translate_1to1_match_1_inputs_with_fp32_type_alignment<opset10::Acosh>},
+        {"aten.adaptive_avg_pool1d.default", op::translate_adaptive_avg_pool1d},
+        {"aten.adaptive_avg_pool2d.default", op::translate_adaptive_avg_pool2d},
+        {"aten.adaptive_avg_pool3d.default", op::translate_adaptive_avg_pool3d},
         {"aten.adaptive_max_pool1d.default", op::translate_adaptive_max_pool1d_fx},
         {"aten.adaptive_max_pool2d.default", op::translate_adaptive_max_pool2d_fx},
         {"aten.adaptive_max_pool3d.default", op::translate_adaptive_max_pool3d_fx},
@@ -830,6 +832,9 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.clone.default", op::skip_node},  // ignore clone operators that are inserted by PyTorch autograd
         {"aten.col2im.default", op::translate_col2im},
         {"aten.constant_pad_nd.default", op::translate_constant_pad_nd_fx},
+        {"aten.conv1d.default", op::translate_convnd},
+        {"aten.conv2d.default", op::translate_convnd},
+        {"aten.conv3d.default", op::translate_convnd},
         {"aten.convolution.default", op::translate_convolution},
         {"aten.copy.default", op::translate_copy_fx},
         {"aten.copy_.default", op::translate_copy_},
@@ -892,6 +897,7 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.leaky_relu_.default", op::inplace_op<op::translate_leaky_relu_fx>},
         {"aten.lift_fresh_copy.default", op::skip_node},
         {"aten.linalg_vector_norm.default", op::translate_linalg_vector_norm},
+        {"aten.linear.default", op::translate_linear},
         {"aten.log.default", op::translate_1to1_match_1_inputs_with_fp32_type_alignment<opset10::Log>},
         {"aten.log_sigmoid_forward.default", op::translate_log_sigmoid_fx},
         {"aten.log10.default", op::translate_log10},
@@ -908,6 +914,7 @@ const std::unordered_map<std::string, CreatorFunction> get_supported_ops_fx() {
         {"aten.masked_fill_.Tensor", op::inplace_op<op::translate_masked_fill>},
         {"aten.max.default", op::translate_max},
         {"aten.max.dim", op::translate_max_dim_fx},
+        {"aten.max_pool2d.default", op::translate_max_pool2d_fx},
         {"aten.max_pool2d_with_indices.default", op::translate_max_pool2d_fx},
         {"aten.max_pool3d_with_indices.default", op::translate_max_pool3d_fx},
         {"aten.maximum.default", op::translate_maximum},

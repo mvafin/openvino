@@ -8,6 +8,7 @@
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/convert_like.hpp"
+#include "openvino/op/reshape.hpp"
 
 namespace ov {
 
@@ -158,6 +159,14 @@ OutputVector optional_out(const NodeContext& context) {
     }
     return translation_res;
 }
+
+template <ov::element::Type_t dtype>
+OutputVector convert_to_scalar(const NodeContext& context) {
+    num_inputs_check(context, 1, 1);
+    auto scalar_shape = context.mark_node(std::make_shared<ov::op::v0::Constant>(element::i32, Shape{}, 1));
+    auto x = context.mark_node(std::make_shared<ov::op::v1::Reshape>(context.get_input(0), scalar_shape, false));
+    return {context.mark_node(std::make_shared<ov::op::v0::Convert>(x, dtype))};
+};
 
 template <typename T>
 OutputVector translate_1to1_match_1_inputs(const NodeContext& context) {

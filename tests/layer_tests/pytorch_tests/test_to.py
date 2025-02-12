@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 import torch
 
-from openvino.frontend import OpConversionFailure
 from pytorch_layer_test_class import PytorchLayerTest
 
 
@@ -14,8 +13,6 @@ class TestAtenTo(PytorchLayerTest):
         return (np.random.uniform(low=0.0, high=50.0, size=input_shape),)
 
     def create_model(self, type, non_blocking=False, copy=False, memory_format=None):
-        import torch
-
         class aten_to(torch.nn.Module):
             def __init__(self, type, non_blocking=False, copy=False, memory_format=None):
                 super(aten_to, self).__init__()
@@ -106,8 +103,6 @@ class TestAtenToDevice(PytorchLayerTest):
         return (np.random.uniform(low=0.0, high=50.0, size=(3,)), np.random.uniform(low=0.0, high=50.0, size=(3,)))
 
     def create_model(self):
-        import torch
-
         class aten_to(torch.nn.Module):
 
             def forward(self, x, y):
@@ -130,8 +125,6 @@ class TestAtenToDeviceConst(PytorchLayerTest):
         return (np.random.uniform(low=0.0, high=50.0, size=(3,)),)
 
     def create_model(self):
-        import torch
-
         class aten_to(torch.nn.Module):
 
             def forward(self, x):
@@ -147,3 +140,23 @@ class TestAtenToDeviceConst(PytorchLayerTest):
     def test_aten_to_device_const(self, use_trace, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision,
                    ir_version, trace_model=use_trace)
+
+
+class TestAtenFloatIntBool(PytorchLayerTest):
+    def _prepare_input(self):
+        return (np.random.randn(1),)
+
+    def create_model(self):
+        class aten_to(torch.nn.Module):
+            def forward(self, x):
+                return torch.tensor(float(x)), torch.tensor(int(x)), torch.tensor(bool(x))
+
+        ref_net = None
+
+        return aten_to(), ref_net, ["aten::Bool", "aten::Float", "aten::Int"]
+
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    def test_aten_int_float_bool(self, ie_device, precision, ir_version):
+        self._test(*self.create_model(), ie_device, precision,
+                   ir_version, trace_model=False)
