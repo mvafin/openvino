@@ -464,6 +464,45 @@ def test_multiple_module_extension():
         "Parameter", "Sin", "Tan", "Add", "Result"]
 
 
+def test_inlined_extension():
+    from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder
+    import openvino as ov
+    import numpy as np
+
+    @ov.inlined_extension
+    def numpy_cos(x):
+        # numpy is not captured by tracing, so we use a custom extension
+        return torch.from_numpy(np.cos(x.numpy(force=True)))
+
+    class ModelWithModule(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.relu_module = torch.nn.ReLU()
+
+        def forward(self, x):
+            x = x.to(torch.float32)
+            return numpy_cos(x) + self.relu_module(x)
+
+    model = ModelWithModule()
+    decoder = TorchScriptPythonDecoder(model)
+
+    fem = FrontEndManager()
+    fe = fem.load_by_framework(framework="pytorch")
+    assert fe
+
+    input_model = fe.load(decoder)
+    assert input_model
+    converted_model = fe.convert(input_model)
+    assert converted_model
+    assert [n.get_type_name() for n in converted_model.get_ordered_ops()] == [
+        "Parameter", "Convert", "Convert", "Cos", "Constant", "Convert", "Relu", "Multiply", "Add", "Result"]
+
+    converted_model = ov.convert_model(model, example_input=(torch.randn(100),))
+    assert converted_model
+    assert [n.get_type_name() for n in converted_model.get_ordered_ops()] == [
+        "Parameter", "Sin", "Tan", "Add", "Result"]
+
+
 def test_pytorch_telemetry():
     from openvino.frontend import TelemetryExtension
     from openvino.frontend.pytorch.ts_decoder import TorchScriptPythonDecoder

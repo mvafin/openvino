@@ -1,10 +1,7 @@
 # Copyright (C) 2018-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# flake8: noqa
-# mypy: ignore-errors
-
-import inspect
+from typing import Any, Dict, List, Tuple, Type, Union
 from openvino.frontend.pytorch.ts_decoder import InlineConversionExtension
 from openvino.frontend.pytorch.utils import pt_to_ov_type_map
 import openvino as ov
@@ -13,13 +10,19 @@ import openvino as ov
 class ConstWrap:
     def __init__(self, value):
         self.value = value
+
     def __eq__(self, x):
         return self.value == x
+
     def __repr__(self):
         return f'ConstWrap({str(self.value)})'
 
 
-def unpack(packed, types, index=0):
+def unpack(
+    packed: Any,
+    types: Union[Type, Tuple[Type, ...]],
+    index: int = 0
+) -> Tuple[Tuple[Any, ...], Any, int]:
     unpacked_result = ()
     if isinstance(packed, tuple):
         packer_result = ()
@@ -73,17 +76,21 @@ def pack(unpacked, packer):
 
 global_counter_id = 0
 
+
 # makes a custom op class from a func and input/output signatures
 def make_custom_op_class(func, input_signature, output_signature, input_packer, output_packer):
-    import torch, numpy
+    import torch
+    import numpy
     global global_counter_id
+
     class InlinedCustomOp(ov.Op):
         class_type_info = ov.runtime.DiscreteTypeInfo("InlinedCustomOp", "extension")
 
         def __init__(self, *args):
             # TODO: What about attributes?
             super().__init__(self, args)
-            self.attrs = {"id": global_counter_id}  # `id` attribute distinguishes different instances of the same class, we need it because different instances may have different behaviour
+            # `id` attribute distinguishes different instances of the same class, we need it because different instances may have different behavior
+            self.attrs = {"id": global_counter_id}
             if output_signature == ():
                 # The operation doesn't have outputs, so we need to take extra care to avoid eliminating the op from the graph
                 self.get_rt_info()['__sink__'] = True
@@ -107,10 +114,12 @@ def make_custom_op_class(func, input_signature, output_signature, input_packer, 
             return True
 
         def validate_and_infer_types(self):
-            #TODO: Validate input signature
+            # TODO: Validate input signature
             if output_signature == ():
-                # Even when the original wrapped function doesn't give any return value, we need to set some output type to avoid eliminating the op from the graph
-                # Data type and shape doesn't matter, so we set default empty tensor of type u8
+                # Even when the original wrapped function doesn't give any
+                # return value, we need to set some output type to avoid
+                # eliminating the op from the graph. Data type and shape
+                # doesn't matter, so we set default empty tensor of type u8
                 self.set_output_type(0, ov.Type.u8, ov.PartialShape([0]))
             else:
                 for i, output in enumerate(output_signature):
@@ -125,7 +134,8 @@ def make_signature(args):
     return tuple((pt_to_ov_type_map[str(arg.dtype)], ov.PartialShape.dynamic(len(arg.shape))) for arg in args)
 
 
-# Returns a tuple of tuples (element_type, partial_shape) for each argument, flattening nested structures if needed, setting all dimensions dynamic preserving rank
+# Returns a tuple of tuples (element_type, partial_shape) for each argument,
+# flattening nested structures if needed, setting all dimensions dynamic preserving rank
 # Currently assumes that all input arguments are torch.Tensor objects
 def make_input_signature(args):
     return make_signature(args)
@@ -141,15 +151,18 @@ def make_output_signature(args):
 
 def make_trampoline_class(func, op, op_attrs):
     import torch
+
     class Trampoline(torch.autograd.Function):
         target_extension = InlineConversionExtension()  # this is a marker for this type of extension
 
         # This function defines how the operation behaves when called as a part of PyTorch model code in eager execution or while jit.trace
         @staticmethod
-        def forward(ctx, *call_args):  #TODO: what is `ctx`?
+        def forward(ctx, *call_args):
             if not op:
                 input_signature = make_input_signature(call_args)
-            # TODO: Try to trace `func` with the hope to obtain tracable shapes to build more precise `validate_and_infer_types` automatically (unlikely possible)
+            # TODO: Try to trace `func` with the hope to obtain tracable
+            # shapes to build more precise `validate_and_infer_types`
+            # automatically (unlikely possible)
             packed_args, packed_kwargs = pack(call_args, __class__.input_packer)
             assert isinstance(packed_args, tuple)
             assert isinstance(packed_kwargs, dict)
@@ -174,12 +187,13 @@ def make_trampoline_class(func, op, op_attrs):
         def pack_outputs(result):
             return pack(result, __class__.output_packer)
 
-        # This function defines how the operation is represented in OpenVINO model graph
         @staticmethod
         def convert(node_context):
+            """Defines how the operation is represented in OpenVINO model graph"""
             inputs = [node_context.get_input(i) for i in range(node_context.get_input_size())]
             node = __class__.op(*inputs, **op_attrs)
-            node.get_rt_info()['__torch_tuple_unpackable__'] = True  # to trigger prim::TupleUnpack bypass in PyTorch FrontEnd transformation
+            # to trigger prim::TupleUnpack bypass in PyTorch FrontEnd transformation
+            node.get_rt_info()['__torch_tuple_unpackable__'] = True
             return node.outputs()
 
     return Trampoline
@@ -189,7 +203,7 @@ def inlined_extension(*args, **op_attrs):
     def make_trampoline(func, op=None):
         def trampoline(*args, **kwargs):
             # Keep trampoline class creation at the point when the function is called to make each time a new trampoline.
-            # It is required because `func` is fused inside Trampoline class and can have different behaviour from call to call in PyTorch world even if
+            # It is required because `func` is fused inside Trampoline class and can have different behavior from call to call in PyTorch world even if
             # the same op is specified to wrap multiple different functions. It happens due to capturing a global context and values kept in non-tracable part of inputs.
             trampoline = make_trampoline_class(func, op, op_attrs)
             # flattening inputs and unflattening outputs should be visible for PyTorch jit tracer, so it should be called outside of `trampoline.apply`
