@@ -188,13 +188,10 @@ class TorchFXPythonDecoder (BaseFXDecoder):
                     found_shapes.append(self.get_found_shape(value))
                     found_types.append(self.get_found_dtype(value))
                     if found_shapes[-1] is not None:
-                        new_shape = []
-                        for dim in found_shapes[-1]:
-                            if (dynamic_shapes or type(dim).__name__ == "SymInt"):
-                                new_shape.append(-1)
-                            else:
-                                new_shape.append(dim)
-                        found_shapes[-1] = torch.Size(new_shape)
+                        if dynamic_shapes:
+                            found_shapes[-1] = torch.Size([-1] * len(found_shapes[-1]))
+                        else:
+                            found_shapes[-1] = torch.Size(found_shapes[-1])
 
                 elif value.op == "output":
                     # Instead of putting output index, refer to its target
@@ -273,9 +270,26 @@ class TorchFXPythonDecoder (BaseFXDecoder):
             return self._input_signature[index]
         return self.get_input_debug_name(index)
 
-    def get_input_shape(self, index):
+def get_input_shape(self, index):
         if index < len(self.input_shapes) and self.input_shapes[index] is not None:
-            return PartialShape(self.input_shapes[index])
+            shape = []
+            for dim in self.input_shapes[index]:
+                if type(dim).__name__ == "SymInt":
+                    shape_env = dim.node.shape_env
+                    expr = dim.node.expr
+                    dim_range = shape_env.var_to_range[expr]
+                    try:
+                        lower = int(dim_range.lower)
+                    except AttributeError:
+                        lower = -1
+                    try:
+                        upper = int(dim_range.upper)
+                    except AttributeError:
+                        upper = -1
+                    shape.append(Dimension(lower, upper))
+                else:
+                    shape.append(dim)
+            return PartialShape(shape)
         _input = self._raw_input(index)
         return self.get_shape_for_value(_input)
 
