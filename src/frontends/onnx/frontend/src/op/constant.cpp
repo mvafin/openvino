@@ -109,8 +109,13 @@ std::vector<int64_t> get_absolute_indices(const Tensor& indices_tensor, const ov
 
 namespace opset_1 {
 ov::OutputVector constant(const ov::frontend::onnx::Node& node) {
-    auto tensor = node.get_attribute_value<Tensor>("value");
-    return {tensor.get_ov_constant()};
+    if (!node.has_decoder()) {
+        auto tensor = node.get_attribute_value<Tensor>("value");
+        return {tensor.get_ov_constant()};
+    } else {
+        auto tensor = node.get_attribute_value<ov::Output<ov::Node>>("value");
+        return {tensor};
+    }
 }
 
 ONNX_OP("Constant", OPSET_RANGE(1, 12), ai_onnx::opset_1::constant);
@@ -245,8 +250,8 @@ ov::OutputVector constant(const ov::frontend::onnx::Node& node) {
         return {get_dense_tensor_as_constant(absolute_indices, values_tensor, shape)};
     }
     FRONT_END_GENERAL_CHECK(node.has_attribute("value"), "Constant doesn't have a required attribute \"value\"");
-    auto tensor = node.get_attribute_value<Tensor>("value");
-    return {tensor.get_ov_constant()};
+    auto constant = node.get_attribute_value<ov::Output<ov::Node>>("value");
+    return {constant};
 }
 }  // namespace detail
 ov::OutputVector constant(const ov::frontend::onnx::Node& node) {

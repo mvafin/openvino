@@ -10,7 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include "exceptions.hpp"
 #include "onnx_common/utils.hpp"
 #include "openvino/core/shape.hpp"
 #include "openvino/core/type/element_iterator.hpp"
@@ -47,19 +46,6 @@ inline std::vector<T> __get_data(const Container& container) {
 #    pragma warning(disable : 4244)
 #endif
     return std::vector<T>(std::begin(container), std::end(container));
-#if defined(_MSC_VER)
-#    pragma warning(pop)
-#endif
-}
-
-template <typename T, typename SRC>
-inline std::vector<T> __get_data(const void* data, const size_t data_size) {
-#if defined(_MSC_VER)
-#    pragma warning(push)
-#    pragma warning(disable : 4267)
-#    pragma warning(disable : 4244)
-#endif
-    return std::vector<T>(static_cast<const SRC*>(data), static_cast<const SRC*>(data) + data_size);
 #if defined(_MSC_VER)
 #    pragma warning(pop)
 #endif
@@ -174,7 +160,6 @@ public:
     Tensor() = delete;
     Tensor(const TensorProto& tensor, const std::string& model_dir, detail::MappedMemoryHandles mmap_cache)
         : m_tensor_proto{&tensor},
-          m_tensor_place(nullptr),
           m_shape{std::begin(tensor.dims()), std::end(tensor.dims())},
           m_model_dir{model_dir},
           m_mmap_cache{mmap_cache} {
@@ -185,8 +170,6 @@ public:
             m_shape = ov::Shape{};
         }
     }
-
-    Tensor(const std::shared_ptr<TensorONNXPlace>& tensor_place);
 
     Tensor(const Tensor&) = default;
     Tensor(Tensor&&) = default;
@@ -206,12 +189,6 @@ public:
     }
 
     const std::string get_name() const {
-        if (m_tensor_place != nullptr) {
-            const auto& names = m_tensor_place->get_names();
-            if (names.size() <= 0)
-                FRONT_END_THROW("Tensor has no specified name");
-            return names[0];
-        }
         if (!m_tensor_proto->has_name()) {
             FRONT_END_THROW("Tensor has no specified name");
         }
@@ -219,9 +196,6 @@ public:
     }
 
     Type get_type() const {
-        if (m_tensor_place != nullptr) {
-            FRONT_END_NOT_IMPLEMENTED(get_type);
-        }
         if (!m_tensor_proto->has_data_type()) {
             FRONT_END_THROW("Tensor has no specified data type");
         }
@@ -229,9 +203,6 @@ public:
     }
 
     const ov::element::Type& get_ov_type() const {
-        if (m_tensor_place != nullptr) {
-            return m_tensor_place->get_element_type();
-        }
         if (!m_tensor_proto->has_data_type()) {
             FRONT_END_THROW("Tensor has no specified data type");
         }
@@ -290,20 +261,13 @@ public:
 
 private:
     bool has_external_data() const {
-        if (m_tensor_place != nullptr) {
-            return m_tensor_place->get_data_location() != nullptr;
-        }
         return m_tensor_proto->has_data_location() &&
                m_tensor_proto->data_location() == TensorProto_DataLocation::TensorProto_DataLocation_EXTERNAL;
     }
 
     template <typename T>
     std::vector<T> get_external_data() const {
-        const auto ext_data = m_tensor_place != nullptr
-                                  ? detail::TensorExternalData(*m_tensor_place->get_data_location(),
-                                                               reinterpret_cast<size_t>(m_tensor_place->get_data()),
-                                                               m_tensor_place->get_data_size())
-                                  : detail::TensorExternalData(*m_tensor_proto);
+        const auto ext_data = detail::TensorExternalData(*m_tensor_proto);
         std::shared_ptr<ov::AlignedBuffer> buffer = nullptr;
         if (ext_data.data_location() == detail::ORT_MEM_ADDR) {
             buffer = ext_data.load_external_mem_data();
@@ -318,9 +282,6 @@ private:
     const void* get_data_ptr() const {
         if (has_external_data()) {
             FRONT_END_THROW("Unexpected usage of method for externally stored data");
-        }
-        if (m_tensor_place != nullptr) {
-            return m_tensor_place->get_data();
         }
 
         if (m_tensor_proto->has_raw_data()) {
@@ -342,14 +303,6 @@ private:
     }
 
     size_t get_data_size() const {
-        if (m_tensor_place != nullptr) {
-            if (m_tensor_place->is_raw()) {
-                return m_tensor_place->get_data_size() /
-                       get_onnx_data_size(ov_to_onnx_data_type(m_tensor_place->get_element_type()));
-            } else {
-                return m_tensor_place->get_data_size();
-            }
-        }
         if (has_external_data()) {
             const auto ext_data = detail::TensorExternalData(*m_tensor_proto);
             return ext_data.size() / get_onnx_data_size(m_tensor_proto->data_type());
@@ -390,7 +343,6 @@ private:
     }
 
     const TensorProto* m_tensor_proto;
-    std::shared_ptr<TensorONNXPlace> m_tensor_place;
     ov::Shape m_shape;
     std::string m_model_dir;
     detail::MappedMemoryHandles m_mmap_cache;

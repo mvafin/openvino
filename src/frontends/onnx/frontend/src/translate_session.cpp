@@ -5,6 +5,7 @@
 #include "translate_session.hpp"
 
 #include "core/null_node.hpp"
+#include "exceptions.hpp"
 #include "input_model.hpp"
 #include "onnx_framework_node.hpp"
 #include "openvino/frontend/onnx/decoder.hpp"

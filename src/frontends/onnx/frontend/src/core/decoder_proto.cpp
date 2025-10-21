@@ -10,8 +10,12 @@
 #include <openvino/frontend/graph_iterator.hpp>
 
 #include "graph_iterator_proto.hpp"
+#include "openvino/core/type/element_iterator.hpp"
 #include "openvino/frontend/onnx/graph_iterator.hpp"
+#include "openvino/op/constant.hpp"
 #include "openvino/util/wstring_convert_util.hpp"
+#include "sparse_tensor.hpp"
+#include "tensor.hpp"
 
 namespace ov {
 namespace frontend {
@@ -62,22 +66,25 @@ ov::Any DecoderProto::get_attribute(const std::string& name) const {
                 throw std::runtime_error("Attribute doesn't have value");
             break;
         case AttributeProto_AttributeType::AttributeProto_AttributeType_TENSOR:
-            return static_cast<ov::frontend::onnx::DecoderBase::Ptr>(
-                std::make_shared<DecoderProtoTensor>(&attr.t(), m_parent, 0, 0));
+            if (attr.has_t()) {
+                const auto& tensor_proto = attr.t();
+                auto tensor =
+                    ov::frontend::onnx::Tensor(tensor_proto, m_parent->get_model_dir(), m_parent->get_mmap_cache());
+                return tensor.get_ov_constant()->output(0);
+            } else {
+                throw std::runtime_error("Attribute doesn't have value");
+            }
+            break;
         case AttributeProto_AttributeType::AttributeProto_AttributeType_SPARSE_TENSOR: {
-            ov::frontend::onnx::SparseTensorInfo sparse_tensor_info{};
-            auto& sparse_tensor = attr.sparse_tensor();
-            sparse_tensor_info.m_partial_shape =
-                ov::PartialShape{std::vector<int64_t>(sparse_tensor.dims().begin(), sparse_tensor.dims().end())};
-            if (sparse_tensor.has_values()) {
-                sparse_tensor_info.m_values = static_cast<ov::frontend::onnx::DecoderBase::Ptr>(
-                    std::make_shared<DecoderProtoTensor>(&sparse_tensor.values(), m_parent, 0, 0));
+            if (attr.has_sparse_tensor()) {
+                auto& sparse_tensor = attr.sparse_tensor();
+                auto tensor = ov::frontend::onnx::SparseTensor(sparse_tensor,
+                                                               m_parent->get_model_dir(),
+                                                               m_parent->get_mmap_cache());
+                return tensor.get_values().get_ov_constant()->output(0);
+            } else {
+                throw std::runtime_error("Attribute doesn't have value");
             }
-            if (sparse_tensor.has_indices()) {
-                sparse_tensor_info.m_indices = static_cast<ov::frontend::onnx::DecoderBase::Ptr>(
-                    std::make_shared<DecoderProtoTensor>(&sparse_tensor.indices(), m_parent, 0, 0));
-            }
-            return sparse_tensor_info;
         }
         default:
             throw std::runtime_error("Unsupported attribute type " +

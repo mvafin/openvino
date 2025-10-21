@@ -19,8 +19,12 @@ namespace opset_1 {
 ov::OutputVector constant_of_shape(const ov::frontend::onnx::Node& node) {
     ov::Output<ov::Node> constant_value;
     if (node.has_attribute("value")) {
-        auto value_tensor = node.get_attribute_value<Tensor>("value");
-        constant_value = value_tensor.get_ov_constant();
+        if (!node.has_decoder()) {
+            auto value_tensor = node.get_attribute_value<Tensor>("value");
+            constant_value = value_tensor.get_ov_constant();
+        } else {
+            constant_value = node.get_attribute_value<ov::Output<ov::Node>>("value");
+        }
         constant_value = reshape::interpret_as_scalar(constant_value);
     } else {
         constant_value = v0::Constant::create(ov::element::f32, {}, {0});

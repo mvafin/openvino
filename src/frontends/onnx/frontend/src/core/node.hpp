@@ -199,6 +199,9 @@ template <>
 Tensor Node::get_attribute_value(const std::string& name) const;
 
 template <>
+ov::Output<ov::Node> Node::get_attribute_value(const std::string& name) const;
+
+template <>
 SparseTensor Node::get_attribute_value(const std::string& name) const;
 
 template <>

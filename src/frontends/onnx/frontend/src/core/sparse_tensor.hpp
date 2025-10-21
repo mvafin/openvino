@@ -33,7 +33,7 @@ public:
             m_shape = ov::Shape{};
         }
     }
-    SparseTensor(const std::shared_ptr<TensorONNXPlace>& values,
+    /*SparseTensor(const std::shared_ptr<TensorONNXPlace>& values,
                  const std::shared_ptr<TensorONNXPlace>& indices,
                  const ov::PartialShape& shape)
         : m_values{values},
@@ -45,7 +45,7 @@ public:
             // In OpenVINO a scalar is represented with ov::Shape{} and thus this replacement.
             m_shape = ov::Shape{};
         }
-    }
+    }*/
 
     SparseTensor(const SparseTensor&) = default;
     SparseTensor(SparseTensor&&) = default;
