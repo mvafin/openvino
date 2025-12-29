@@ -88,7 +88,6 @@ inline bool is_graph_iterator_enabled() {
     throw std::runtime_error(std::string{"Unknown value for ONNX_ITERATOR environment variable: '"} + env_value +
                              "'. Expected 1 (enable) or 0 (disable).");
 }
-
 }  // namespace tests
 }  // namespace onnx
 }  // namespace frontend
