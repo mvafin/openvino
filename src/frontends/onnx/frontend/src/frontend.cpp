@@ -65,7 +65,7 @@ bool is_graph_iterator_enabled() {
     value.erase(std::remove_if(value.begin(),
                                value.end(),
                                [](unsigned char ch) {
-                                   return std::isspace(ch);
+                                   return std::isspace(ch) != 0;
                                }),
                 value.end());
     // Convert to lowercase
