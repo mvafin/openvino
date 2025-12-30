@@ -10,10 +10,6 @@
 #include <fstream>
 #include <iostream>
 #include <map>
-#include <openvino/frontend/exception.hpp>
-#include <openvino/frontend/graph_iterator.hpp>
-#include <openvino/frontend/input_model.hpp>
-#include <openvino/openvino.hpp>
 #include <system_error>
 #include <unordered_map>
 
@@ -22,6 +18,10 @@
 #include "common_test_utils/test_case.hpp"
 #include "load_from.hpp"
 #include "onnx_utils.hpp"
+#include "openvino/frontend/exception.hpp"
+#include "openvino/frontend/graph_iterator.hpp"
+#include "openvino/frontend/input_model.hpp"
+#include "openvino/openvino.hpp"
 #include "utils.hpp"
 
 using ::ONNX_NAMESPACE::ModelProto;

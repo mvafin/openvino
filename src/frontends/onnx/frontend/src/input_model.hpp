@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include <editor.hpp>
 #include <filesystem>
 #include <fstream>
 
