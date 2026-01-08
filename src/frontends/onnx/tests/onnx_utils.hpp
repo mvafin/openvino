@@ -59,19 +59,25 @@ inline bool is_graph_iterator_enabled() {
 
     std::string value(env_value);
     // Remove whitespace
-    value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char ch) {
-                    return std::isspace(ch);
-                }),
+    value.erase(std::remove_if(value.begin(),
+                               value.end(),
+                               [](unsigned char ch) {
+                                   return std::isspace(ch);
+                               }),
                 value.end());
     // Convert to lowercase
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
 
-    static const std::unordered_map<std::string, bool> valid_values = {
-        {"1", true},   {"true", true},  {"on", true},      {"enable", true},
-        {"0", false},  {"false", false}, {"off", false},    {"disable", false},
-    };
+    static const std::unordered_map<std::string, bool> valid_values = {{"1", true},
+                                                                       {"true", true},
+                                                                       {"on", true},
+                                                                       {"enable", true},
+                                                                       {"0", false},
+                                                                       {"false", false},
+                                                                       {"off", false},
+                                                                       {"disable", false}};
 
     auto it = valid_values.find(value);
     if (it != valid_values.end()) {
