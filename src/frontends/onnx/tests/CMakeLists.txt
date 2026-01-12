@@ -86,8 +86,6 @@ set(SRC
     onnx_ops_registration.cpp
     onnx_reader_external_data.cpp
     skip_tests_config.cpp
-    ../frontend/src/core/graph_iterator_proto.cpp
-    ../frontend/src/core/decoder_proto.cpp
 )
 
 foreach(src IN LISTS SRC MULTI_TEST_SRC)
@@ -150,6 +148,7 @@ target_link_libraries(ov_onnx_frontend_tests PRIVATE
     gtest_main_manifest
     frontend_shared_test_classes
     openvino::frontend::onnx
+    openvino_onnx_decoder
     func_test_utils
 )
 

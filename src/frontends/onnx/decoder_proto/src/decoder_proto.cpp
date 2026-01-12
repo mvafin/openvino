@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "decoder_proto.hpp"
+#include "openvino/frontend/onnx/decoder_proto.hpp"
 
 #include <onnx/onnx_pb.h>
 
 #include <fstream>
 
-#include "graph_iterator_proto.hpp"
+#include "openvino/frontend/onnx/graph_iterator_proto.hpp"
 #include "openvino/frontend/graph_iterator.hpp"
 #include "openvino/frontend/onnx/graph_iterator.hpp"
 #include "openvino/util/wstring_convert_util.hpp"
