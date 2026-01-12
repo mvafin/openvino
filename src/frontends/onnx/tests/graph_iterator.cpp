@@ -17,7 +17,7 @@
 #include <system_error>
 #include <unordered_map>
 
-#include "../frontend/src/core/graph_iterator_proto.hpp"
+#include "openvino/frontend/onnx/graph_iterator_proto.hpp"
 #include "common_test_utils/common_utils.hpp"
 #include "common_test_utils/test_case.hpp"
 #include "load_from.hpp"

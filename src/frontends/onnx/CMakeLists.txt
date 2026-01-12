@@ -3,6 +3,7 @@
 #
 
 add_subdirectory(onnx_common)
+add_subdirectory(decoder_proto)
 add_subdirectory(frontend)
 
 if(Python3_Interpreter_FOUND)

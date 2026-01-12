@@ -4,10 +4,10 @@
 #pragma once
 #include <onnx/onnx_pb.h>
 
-#include "graph_iterator_proto.hpp"
 #include "openvino/frontend/graph_iterator.hpp"
 #include "openvino/frontend/onnx/decoder.hpp"
 #include "openvino/frontend/onnx/graph_iterator.hpp"
+#include "openvino/frontend/onnx/graph_iterator_proto.hpp"
 #include "openvino/util/wstring_convert_util.hpp"
 
 using ::ONNX_NAMESPACE::AttributeProto_AttributeType;
