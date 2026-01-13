@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <onnx/onnx_pb.h>
 
 #include "openvino/runtime/aligned_buffer.hpp"
@@ -56,6 +57,13 @@ public:
     /// \return     State of TensorExternalData as string representation
     std::string to_string() const;
 
+    /// \brief      Validates that referenced external data is accessible and satisfies
+    ///             basic bounds requirements without reading the payload.
+    ///
+    /// \param[in]  model_dir  Directory that contains the ONNX model file. May be empty
+    ///                         when the model path is unknown.
+    void validate(const std::string& model_dir) const;
+
     /// \brief      Object contains a data length after construction. Method allows read-only access to this
     ///             information.
     ///
@@ -77,6 +85,8 @@ private:
     uint64_t m_offset = 0;
     uint64_t m_data_length = 0;
     std::string m_sha1_digest{};
+
+    std::filesystem::path compose_full_path(const std::string& model_dir) const;
 };
 
 /*
