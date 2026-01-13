@@ -24,7 +24,6 @@ target_link_libraries(${TARGET_NAME}
     PUBLIC
         openvino::runtime
         openvino::util
-        openvino::runtime::dev
         onnx
 )
 

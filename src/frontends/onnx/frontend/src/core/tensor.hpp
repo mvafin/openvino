@@ -7,7 +7,6 @@
 #include <onnx/onnx_pb.h>
 
 #include <algorithm>
-#include <filesystem>
 #include <utility>
 #include <vector>
 
@@ -17,10 +16,10 @@
 #include "openvino/core/type/element_iterator.hpp"
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/frontend/exception.hpp"
-#include "openvino/runtime/aligned_buffer.hpp"
+#include "openvino/runtime/tensor.hpp"
 #include "place.hpp"
 #include "utils/common.hpp"
-#include "utils/tensor_external_data.hpp"
+#include "openvino/frontend/onnx/tensor_external_data.hpp"
 
 using namespace ov::frontend::onnx::common;
 
@@ -71,10 +70,10 @@ public:
                     const ov::PartialShape& pshape,
                     ov::element::Type type,
                     const std::vector<std::string>& names,
-                    const std::shared_ptr<ov::AlignedBuffer>& buffer)
+                                        const ov::Tensor& tensor = {})
         : ov::frontend::onnx::TensorPlace(input_model, pshape, type, names),
           m_input_model(input_model),
-          m_buffer(buffer) {};
+                    m_tensor(tensor) {};
 
     void translate(ov::Output<ov::Node>& output);
 
@@ -99,18 +98,25 @@ public:
         m_output_idx = idx;
     }
 
-    std::shared_ptr<ov::AlignedBuffer> get_buffer() const {
-        return m_buffer;
+    const ov::Tensor& get_tensor() const {
+        return m_tensor;
+    }
+
+    void set_tensor(const ov::Tensor& tensor) {
+        m_tensor = tensor;
+    }
+
+    bool has_tensor_data() const {
+        return static_cast<bool>(m_tensor);
     }
 
     detail::MappedMemoryHandles get_mmap_cache();
     detail::LocalStreamHandles get_stream_cache();
-    std::filesystem::path get_model_dir() const;
 
 protected:
     int64_t m_input_idx = -1, m_output_idx = -1;
     const ov::frontend::InputModel& m_input_model;
-    std::shared_ptr<ov::AlignedBuffer> m_buffer;
+    ov::Tensor m_tensor;
 };
 
 class Tensor {
@@ -140,7 +146,7 @@ public:
     };
 
     Tensor() = delete;
-    Tensor(const TensorProto& tensor, const std::filesystem::path& model_dir, detail::MappedMemoryHandles mmap_cache)
+    Tensor(const TensorProto& tensor, const std::string& model_dir, detail::MappedMemoryHandles mmap_cache)
         : m_tensor_proto{&tensor},
           m_tensor_place(nullptr),
           m_shape{std::begin(tensor.dims()), std::end(tensor.dims())},
@@ -273,16 +279,12 @@ private:
         if (m_tensor_place != nullptr) {
             FRONT_END_NOT_IMPLEMENTED(get_external_data);
         }
-        const auto ext_data = detail::TensorExternalData(*m_tensor_proto);
-        std::shared_ptr<ov::AlignedBuffer> buffer = nullptr;
-        if (ext_data.data_location() == detail::ORT_MEM_ADDR) {
-            buffer = ext_data.load_external_mem_data();
-        } else if (m_mmap_cache) {
-            buffer = ext_data.load_external_mmap_data(m_model_dir.string(), m_mmap_cache);
-        } else {
-            buffer = ext_data.load_external_data(m_model_dir.string());
+        const auto blob = load_external_blob();
+        if (blob.length == 0 || blob.data == nullptr) {
+            return {};
         }
-        return std::vector<T>(buffer->get_ptr<T>(), buffer->get_ptr<T>() + (buffer->size() / sizeof(T)));
+        const auto* begin = reinterpret_cast<const T*>(blob.data);
+        return std::vector<T>(begin, begin + (blob.length / sizeof(T)));
     }
 
     const void* get_data_ptr() const {
@@ -315,7 +317,11 @@ private:
 
     size_t get_data_size() const {
         if (m_tensor_place != nullptr) {
-            FRONT_END_NOT_IMPLEMENTED(get_data_size);
+            const auto& tensor = m_tensor_place->get_tensor();
+            if (tensor) {
+                return tensor.get_size();
+            }
+            return ov::shape_size(m_shape);
         }
         if (has_external_data()) {
             const auto ext_data = detail::TensorExternalData(*m_tensor_proto);
@@ -373,8 +379,10 @@ private:
     const TensorProto* m_tensor_proto;
     std::shared_ptr<TensorONNXPlace> m_tensor_place;
     ov::Shape m_shape;
-    std::filesystem::path m_model_dir;
+    std::string m_model_dir;
     detail::MappedMemoryHandles m_mmap_cache;
+
+    detail::ExternalDataBlob load_external_blob() const;
 };
 
 inline std::ostream& operator<<(std::ostream& outs, const Tensor& tensor) {

@@ -824,7 +824,7 @@ Tensor Node::get_attribute_value(const std::string& name) const {
             tensor_meta_info.m_partial_shape,
             tensor_meta_info.m_element_type,
             std::vector<std::string>{*tensor_meta_info.m_tensor_name},
-            tensor_meta_info.m_buffer);
+            tensor_meta_info.m_tensor);
         return {tensor_place};
     }
     FRONT_END_NOT_IMPLEMENTED(get_attribute_value);
@@ -850,7 +850,7 @@ SparseTensor Node::get_attribute_value(const std::string& name) const {
             values_meta_info.m_partial_shape,
             values_meta_info.m_element_type,
             std::vector<std::string>{*values_meta_info.m_tensor_name},
-            values_meta_info.m_buffer);
+            values_meta_info.m_tensor);
 
         auto indices_decoder =
             std::dynamic_pointer_cast<ov::frontend::onnx::DecoderBaseTensor>(sparse_tensor_info.m_indices);
@@ -860,7 +860,7 @@ SparseTensor Node::get_attribute_value(const std::string& name) const {
             indices_meta_info.m_partial_shape,
             indices_meta_info.m_element_type,
             std::vector<std::string>{*indices_meta_info.m_tensor_name},
-            indices_meta_info.m_buffer);
+            indices_meta_info.m_tensor);
         return {values_place, indices_place, sparse_tensor_info.m_partial_shape};
     }
     FRONT_END_NOT_IMPLEMENTED(get_attribute_value);

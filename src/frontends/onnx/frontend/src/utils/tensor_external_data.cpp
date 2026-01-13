@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "utils/tensor_external_data.hpp"
+#include "openvino/frontend/onnx/tensor_external_data.hpp"
 
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <cstring>
+#include <vector>
 
-#include "exceptions.hpp"
+#include "openvino/frontend/onnx/decoder_exceptions.hpp"
 #include "openvino/util/file_util.hpp"
 #include "openvino/util/log.hpp"
 
@@ -40,32 +42,34 @@ TensorExternalData::TensorExternalData(const std::string& location, size_t offse
     m_data_length = size;
 }
 
-Buffer<ov::MappedMemory> TensorExternalData::load_external_mmap_data(const std::string& model_dir,
-                                                                     MappedMemoryHandles cache) const {
-    const auto full_path = model_dir.empty() ? ov::util::make_path(m_data_location)
-                                             : ov::util::make_path(ov::util::path_join({model_dir, m_data_location}));
+ExternalDataBlob TensorExternalData::load_external_mmap_data(const std::string& model_dir,
+                                                            MappedMemoryHandles cache) const {
+    ExternalDataBlob blob{};
+    const auto full_path = compose_full_path(model_dir);
+    const auto full_path_str = ov::util::path_to_string(full_path);
     const int64_t file_size = ov::util::file_size(full_path);
     if (file_size <= 0 || m_offset + m_data_length > static_cast<uint64_t>(file_size)) {
         throw error::invalid_external_data{*this};
     }
-    auto cached_mapped_memory = cache->find(ov::util::path_to_string(full_path));
+    auto cached_mapped_memory = cache->find(full_path_str);
     std::shared_ptr<ov::MappedMemory> mapped_memory;
     if (cached_mapped_memory != cache->end()) {
         mapped_memory = cached_mapped_memory->second;
     } else {
-        mapped_memory = ov::load_mmap_object(full_path);
-        (*cache)[ov::util::path_to_string(full_path)] = mapped_memory;
+        mapped_memory = ov::load_mmap_object(full_path_str);
+        (*cache)[full_path_str] = mapped_memory;
     }
     if (m_data_length > mapped_memory->size() || mapped_memory->size() == 0) {
         throw error::invalid_external_data{*this};
     }
-    return std::make_shared<ov::SharedBuffer<std::shared_ptr<ov::MappedMemory>>>(
-        mapped_memory->data() + m_offset,
-        m_data_length > 0 ? m_data_length : static_cast<uint64_t>(file_size) - m_offset,
-        mapped_memory);
+    blob.owner = mapped_memory;
+    blob.data = mapped_memory->data() + m_offset;
+    blob.length = m_data_length > 0 ? m_data_length : static_cast<uint64_t>(file_size) - m_offset;
+    return blob;
 }
 
-Buffer<ov::AlignedBuffer> TensorExternalData::load_external_data(const std::string& model_dir) const {
+ExternalDataBlob TensorExternalData::load_external_data(const std::string& model_dir) const {
+    ExternalDataBlob blob{};
     const auto full_path = compose_full_path(model_dir);
     std::ifstream external_data_stream(full_path, std::ios::binary | std::ios::in | std::ios::ate);
 
@@ -82,18 +86,19 @@ Buffer<ov::AlignedBuffer> TensorExternalData::load_external_data(const std::stri
     // default value of m_offset is 0
     external_data_stream.seekg(m_offset, std::ios::beg);
 
-    auto read_data = std::make_shared<ov::AlignedBuffer>(read_data_length);
-    external_data_stream.read(read_data->get_ptr<char>(), read_data_length);
+    auto read_data = std::make_shared<std::vector<char>>(read_data_length);
+    if (read_data_length > 0) {
+        external_data_stream.read(read_data->data(), read_data_length);
+    }
     external_data_stream.close();
-
-    auto buffer = std::make_shared<ov::SharedBuffer<std::shared_ptr<ov::AlignedBuffer>>>(read_data->get_ptr<char>(),
-                                                                                         read_data->size(),
-                                                                                         read_data);
-
-    return buffer;
+    blob.owner = read_data;
+    blob.data = read_data->data();
+    blob.length = read_data_length;
+    return blob;
 }
 
-Buffer<ov::AlignedBuffer> TensorExternalData::load_external_mem_data() const {
+ExternalDataBlob TensorExternalData::load_external_mem_data() const {
+    ExternalDataBlob blob{};
     if (m_data_location != ORT_MEM_ADDR) {
         throw error::invalid_external_data{*this};
     }
@@ -104,13 +109,14 @@ Buffer<ov::AlignedBuffer> TensorExternalData::load_external_mem_data() const {
         throw error::invalid_external_data{*this};
     }
     char* addr_ptr = reinterpret_cast<char*>(m_offset);
-    auto aligned_memory = std::make_shared<ov::AlignedBuffer>(m_data_length);
+    auto owned_memory = std::make_shared<std::vector<char>>(m_data_length);
     if (m_data_length > 0) {
-        std::memcpy(aligned_memory->get_ptr<char>(), addr_ptr, m_data_length);
+        std::memcpy(owned_memory->data(), addr_ptr, m_data_length);
     }
-    return std::make_shared<ov::SharedBuffer<std::shared_ptr<ov::AlignedBuffer>>>(aligned_memory->get_ptr<char>(),
-                                                                                  aligned_memory->size(),
-                                                                                  aligned_memory);
+    blob.owner = owned_memory;
+    blob.data = owned_memory->data();
+    blob.length = m_data_length;
+    return blob;
 }
 
 std::string TensorExternalData::to_string() const {
