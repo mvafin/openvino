@@ -7,7 +7,7 @@
 #include "openvino/core/type/element_type.hpp"
 #include "openvino/frontend/decoder.hpp"
 #include "openvino/frontend/onnx/visibility.hpp"
-#include "openvino/runtime/aligned_buffer.hpp"
+#include "openvino/runtime/tensor.hpp"
 
 namespace ov {
 namespace frontend {
@@ -16,8 +16,8 @@ namespace onnx {
 struct ONNX_FRONTEND_API TensorMetaInfo {
     ov::PartialShape m_partial_shape;
     ov::element::Type m_element_type;
-    std::shared_ptr<ov::AlignedBuffer> m_buffer;
     const std::string* m_tensor_name;
+    ov::Tensor m_tensor;
 };
 
 class ONNX_FRONTEND_API DecoderBase : public ov::frontend::DecoderBase {

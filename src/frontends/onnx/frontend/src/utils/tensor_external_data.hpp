@@ -5,10 +5,9 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <onnx/onnx_pb.h>
 
-#include "openvino/runtime/aligned_buffer.hpp"
-#include "openvino/runtime/shared_buffer.hpp"
 #include "openvino/util/mmap_object.hpp"
 
 namespace ov {
@@ -16,10 +15,14 @@ namespace frontend {
 namespace onnx {
 namespace detail {
 using ::ONNX_NAMESPACE::TensorProto;
-template <class T>
-using Buffer = std::shared_ptr<ov::SharedBuffer<std::shared_ptr<T>>>;
 using MappedMemoryHandles = std::shared_ptr<std::map<std::string, std::shared_ptr<ov::MappedMemory>>>;
 using LocalStreamHandles = std::shared_ptr<std::map<std::string, std::shared_ptr<std::ifstream>>>;
+
+struct ExternalDataBlob {
+    std::shared_ptr<void> owner;
+    const char* data = nullptr;
+    size_t length = 0;
+};
 /// \brief  Helper class used to load tensor data from external files
 class TensorExternalData {
 public:
@@ -32,8 +35,8 @@ public:
     /// \note       If reading data from external files fails,
     ///             the invalid_external_data exception is thrown.
     ///
-    /// \return     External binary data loaded into the SharedBuffer
-    Buffer<ov::AlignedBuffer> load_external_data(const std::string& model_dir) const;
+    /// \return     External binary data description
+    ExternalDataBlob load_external_data(const std::string& model_dir) const;
 
     /// \brief      Map (mmap for lin, MapViewOfFile for win) external data from tensor passed to constructor
     ///
@@ -41,16 +44,16 @@ public:
     /// \note       If reading data from external files fails,
     ///             the invalid_external_data exception is thrown.
     ///
-    /// \return     External binary data loaded into the SharedBuffer
-    Buffer<ov::MappedMemory> load_external_mmap_data(const std::string& model_dir, MappedMemoryHandles cache) const;
+    /// \return     External binary data description
+    ExternalDataBlob load_external_mmap_data(const std::string& model_dir, MappedMemoryHandles cache) const;
 
     /// \brief      Load external data from existing shared memory when m_data_location is ORT_MEM_ADDR
     ///
     /// \note       If reading data from existing shared memory fails,
     ///             the invalid_external_data exception is thrown.
     ///
-    /// \return     External binary data loaded into the SharedBuffer
-    Buffer<ov::AlignedBuffer> load_external_mem_data() const;
+    /// \return     External binary data description
+    ExternalDataBlob load_external_mem_data() const;
 
     /// \brief      Represets parameter of external data as string
     ///

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -16,8 +17,11 @@
 #include <unordered_set>
 #include <vector>
 
-#include "decoder_proto.hpp"
+#include "openvino/frontend/onnx/decoder_proto.hpp"
+#include "openvino/core/shape.hpp"
+#include "openvino/core/type/bfloat16.hpp"
 #include "openvino/core/type/element_iterator.hpp"
+#include "openvino/runtime/tensor.hpp"
 #include "openvino/frontend/graph_iterator.hpp"
 #include "openvino/frontend/onnx/graph_iterator.hpp"
 #include "openvino/util/file_util.hpp"
@@ -91,6 +95,18 @@ void fixup_legacy_nodes(::ONNX_NAMESPACE::ModelProto& model_proto) {
         }
     }
 }
+
+bool is_nibble_element(const ov::element::Type& type) {
+    switch (static_cast<ov::element::Type_t>(type)) {
+    case ov::element::Type_t::u4:
+    case ov::element::Type_t::i4:
+    case ov::element::Type_t::nf4:
+    case ov::element::Type_t::f4e2m1:
+        return true;
+    default:
+        return false;
+    }
+}
 }  // namespace
 
 namespace ov {
@@ -102,33 +118,91 @@ bool extract_tensor_external_data(ov::frontend::onnx::TensorMetaInfo& tensor_met
                                   const TensorProto* tensor_info,
                                   GraphIteratorProto* graph_iterator) {
     const auto ext_data = detail::TensorExternalData(*tensor_info);
+    detail::ExternalDataBlob blob{};
     if (ext_data.data_location() == detail::ORT_MEM_ADDR) {
-        tensor_meta_info.m_buffer = ext_data.load_external_mem_data();
+        blob = ext_data.load_external_mem_data();
     } else if (graph_iterator->get_mmap_cache()) {
-        tensor_meta_info.m_buffer =
-            ext_data.load_external_mmap_data(graph_iterator->get_model_dir(), graph_iterator->get_mmap_cache());
+        blob = ext_data.load_external_mmap_data(graph_iterator->get_model_dir(), graph_iterator->get_mmap_cache());
     } else {
-        tensor_meta_info.m_buffer = ext_data.load_external_data(graph_iterator->get_model_dir());
+        blob = ext_data.load_external_data(graph_iterator->get_model_dir());
     }
-    return tensor_meta_info.m_buffer != nullptr;
+
+    const auto tensor_name = tensor_meta_info.m_tensor_name ? *tensor_meta_info.m_tensor_name : empty_name;
+    FRONT_END_GENERAL_CHECK(tensor_meta_info.m_partial_shape.is_static(),
+                            "Tensor '" + tensor_name + "' has external data but dynamic shape");
+    const auto shape = tensor_meta_info.m_partial_shape.get_shape();
+    const auto expected_elems = ov::shape_size(shape);
+    size_t element_count = 0;
+    if (expected_elems == 0) {
+        element_count = 0;
+    } else {
+        FRONT_END_GENERAL_CHECK(blob.data != nullptr && blob.length > 0,
+                                "External data for tensor '" + tensor_name + "' is empty");
+        const auto element_size = tensor_meta_info.m_element_type.size();
+        FRONT_END_GENERAL_CHECK(element_size != 0,
+                                "Unsupported element type for external tensor '" + tensor_name + "'");
+        element_count = blob.length / element_size;
+        if (is_nibble_element(tensor_meta_info.m_element_type)) {
+            element_count *= 2;
+            if (expected_elems % 2) {
+                element_count--;
+            }
+        }
+    }
+    FRONT_END_GENERAL_CHECK(element_count == expected_elems,
+                            "The size of the external data file does not match the byte size of an initializer '" +
+                                tensor_name + "' in the model");
+
+    if (expected_elems == 0) {
+        tensor_meta_info.m_tensor = ov::Tensor(tensor_meta_info.m_element_type, shape);
+        return true;
+    }
+
+    ov::Tensor tensor(tensor_meta_info.m_element_type, shape, blob.data);
+    tensor_meta_info.m_tensor = blob.owner ? ov::Tensor(tensor, blob.owner) : tensor;
+    return static_cast<bool>(tensor_meta_info.m_tensor);
 }
 
-template <typename T, typename Container>
-std::shared_ptr<ov::AlignedBuffer> make_buffer_from_container_using_cast(const Container& container) {
-    auto buffer = std::make_shared<ov::AlignedBuffer>(container.size() * sizeof(T));
-    T* ptr = buffer->template get_ptr<T>();
-    size_t idx = 0;
-    for (const auto& elem : container) {
-        ptr[idx++] = static_cast<T>(elem);
+template <typename T>
+void assign_tensor_from_vector(ov::frontend::onnx::TensorMetaInfo& tensor_meta_info,
+                               const std::shared_ptr<std::vector<T>>& data) {
+    const auto tensor_name = tensor_meta_info.m_tensor_name ? *tensor_meta_info.m_tensor_name : empty_name;
+    FRONT_END_GENERAL_CHECK(tensor_meta_info.m_partial_shape.is_static(),
+                            "Tensor '" + tensor_name + "' must have static shape to use tensor data");
+    const auto shape = tensor_meta_info.m_partial_shape.get_shape();
+    const auto expected_elems = ov::shape_size(shape);
+    size_t expected_storage_items = expected_elems;
+    if (is_nibble_element(tensor_meta_info.m_element_type)) {
+        expected_storage_items = (expected_elems + 1) / 2;
     }
-    return buffer;
+    FRONT_END_GENERAL_CHECK(expected_storage_items == data->size(),
+                            "The size of the initializer '" + tensor_name +
+                                "' does not match the number of provided elements");
+    if (expected_elems == 0) {
+        tensor_meta_info.m_tensor = ov::Tensor(tensor_meta_info.m_element_type, shape);
+        return;
+    }
+    ov::Tensor tensor(tensor_meta_info.m_element_type, shape, data->data());
+    tensor_meta_info.m_tensor = ov::Tensor(tensor, data);
 }
 
-template <typename T, typename Container>
-std::shared_ptr<ov::AlignedBuffer> make_buffer_from_container(const Container& container) {
-    auto buffer = std::make_shared<ov::AlignedBuffer>(container.size() * sizeof(T));
-    std::copy(container.begin(), container.end(), buffer->template get_ptr<T>());
-    return buffer;
+void assign_tensor_from_raw_data(ov::frontend::onnx::TensorMetaInfo& tensor_meta_info, const std::string& raw_data) {
+    const auto tensor_name = tensor_meta_info.m_tensor_name ? *tensor_meta_info.m_tensor_name : empty_name;
+    FRONT_END_GENERAL_CHECK(tensor_meta_info.m_partial_shape.is_static(),
+                            "Tensor '" + tensor_name + "' must have static shape to use tensor data");
+    const auto shape = tensor_meta_info.m_partial_shape.get_shape();
+    const auto expected_elems = ov::shape_size(shape);
+    size_t expected_bytes = expected_elems * tensor_meta_info.m_element_type.size();
+    if (is_nibble_element(tensor_meta_info.m_element_type)) {
+        expected_bytes = (expected_elems + 1) / 2;
+    }
+    FRONT_END_GENERAL_CHECK(expected_bytes == raw_data.size(),
+                            "The size of the raw initializer '" + tensor_name +
+                                "' does not match the tensor shape");
+    tensor_meta_info.m_tensor = ov::Tensor(tensor_meta_info.m_element_type, shape);
+    if (expected_bytes > 0) {
+        std::memcpy(tensor_meta_info.m_tensor.data(), raw_data.data(), expected_bytes);
+    }
 }
 }  // namespace
 
@@ -180,15 +254,6 @@ ov::frontend::onnx::TensorMetaInfo extract_tensor_meta_info(const TensorProto* t
         if (tensor_info->has_data_location() &&
             tensor_info->data_location() == TensorProto_DataLocation::TensorProto_DataLocation_EXTERNAL) {
             if (extract_tensor_external_data(tensor_meta_info, tensor_info, graph_iterator)) {
-                auto element_count = tensor_meta_info.m_buffer->size() / tensor_meta_info.m_element_type.size();
-                if (ov::element::is_nibble_type(tensor_meta_info.m_element_type)) {
-                    element_count *= 2;  // Each byte contains 2 data items, so byte size must be multiplied
-                }
-                if (element_count != ov::shape_size(tensor_meta_info.m_partial_shape.get_shape())) {
-                    FRONT_END_THROW(
-                        "The size of the external data file does not match the byte size of an initializer '" +
-                        *tensor_meta_info.m_tensor_name + "' in the model");
-                }
                 return tensor_meta_info;
             }
             throw std::runtime_error("Unsupported method for externally stored data");
@@ -197,51 +262,118 @@ ov::frontend::onnx::TensorMetaInfo extract_tensor_meta_info(const TensorProto* t
         if (tensor_info->has_segment()) {
             FRONT_END_THROW("Loading segments isn't supported");
         } else if (tensor_info->has_raw_data()) {
-            tensor_size =
-                static_cast<int>(tensor_info->raw_data().size() * 8 / tensor_meta_info.m_element_type.bitwidth());
-            tensor_meta_info.m_buffer = std::make_shared<ov::AlignedBuffer>(tensor_info->raw_data().size());
-            std::copy(tensor_info->raw_data().begin(),
-                      tensor_info->raw_data().end(),
-                      tensor_meta_info.m_buffer->get_ptr<char>());
+            tensor_size = static_cast<int>(ov::shape_size(tensor_meta_info.m_partial_shape.get_shape()));
+            assign_tensor_from_raw_data(tensor_meta_info, tensor_info->raw_data());
         } else {
             switch (tensor_info->data_type()) {
             case TensorProto_DataType::TensorProto_DataType_INT32:
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container<int32_t>(tensor_info->int32_data());
+                assign_tensor_from_vector(
+                    tensor_meta_info,
+                    std::make_shared<std::vector<int32_t>>(tensor_info->int32_data().begin(),
+                                                            tensor_info->int32_data().end()));
                 break;
             case TensorProto_DataType::TensorProto_DataType_INT4:
             case TensorProto_DataType::TensorProto_DataType_INT8:
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container_using_cast<int8_t>(tensor_info->int32_data());
+                {
+                    auto data = std::make_shared<std::vector<int8_t>>();
+                    data->reserve(tensor_info->int32_data_size());
+                    std::transform(tensor_info->int32_data().begin(),
+                                   tensor_info->int32_data().end(),
+                                   std::back_inserter(*data),
+                                   [](int32_t elem) {
+                                       return static_cast<int8_t>(elem);
+                                   });
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_INT16:
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container_using_cast<int16_t>(tensor_info->int32_data());
+                {
+                    auto data = std::make_shared<std::vector<int16_t>>();
+                    data->reserve(tensor_info->int32_data_size());
+                    std::transform(tensor_info->int32_data().begin(),
+                                   tensor_info->int32_data().end(),
+                                   std::back_inserter(*data),
+                                   [](int32_t elem) {
+                                       return static_cast<int16_t>(elem);
+                                   });
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_UINT4:
             case TensorProto_DataType::TensorProto_DataType_UINT8:
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container_using_cast<uint8_t>(tensor_info->int32_data());
+                {
+                    auto data = std::make_shared<std::vector<uint8_t>>();
+                    data->reserve(tensor_info->int32_data_size());
+                    std::transform(tensor_info->int32_data().begin(),
+                                   tensor_info->int32_data().end(),
+                                   std::back_inserter(*data),
+                                   [](int32_t elem) {
+                                       return static_cast<uint8_t>(elem);
+                                   });
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_UINT16:
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container_using_cast<uint16_t>(tensor_info->int32_data());
+                {
+                    auto data = std::make_shared<std::vector<uint16_t>>();
+                    data->reserve(tensor_info->int32_data_size());
+                    std::transform(tensor_info->int32_data().begin(),
+                                   tensor_info->int32_data().end(),
+                                   std::back_inserter(*data),
+                                   [](int32_t elem) {
+                                       return static_cast<uint16_t>(elem);
+                                   });
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_BOOL:
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container_using_cast<char>(tensor_info->int32_data());
+                {
+                    auto data = std::make_shared<std::vector<char>>();
+                    data->reserve(tensor_info->int32_data_size());
+                    std::transform(tensor_info->int32_data().begin(),
+                                   tensor_info->int32_data().end(),
+                                   std::back_inserter(*data),
+                                   [](int32_t elem) {
+                                       return static_cast<char>(elem);
+                                   });
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_INT64:
                 tensor_size = tensor_info->int64_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container<int64_t>(tensor_info->int64_data());
+                {
+                    auto data = std::make_shared<std::vector<int64_t>>(tensor_info->int64_data().begin(),
+                                                                        tensor_info->int64_data().end());
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_UINT32:
                 tensor_size = tensor_info->uint64_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container_using_cast<uint32_t>(tensor_info->uint64_data());
+                {
+                    auto data = std::make_shared<std::vector<uint32_t>>();
+                    data->reserve(tensor_info->uint64_data_size());
+                    std::transform(tensor_info->uint64_data().begin(),
+                                   tensor_info->uint64_data().end(),
+                                   std::back_inserter(*data),
+                                   [](uint64_t elem) {
+                                       return static_cast<uint32_t>(elem);
+                                   });
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_UINT64:
                 tensor_size = tensor_info->uint64_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container<uint64_t>(tensor_info->uint64_data());
+                {
+                    auto data = std::make_shared<std::vector<uint64_t>>(tensor_info->uint64_data().begin(),
+                                                                        tensor_info->uint64_data().end());
+                    assign_tensor_from_vector(tensor_meta_info, data);
+                }
                 break;
             case TensorProto_DataType::TensorProto_DataType_FLOAT8E4M3FN: {
                 tensor_size = tensor_info->int32_data_size();
@@ -253,11 +385,7 @@ ov::frontend::onnx::TensorMetaInfo extract_tensor_meta_info(const TensorProto* t
                                [](int32_t elem) {
                                    return ov::float8_e4m3::from_bits(static_cast<uint8_t>(elem));
                                });
-                tensor_meta_info.m_buffer =
-                    std::make_shared<ov::SharedBuffer<std::shared_ptr<std::vector<ov::float8_e4m3>>>>(
-                        reinterpret_cast<char*>(data->data()),
-                        data->size() * sizeof(ov::float8_e4m3),
-                        data);
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
             }
             case TensorProto_DataType::TensorProto_DataType_FLOAT8E5M2: {
@@ -270,11 +398,7 @@ ov::frontend::onnx::TensorMetaInfo extract_tensor_meta_info(const TensorProto* t
                                [](int32_t elem) {
                                    return ov::float8_e5m2::from_bits(static_cast<uint8_t>(elem));
                                });
-                tensor_meta_info.m_buffer =
-                    std::make_shared<ov::SharedBuffer<std::shared_ptr<std::vector<ov::float8_e5m2>>>>(
-                        reinterpret_cast<char*>(data->data()),
-                        data->size() * sizeof(ov::float8_e5m2),
-                        data);
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
             }
             case TensorProto_DataType::TensorProto_DataType_FLOAT16: {
@@ -287,35 +411,41 @@ ov::frontend::onnx::TensorMetaInfo extract_tensor_meta_info(const TensorProto* t
                                [](int32_t elem) {
                                    return ov::float16::from_bits(static_cast<uint16_t>(elem));
                                });
-                tensor_meta_info.m_buffer =
-                    std::make_shared<ov::SharedBuffer<std::shared_ptr<std::vector<ov::float16>>>>(
-                        reinterpret_cast<char*>(data->data()),
-                        data->size() * sizeof(ov::float16),
-                        data);
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
             }
-            case TensorProto_DataType::TensorProto_DataType_BFLOAT16:
+            case TensorProto_DataType::TensorProto_DataType_BFLOAT16: {
                 tensor_size = tensor_info->int32_data_size();
-                tensor_meta_info.m_buffer =
-                    make_buffer_from_container_using_cast<ov::bfloat16>(tensor_info->int32_data());
+                auto data = std::make_shared<std::vector<ov::bfloat16>>();
+                data->reserve(tensor_info->int32_data_size());
+                std::transform(tensor_info->int32_data().begin(),
+                               tensor_info->int32_data().end(),
+                               std::back_inserter(*data),
+                               [](int32_t elem) {
+                                   return ov::bfloat16::from_bits(static_cast<uint16_t>(elem));
+                               });
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
-            case TensorProto_DataType::TensorProto_DataType_FLOAT:
+            }
+            case TensorProto_DataType::TensorProto_DataType_FLOAT: {
                 tensor_size = tensor_info->float_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container<float>(tensor_info->float_data());
+                auto data = std::make_shared<std::vector<float>>(tensor_info->float_data().begin(),
+                                                                 tensor_info->float_data().end());
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
-            case TensorProto_DataType::TensorProto_DataType_DOUBLE:
+            }
+            case TensorProto_DataType::TensorProto_DataType_DOUBLE: {
                 tensor_size = tensor_info->double_data_size();
-                tensor_meta_info.m_buffer = make_buffer_from_container<double>(tensor_info->double_data());
+                auto data = std::make_shared<std::vector<double>>(tensor_info->double_data().begin(),
+                                                                  tensor_info->double_data().end());
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
+            }
             case TensorProto_DataType::TensorProto_DataType_STRING: {
                 tensor_size = tensor_info->string_data_size();
                 auto data = std::make_shared<std::vector<std::string>>(tensor_info->string_data().begin(),
                                                                        tensor_info->string_data().end());
-                tensor_meta_info.m_buffer =
-                    std::make_shared<ov::SharedBuffer<std::shared_ptr<std::vector<std::string>>>>(
-                        reinterpret_cast<char*>(data->data()),
-                        data->size() * sizeof(std::string),
-                        data);
+                assign_tensor_from_vector(tensor_meta_info, data);
                 break;
             }
             default:
