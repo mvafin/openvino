@@ -4,6 +4,7 @@
 
 #include "utils/tensor_external_data.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -65,9 +66,7 @@ Buffer<ov::MappedMemory> TensorExternalData::load_external_mmap_data(const std::
 }
 
 Buffer<ov::AlignedBuffer> TensorExternalData::load_external_data(const std::string& model_dir) const {
-    const auto full_path = model_dir.empty() ? ov::util::make_path(m_data_location)
-                                             : std::filesystem::absolute(std::filesystem::weakly_canonical(
-                                                   ov::util::path_join({model_dir, m_data_location})));
+    const auto full_path = compose_full_path(model_dir);
     std::ifstream external_data_stream(full_path, std::ios::binary | std::ios::in | std::ios::ate);
 
     if (external_data_stream.fail()) {
@@ -126,6 +125,49 @@ std::string TensorExternalData::to_string() const {
         s << ")";
     }
     return s.str();
+}
+
+std::filesystem::path TensorExternalData::compose_full_path(const std::string& model_dir) const {
+    if (model_dir.empty()) {
+        return ov::util::make_path(m_data_location);
+    }
+
+    return std::filesystem::absolute(std::filesystem::weakly_canonical(
+        ov::util::path_join({ov::util::make_path(model_dir), ov::util::make_path(m_data_location)})));
+}
+
+void TensorExternalData::validate(const std::string& model_dir) const {
+    if (m_data_location.empty()) {
+        throw error::invalid_external_data{*this};
+    }
+
+    if (m_data_location == ORT_MEM_ADDR) {
+        bool is_valid_buffer = m_offset && m_data_length;
+        bool is_empty_buffer = (m_data_length == 0);
+        if (!(is_valid_buffer || is_empty_buffer)) {
+            throw error::invalid_external_data{*this};
+        }
+        return;
+    }
+
+    const auto full_path = compose_full_path(model_dir);
+    std::error_code ec;
+    const auto status = std::filesystem::status(full_path, ec);
+    if (ec || !std::filesystem::exists(status) || !std::filesystem::is_regular_file(status)) {
+        throw error::invalid_external_data{*this};
+    }
+
+    const int64_t file_size = ov::util::file_size(full_path);
+    if (file_size < 0) {
+        throw error::invalid_external_data{*this};
+    }
+    const auto available_bytes = static_cast<uint64_t>(file_size);
+    if (m_offset > available_bytes) {
+        throw error::invalid_external_data{*this};
+    }
+    if (m_data_length > 0 && m_data_length > (available_bytes - m_offset)) {
+        throw error::invalid_external_data{*this};
+    }
 }
 }  // namespace detail
 }  // namespace onnx

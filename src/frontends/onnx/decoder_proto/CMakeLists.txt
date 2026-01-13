@@ -14,6 +14,7 @@ add_library(openvino::onnx_proto_decoder ALIAS ${TARGET_NAME})
 target_include_directories(${TARGET_NAME}
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/frontends/onnx/frontend/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -23,6 +24,7 @@ target_link_libraries(${TARGET_NAME}
     PUBLIC
         openvino::runtime
         openvino::util
+        openvino::runtime::dev
         onnx
 )
 

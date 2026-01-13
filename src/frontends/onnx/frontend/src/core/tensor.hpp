@@ -152,6 +152,9 @@ public:
             // In OpenVINO a scalar is represented with ov::Shape{} and thus this replacement.
             m_shape = ov::Shape{};
         }
+        if (has_external_data()) {
+            detail::TensorExternalData(*m_tensor_proto).validate(m_model_dir);
+        }
     }
 
     Tensor(const std::shared_ptr<TensorONNXPlace>& tensor_place);
