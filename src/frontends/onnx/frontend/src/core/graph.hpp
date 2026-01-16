@@ -16,7 +16,7 @@
 #include "openvino/frontend/extension/holder.hpp"
 #include "openvino/op/parameter.hpp"
 #include "ops_bridge.hpp"
-#include "utils/tensor_external_data.hpp"
+#include "openvino/frontend/onnx/tensor_external_data.hpp"
 
 namespace ov {
 namespace frontend {

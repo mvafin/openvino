@@ -9,7 +9,7 @@
 #include "core/node.hpp"
 #include "openvino/core/deprecated.hpp"
 #include "openvino/core/except.hpp"
-#include "utils/tensor_external_data.hpp"
+#include "openvino/frontend/onnx/tensor_external_data.hpp"
 
 namespace ov {
 namespace frontend {

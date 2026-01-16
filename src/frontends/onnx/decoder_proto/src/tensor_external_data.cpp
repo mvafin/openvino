@@ -10,7 +10,7 @@
 #include <cstring>
 #include <vector>
 
-#include "openvino/frontend/onnx/decoder_exceptions.hpp"
+#include "exceptions.hpp"
 #include "openvino/util/file_util.hpp"
 #include "openvino/util/log.hpp"
 

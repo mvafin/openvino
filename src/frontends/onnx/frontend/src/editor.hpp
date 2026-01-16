@@ -14,7 +14,7 @@
 #include "openvino/frontend/extension/progress_reporter.hpp"
 #include "openvino/frontend/extension/telemetry.hpp"
 #include "openvino/op/constant.hpp"
-#include "utils/tensor_external_data.hpp"
+#include "openvino/frontend/onnx/tensor_external_data.hpp"
 
 using ::ONNX_NAMESPACE::ModelProto;
 

@@ -16,7 +16,7 @@
 #include <algorithm>
 
 #include "core/model.hpp"
-#include "core/transform.hpp"
+#include "openvino/frontend/onnx/transform.hpp"
 #include "openvino/util/log.hpp"
 #include "ops_bridge.hpp"
 

@@ -11,7 +11,7 @@
 
 #include "core/node.hpp"
 #include "core/null_node.hpp"
-#include "core/transform.hpp"
+#include "openvino/frontend/onnx/transform.hpp"
 #include "core/value_info.hpp"
 #include "exceptions.hpp"
 #include "onnx_framework_node.hpp"

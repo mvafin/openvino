@@ -25,7 +25,7 @@
 #include "openvino/frontend/onnx/tensor_external_data.hpp"
 #include "openvino/util/file_util.hpp"
 #include "openvino/util/wstring_convert_util.hpp"
-#include "transform.hpp"
+#include "openvino/frontend/onnx/transform.hpp"
 
 namespace {
 // THis is copied from utils/common.hpp
@@ -509,6 +509,10 @@ void GraphIteratorProto::initialize_from_path(const std::filesystem::path& path)
         m_tensors.clear();
         throw;
     }
+}
+
+void GraphIteratorProto::initialize(const std::filesystem::path& path) {
+    initialize_from_path(path);
 }
 
 void GraphIteratorProto::initialize(const std::string& path) {

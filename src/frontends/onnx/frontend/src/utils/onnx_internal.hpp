@@ -9,7 +9,7 @@
 
 #include "openvino/core/model.hpp"
 #include "openvino/frontend/extension/holder.hpp"
-#include "utils/tensor_external_data.hpp"
+#include "openvino/frontend/onnx/tensor_external_data.hpp"
 
 namespace ONNX_NAMESPACE {
 class ModelProto;

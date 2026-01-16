@@ -50,13 +50,15 @@ class GraphIteratorProto : public ov::frontend::onnx::GraphIterator {
     GraphIteratorProto* m_parent;
     std::vector<std::shared_ptr<ov::frontend::onnx::DecoderBase>> m_decoders{};
     std::map<std::string, std::shared_ptr<DecoderProtoTensor>> m_tensors{};
-    std::filesystem::path m_model_dir;
+    std::shared_ptr<std::string> m_model_dir;
     GraphIteratorProtoMemoryManagementMode m_mode;
     // This is used for keeping MMAP cache handles
     MappedMemoryHandles m_mmap_cache;
     // This is used for keeping a readed external data without MMAP
     LocalStreamHandles m_stream_cache;
     LocalMemoryHandles m_data_holder;
+
+    void initialize_from_path(const std::filesystem::path& path);
 
 public:
     using Ptr = std::shared_ptr<GraphIteratorProto>;
@@ -67,6 +69,10 @@ public:
     ~GraphIteratorProto() = default;
 
     void initialize(const std::filesystem::path& path);
+    void initialize(const std::string& path);
+#ifdef OPENVINO_ENABLE_UNICODE_PATH_SUPPORT
+    void initialize(const std::wstring& path);
+#endif  // OPENVINO_ENABLE_UNICODE_PATH_SUPPORT
 
     /// Verifies file is supported
     template <typename T>
@@ -120,7 +126,10 @@ public:
     std::map<std::string, std::string> get_metadata() const override;
 
     std::filesystem::path get_model_dir() const override {
-        return m_model_dir;
+        if (!m_model_dir) {
+            return {};
+        }
+        return ov::util::make_path(*m_model_dir);
     }
 
     GraphIteratorProtoMemoryManagementMode get_memory_management_mode() const {
