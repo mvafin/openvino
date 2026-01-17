@@ -18,6 +18,7 @@ target_include_directories(${TARGET_NAME}
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src/frontends/onnx/frontend/src>
 )
 
 target_link_libraries(${TARGET_NAME}

@@ -11,11 +11,11 @@ graph {
         dims: 3
         data_type: 16
         int32_data: 0
-        int32_data: 5
-        int32_data: 10
-        int32_data: 15
-        int32_data: 20
-        int32_data: 25
+        int32_data: 16544
+        int32_data: 16672
+        int32_data: 16752
+        int32_data: 16800
+        int32_data: 16840
         name: "const_tensor"
       }
       type: TENSOR

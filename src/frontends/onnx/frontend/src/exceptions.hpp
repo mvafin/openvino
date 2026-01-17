@@ -9,7 +9,6 @@
 #include "core/node.hpp"
 #include "openvino/core/deprecated.hpp"
 #include "openvino/core/except.hpp"
-#include "utils/tensor_external_data.hpp"
 
 namespace ov {
 namespace frontend {
@@ -36,8 +35,6 @@ protected:
 
 OPENVINO_SUPPRESS_DEPRECATED_START
 struct invalid_external_data : ov::Exception {
-    invalid_external_data(const ov::frontend::onnx::detail::TensorExternalData& external_data)
-        : ov::Exception{std::string{"invalid external data: "} + external_data.to_string()} {}
     invalid_external_data(const std::string& what_arg) : ov::Exception{what_arg} {}
 };
 OPENVINO_SUPPRESS_DEPRECATED_END

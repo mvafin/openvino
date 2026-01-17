@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include <onnx/onnx_pb.h>
+
 #include "openvino/op/random_uniform.hpp"
 
 #include "core/operator_set.hpp"
