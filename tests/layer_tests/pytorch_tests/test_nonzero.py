@@ -45,6 +45,10 @@ class TestNonZero(PytorchLayerTest):
     @pytest.mark.precommit
     @pytest.mark.precommit_torch_export
     def test_nonzero(self, mask_fill, mask_dtype, as_tuple, ie_device, precision, ir_version):
+        # as_tuple=True: nonzero_numpy decomposes to nonzero + unbind in torch.export
+        # as_tuple=False: nonzero.default
+        fx_kind = "aten.nonzero.default"
         self._test(*self.create_model(as_tuple),
                    ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'mask_fill': mask_fill, 'mask_dtype': mask_dtype}, trace_model=as_tuple)
+                   kwargs_to_prepare_input={'mask_fill': mask_fill, 'mask_dtype': mask_dtype}, trace_model=as_tuple,
+                   fx_kind=fx_kind)

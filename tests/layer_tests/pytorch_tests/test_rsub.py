@@ -109,5 +109,6 @@ class TestRsubTypes(PytorchLayerTest):
         self.lhs_type = lhs_type
         self.lhs_shape = lhs_shape
         self.rhs_type = rhs_type
+        # In torch.export mode, rsub decomposes to sub.Tensor
         self._test(*self.create_model(lhs_type, rhs_type),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.sub")

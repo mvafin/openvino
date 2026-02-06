@@ -47,7 +47,8 @@ class TestStack2D(PytorchLayerTest):
             np.random.randn(*input_shape).astype(np.float32),
             np.random.randn(*input_shape).astype(np.float32),
         ]
-        self._test(*self.create_model(dim), ie_device, precision, ir_version)
+        self._test(*self.create_model(dim), ie_device, precision, ir_version,
+                   fx_kind="aten.stack.default")
 
 
 class TestStack3D(PytorchLayerTest):
@@ -91,4 +92,5 @@ class TestStack3D(PytorchLayerTest):
             np.random.randn(*input_shape).astype(np.float32),
             np.random.randn(*input_shape).astype(np.float32)
         ]
-        self._test(*self.create_model(dim), ie_device, precision, ir_version)
+        self._test(*self.create_model(dim), ie_device, precision, ir_version,
+                   fx_kind="aten.stack.default")

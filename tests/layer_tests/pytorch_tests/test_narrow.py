@@ -37,4 +37,6 @@ class TestNarrow(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_narrow(self, input_shape, dim, start, length, ie_device, precision, ir_version):
         self.input_shape = input_shape
-        self._test(*self.create_model(dim, start, length), ie_device, precision, ir_version)
+        # In torch.export mode, narrow decomposes to slice.Tensor
+        self._test(*self.create_model(dim, start, length), ie_device, precision, ir_version,
+                   fx_kind="aten.slice")

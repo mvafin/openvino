@@ -44,4 +44,4 @@ class TestGridSampler(PytorchLayerTest):
     def test_grid_sampler(self, h_in, w_in, h_out, w_out, mode, padding_mode, align_corners, ie_device, precision, ir_version):
         self._test(*self.create_model(mode, padding_mode, align_corners), ie_device, precision, ir_version, kwargs_to_prepare_input={
             "h_in": h_in, "w_in": w_in, "h_out": h_out, "w_out": w_out
-        })
+        }, fx_kind="aten.grid_sampler_2d")

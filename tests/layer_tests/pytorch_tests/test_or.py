@@ -56,14 +56,18 @@ class TestOr(PytorchLayerTest):
             np.array([True, False, False], dtype=np.bool_),
             np.array([True, True, False], dtype=np.bool_),
         )
-        self._test(*self.create_model_tensor_input(), ie_device, precision, ir_version)
+        # In torch.export mode, __or__ decomposes to bitwise_or
+        self._test(*self.create_model_tensor_input(), ie_device, precision, ir_version,
+                   fx_kind="aten.bitwise_or")
 
     @pytest.mark.nightly
     @pytest.mark.precommit
     @pytest.mark.precommit_torch_export
     def test_or_bool(self, ie_device, precision, ir_version):
         self.input_data = (np.array(True, dtype=np.bool_), np.array(True, dtype=np.bool_))
-        self._test(*self.create_model_bool_input(), ie_device, precision, ir_version)
+        # In torch.export mode, __or__ decomposes to bitwise_or
+        self._test(*self.create_model_bool_input(), ie_device, precision, ir_version,
+                   fx_kind="aten.bitwise_or")
 
     @pytest.mark.nightly
     @pytest.mark.precommit
@@ -72,7 +76,9 @@ class TestOr(PytorchLayerTest):
         if ie_device == "GPU":
             pytest.xfail(reason="bitwise ops are not supported on GPU")
         self.input_data = (np.array(3, dtype=np.int32), np.array(4, dtype=np.int32))
-        self._test(*self.create_model_int_input(), ie_device, precision, ir_version)
+        # In torch.export mode, __or__ decomposes to bitwise_or
+        self._test(*self.create_model_int_input(), ie_device, precision, ir_version,
+                   fx_kind="aten.bitwise_or")
 
     @pytest.mark.nightly
     @pytest.mark.precommit
@@ -81,6 +87,8 @@ class TestOr(PytorchLayerTest):
         if ie_device == "GPU":
             pytest.xfail(reason="bitwise ops are not supported on GPU")
         self.input_data = (np.array([3, 5, 8], dtype=np.int32), np.array([7, 11, 2], dtype=np.int32))
+        # In torch.export mode, __or__ decomposes to bitwise_or
         self._test(
-            *self.create_model_tensor_input(), ie_device, precision, ir_version, freeze_model=False, trace_model=True
+            *self.create_model_tensor_input(), ie_device, precision, ir_version, freeze_model=False, trace_model=True,
+            fx_kind="aten.bitwise_or"
         )

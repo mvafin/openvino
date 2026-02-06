@@ -140,7 +140,7 @@ class TestBitwiseOperators(PytorchLayerTest):
             },
             trace_model=True,
             freeze_model=False,
-            fx_kind=["aten.__and__", "aten.bitwise_not", "aten.__or__", "aten.__xor__"],
+            fx_kind=["aten.bitwise_and", "aten.bitwise_not", "aten.bitwise_or", "aten.bitwise_xor"],
         )
 
 
@@ -189,8 +189,13 @@ class TestBitwiseInplaceOp(PytorchLayerTest):
     def test_bitwise_operators(self, op, dtype, lhs_shape, rhs_shape, ie_device, precision, ir_version):
         if ie_device == "GPU" and dtype != "bool":
             pytest.xfail(reason="bitwise ops are not supported on GPU")
-        # Map op names to fx_kind: __ior__ -> aten.__ior__, __iand__ -> aten.__iand__, __ixor__ -> aten.__ixor__
-        op_to_fx = {"aten::__ior__": "aten.__ior__", "aten::__iand__": "aten.__iand__", "aten::__ixor__": "aten.__ixor__"}
+        # In-place ops decompose to non-inplace + copy_:
+        # __ior__ -> bitwise_or.Tensor + copy_, etc.
+        op_to_fx = {
+            "aten::__ior__": "aten.bitwise_or.Tensor",
+            "aten::__iand__": "aten.bitwise_and.Tensor",
+            "aten::__ixor__": "aten.bitwise_xor.Tensor"
+        }
         self._test(
             *self.create_model(op),
             ie_device,

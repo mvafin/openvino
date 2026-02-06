@@ -48,5 +48,7 @@ class TestIndexTensor(PytorchLayerTest):
     def test_index_tensor(self, safe, input_shape, indices_list, ie_device, precision, ir_version):
         if not PytorchLayerTest.use_torch_export():
             pytest.skip(reason='aten.index.Tensor test is supported only on torch.export()')
+        # Both safe and unsafe variants export to aten.index.Tensor in torch.export
+        fx_kind = "aten.index.Tensor"
         self._test(*self.create_model(indices_list, safe), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'input_shape': input_shape})
+                   kwargs_to_prepare_input={'input_shape': input_shape}, fx_kind=fx_kind)

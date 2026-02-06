@@ -35,7 +35,8 @@ class TestCdist(PytorchLayerTest):
     @pytest.mark.xfail(condition=platform.system() == 'Darwin' and platform.machine() == 'arm64',
                        reason='Ticket - 122715')
     def test_cdist(self, p, ie_device, precision, ir_version):
-        self._test(*self.create_model(p), ie_device, precision, ir_version, use_convert_model=True)
+        self._test(*self.create_model(p), ie_device, precision, ir_version, use_convert_model=True,
+                   fx_kind="aten._cdist_forward")
 
 
 class TestPairwiseDistance(PytorchLayerTest):
@@ -70,4 +71,6 @@ class TestPairwiseDistance(PytorchLayerTest):
     @pytest.mark.xfail(condition=platform.system() == 'Darwin' and platform.machine() == 'arm64',
                        reason='Ticket - 122715')
     def test_cdist(self, p, eps, keepdim, ie_device, precision, ir_version):
-        self._test(*self.create_model(p, eps, keepdim), ie_device, precision, ir_version, use_convert_model=True)
+        # pairwise_distance decomposes to sub+add+linalg_vector_norm in torch.export
+        self._test(*self.create_model(p, eps, keepdim), ie_device, precision, ir_version, use_convert_model=True,
+                   fx_kind="aten.linalg_vector_norm.default")

@@ -56,4 +56,5 @@ class TestGroupNorm(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_group_norm(self, params, ie_device, precision, ir_version, kwargs_to_prepare_input):
         self._test(*self.create_model(**params),
-                   ie_device, precision, ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input)
+                   ie_device, precision, ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input,
+                   fx_kind="aten.native_group_norm")

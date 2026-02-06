@@ -33,7 +33,7 @@ class TestPixelShuffle(PytorchLayerTest):
     def test_pixel_shuffle(self, upscale_factor, shape, ie_device, precision, ir_version):
         self.shape = shape
         self._test(*self.create_model(upscale_factor),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.pixel_shuffle.default")
 
 
 class TestPixelUnshuffle(PytorchLayerTest):
@@ -62,7 +62,7 @@ class TestPixelUnshuffle(PytorchLayerTest):
     def test_pixel_unshuffle(self, upscale_factor, shape, ie_device, precision, ir_version):
         self.shape = shape
         self._test(*self.create_model(upscale_factor),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.pixel_unshuffle.default")
 
 
 class TestChannelShuffle(PytorchLayerTest):
@@ -96,4 +96,4 @@ class TestChannelShuffle(PytorchLayerTest):
     def test_channel_shuffle(self, groups, shape, ie_device, precision, ir_version):
         self.shape = shape
         self._test(*self.create_model(groups),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.channel_shuffle.default")

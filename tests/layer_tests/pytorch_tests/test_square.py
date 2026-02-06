@@ -36,4 +36,4 @@ class TestSquareTypes(PytorchLayerTest):
         self.type = type
         self.shape = shape
         self._test(*self.create_model(type),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.pow")

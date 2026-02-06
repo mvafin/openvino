@@ -42,8 +42,8 @@ class TestBatchNorm(PytorchLayerTest):
                 return F.batch_norm(x, self.running_mean, self.running_var, self.weight, self.bias, eps=self.eps, training=True)
 
         ref_net = None
-
-        return aten_batch_norm_inference(weights, bias, eps) if not train else aten_batch_norm_train(weights, bias, eps, running_stats), ref_net, "aten::batch_norm"
+        model = aten_batch_norm_inference(weights, bias, eps) if not train else aten_batch_norm_train(weights, bias, eps, running_stats)
+        return model, ref_net, "aten::batch_norm"
 
     @pytest.mark.parametrize("weights", [True, False])
     @pytest.mark.parametrize("bias", [True, False])
@@ -60,7 +60,10 @@ class TestBatchNorm(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     @pytest.mark.precommit_torch_export
     def test_batch_norm(self, weights, bias, eps, train, running_stats, ie_device, precision, ir_version, kwargs_to_prepare_input):
-        if running_stats and self.use_torch_export():
-            pytest.skip("running_mean not supported by torch.export")
+        if not running_stats and self.use_torch_export():
+            pytest.skip("running_mean must be defined in evaluation mode for torch.export")
+        if train and running_stats and self.use_torch_export():
+            pytest.skip("Training mode with running_stats=True mutates buffers, unsupported by torch.export")
         self._test(*self.create_model(weights, bias, eps, train, running_stats),
-                   ie_device, precision, ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input, dynamic_shapes=False, use_mo_convert=False)
+                   ie_device, precision, ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input, dynamic_shapes=False, use_mo_convert=False,
+                   fx_kind="aten.batch_norm.default")

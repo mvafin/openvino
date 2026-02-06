@@ -55,17 +55,18 @@ class PytorchLayerTest:
         return False
 
     @staticmethod
-    def _check_fx_op_exist(exported_program, op_name):
-        """Check if an operation exists in the FX graph of an ExportedProgram.
+    def _check_fx_op_exist(graph_module, op_name):
+        """Check if an operation exists in the FX graph.
         
         Args:
-            exported_program: torch.export.ExportedProgram
+            graph_module: torch.fx.GraphModule or torch.export.ExportedProgram
             op_name: str - operation name like "aten.add.Tensor" or just "aten.add"
         
         Returns:
             bool - True if operation exists in the graph
         """
-        for node in exported_program.graph.nodes:
+        graph = graph_module.graph if hasattr(graph_module, 'graph') else graph_module
+        for node in graph.nodes:
             if node.op == "call_function":
                 target_str = str(node.target)
                 # Support both full name (aten.add.Tensor) and partial match (aten.add)
@@ -173,25 +174,35 @@ class PytorchLayerTest:
             if self.use_torch_export():
                 from openvino import convert_model
                 from torch.export import export
+                from openvino.frontend.pytorch.fx_decoder import TorchFXPythonDecoder
 
                 dynamic_shapes = kwargs.get('dynamic_shapes_for_export', {})
 
                 em = export(model, tuple(torch_inputs), dynamic_shapes=dynamic_shapes)
 
-                # Verify FX graph operations exist
+                # Use decoder to apply decompositions - same logic as actual conversion
+                decoder = TorchFXPythonDecoder.from_exported_program(em)
+
+                # Verify FX graph operations exist in the decomposed graph
                 # Use explicit fx_kind if provided, otherwise auto-derive from TorchScript kind
                 fx_kind = kwargs.get('fx_kind', None)
                 if fx_kind is None:
                     fx_kind = self._derive_fx_kind_from_kind(kind)
                 
-                assert fx_kind is not None, f"fx_kind must be provided explicitly or derivable from kind. Graph:\n{em.graph}"
+                assert fx_kind is not None, f"fx_kind must be provided explicitly or derivable from kind. Graph:\n{decoder.fx_gm.graph}"
                 if not isinstance(fx_kind, (tuple, list)):
                     fx_kind = [fx_kind]
+                assert len(fx_kind) > 0, (
+                    f"fx_kind must contain at least one operation. Empty fx_kind is not allowed. "
+                    f"For decomposed ops, specify the list of ops the operation decomposes into. "
+                    f"Graph:\n{decoder.fx_gm.graph}"
+                )
                 for op in fx_kind:
-                    assert self._check_fx_op_exist(em, op), f"Operation {op} doesn't exist in FX graph. Graph:\n{em.graph}"
+                    assert self._check_fx_op_exist(decoder.fx_gm, op), f"Operation {op} doesn't exist in FX graph. Graph:\n{decoder.fx_gm.graph}"
 
+                # Pass decoder directly to convert_model - uses the same decomposed graph for both checking and conversion
                 converted_model = convert_model(
-                    em, example_input=torch_inputs, verbose=True)
+                    decoder, example_input=torch_inputs, verbose=True)
                 self._resolve_input_shape_dtype(
                     converted_model, ov_inputs, dynamic_shapes)
                 smodel = model

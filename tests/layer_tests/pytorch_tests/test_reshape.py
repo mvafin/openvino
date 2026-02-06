@@ -52,7 +52,8 @@ class TestReshape(PytorchLayerTest):
     def test_reshape(self, shape, complex_type, ie_device, precision, ir_version):
         self._test(*self.create_model(shape, complex_type),
                    ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={"complex_type": complex_type})
+                   kwargs_to_prepare_input={"complex_type": complex_type},
+                   fx_kind="aten.view")
 
 
 class TestDynamicReshape(PytorchLayerTest):

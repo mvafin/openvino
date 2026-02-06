@@ -40,4 +40,4 @@ class TestFlatten(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_flatten(self, dim0, dim1, ie_device, precision, ir_version):
         self._test(*self.create_model(dim0, dim1),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.view")

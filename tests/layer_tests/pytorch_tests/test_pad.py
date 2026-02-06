@@ -241,6 +241,8 @@ class TestReflectionPad(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_reflection_padnd(self, pads, dtype, ie_device, precision, ir_version):
         ndim = len(pads) // 2 + 2
-        print(ndim)
+        # In torch.export mode, ReflectionPadNd becomes aten.reflection_padNd.default
+        fx_kind_map = {1: "aten.reflection_pad1d", 2: "aten.reflection_pad2d", 3: "aten.reflection_pad3d"}
+        fx_kind = fx_kind_map.get(len(pads) // 2)
         self._test(*self.create_model(pads), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={"ndim": ndim, "dtype": dtype})
+                   kwargs_to_prepare_input={"ndim": ndim, "dtype": dtype}, fx_kind=fx_kind)

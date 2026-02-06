@@ -56,7 +56,7 @@ class TestConv2D(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_conv2d(self, params, bias, ie_device, precision, ir_version):
         self._test(*self.create_model(**params, bias=bias),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.convolution")
 
 
 class TestConv1D(PytorchLayerTest):
@@ -102,7 +102,7 @@ class TestConv1D(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_conv1d(self, params, bias, ie_device, precision, ir_version):
         self._test(*self.create_model(**params, bias=bias),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.convolution")
 
 
 class TestConv3D(PytorchLayerTest):
@@ -162,7 +162,7 @@ class TestConv3D(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_conv3d(self, params, bias, ie_device, precision, ir_version):
         self._test(*self.create_model(**params, bias=bias),
-                   ie_device, precision, ir_version)
+                   ie_device, precision, ir_version, fx_kind="aten.convolution")
 
 class TestConv2DInSubgraph(PytorchLayerTest):
     def _prepare_input(self):
@@ -215,7 +215,7 @@ class TestConv2DInSubgraph(PytorchLayerTest):
                 return acc
         ref_net = None
 
-        return aten_conv2d(), ref_net, "aten::conv2d"
+        return aten_conv2d(), ref_net, ["aten::conv2d", "aten.convolution.default"]
 
     @pytest.mark.nightly
     @pytest.mark.precommit

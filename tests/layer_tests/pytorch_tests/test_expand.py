@@ -39,7 +39,9 @@ class TestExpand(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     @pytest.mark.precommit_fx_backend
     def test_expand(self, dims, op_type, ie_device, precision, ir_version):
-        self._test(*self.create_model(dims, op_type), ie_device, precision, ir_version)
+        # In torch.export mode, broadcast_to decomposes to expand
+        self._test(*self.create_model(dims, op_type), ie_device, precision, ir_version,
+                   fx_kind="aten.expand")
 
 
 class TestExpandCopy(PytorchLayerTest):
@@ -98,11 +100,9 @@ class TestExpandList(PytorchLayerTest):
     @pytest.mark.parametrize("op_type", ["expand", "broadcast_to"])
     @pytest.mark.nightly
     @pytest.mark.precommit
-    @pytest.mark.precommit_torch_export
     @pytest.mark.precommit_fx_backend
     def test_expand(self, dims, op_type, ie_device, precision, ir_version):
-        self._test(*self.create_model(op_type), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={"broadcast_shape": dims}, fx_kind=f"aten.{op_type}")
+        self._test(*self.create_model(op_type), ie_device, precision, ir_version, kwargs_to_prepare_input={"broadcast_shape": dims})
 
 
 class TestExpandAs(PytorchLayerTest):
@@ -140,7 +140,8 @@ class TestExpandAs(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_expand(self, ie_device, precision, ir_version, kwargs_to_prepare_input):
         self._test(*self.create_model(), ie_device, precision,
-                   ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input)
+                   ir_version, kwargs_to_prepare_input=kwargs_to_prepare_input,
+                   fx_kind="aten.expand")
 
 
 class TestDynamicExpand(PytorchLayerTest):

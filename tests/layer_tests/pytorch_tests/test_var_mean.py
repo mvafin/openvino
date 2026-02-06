@@ -59,7 +59,16 @@ class TestVarMean(PytorchLayerTest):
     @pytest.mark.xfail(condition=platform.system() == 'Darwin' and platform.machine() == 'arm64',
                        reason='Ticket - 122715')
     def test_op2args(self, unbiased, op_type, ie_device, precision, ir_version):
-        self._test(*self.create_model(unbiased, op_type=op_type), ie_device, precision, ir_version)
+        # Frontend decomposition converts:
+        # - var.default -> var.correction
+        # - var_mean.default -> var_mean.correction  
+        # - std.default and std_mean.default stay as-is
+        if op_type in ["var", "var_mean"]:
+            fx_kind = f"aten.{op_type}.correction"
+        else:
+            fx_kind = f"aten.{op_type}.default"
+        self._test(*self.create_model(unbiased, op_type=op_type), ie_device, precision, ir_version,
+                   fx_kind=fx_kind)
 
     @pytest.mark.nightly
     @pytest.mark.precommit
@@ -72,4 +81,13 @@ class TestVarMean(PytorchLayerTest):
     @pytest.mark.xfail(condition=platform.system() == 'Darwin' and platform.machine() == 'arm64',
                        reason='Ticket - 122715')
     def test_op(self, unbiased, dim, keepdim, op_type, ie_device, precision, ir_version):
-        self._test(*self.create_model(unbiased, dim, keepdim, two_args_case=False, op_type=op_type), ie_device, precision, ir_version)
+        # Frontend decomposition converts:
+        # - var.dim -> var.correction
+        # - var_mean.dim -> var_mean.correction
+        # - std.dim and std_mean.dim stay as-is
+        if op_type in ["var", "var_mean"]:
+            fx_kind = f"aten.{op_type}.correction"
+        else:
+            fx_kind = f"aten.{op_type}.dim"
+        self._test(*self.create_model(unbiased, dim, keepdim, two_args_case=False, op_type=op_type), ie_device, precision, ir_version,
+                   fx_kind=fx_kind)

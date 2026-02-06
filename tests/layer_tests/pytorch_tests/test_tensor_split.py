@@ -64,4 +64,6 @@ class TestTensorSplit(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_tensor_split(self, input_shape, splits, axis, ie_device, precision, ir_version):
         self.input_shape = input_shape
-        self._test(*self.create_model(splits, axis), ie_device, precision, ir_version)
+        # In torch.export mode, tensor_split decomposes to multiple slice operations
+        self._test(*self.create_model(splits, axis), ie_device, precision, ir_version,
+                   fx_kind="aten.slice")

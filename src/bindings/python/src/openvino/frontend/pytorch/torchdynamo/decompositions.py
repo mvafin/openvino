@@ -312,6 +312,9 @@ def get_export_decomposition_list():
 
 def ops_to_not_decompose():
     # list of operations that shouldn't be decomposed
+    # Operations are disabled when:
+    # 1. Decomposition creates multiple operations but we have direct support
+    # 2. The original operation is semantically important to preserve
     return [
         torch.ops.aten.col2im.default,
         torch.ops.aten.linear.default,
@@ -327,4 +330,79 @@ def ops_to_not_decompose():
         torch.ops.aten.upsample_trilinear3d.vec,
         torch.ops.aten.upsample_bicubic2d.vec,
         torch.ops.aten.scaled_dot_product_attention.default,
+        # Disable decompositions that create multiple operations
+        # all: logical_not + any.dims + logical_not -> aten.all.default
+        torch.ops.aten.all.default,
+        torch.ops.aten.all.dim,
+        torch.ops.aten.all.dims,
+        # addcmul: mul + mul + add -> aten.addcmul.default
+        torch.ops.aten.addcmul.default,
+        # stack: cat + view -> aten.stack.default
+        torch.ops.aten.stack.default,
+        # unbind: multiple slices + squeezes -> aten.unbind.int
+        torch.ops.aten.unbind.int,
+        # masked_fill: scalar_tensor + where -> aten.masked_fill.*
+        torch.ops.aten.masked_fill.Scalar,
+        torch.ops.aten.masked_fill.Tensor,
+        # roll: arange + add + fmod + index_select -> aten.roll.default
+        torch.ops.aten.roll.default,
+        # eye: arange + arange + unsqueeze + eq + _to_copy -> aten.eye.*
+        torch.ops.aten.eye.default,
+        torch.ops.aten.eye.m,
+        # logsumexp: amax + sub + exp + sum + log + add -> aten.logsumexp.default
+        torch.ops.aten.logsumexp.default,
+        # glu: slice + slice + sigmoid + mul -> aten.glu.default
+        torch.ops.aten.glu.default,
+        # celu: expm1 + gt + where -> aten.celu.default
+        torch.ops.aten.celu.default,
+        # hardsigmoid: add + clamp + clamp + div -> aten.hardsigmoid.default
+        torch.ops.aten.hardsigmoid.default,
+        # reflection_pad: many ops -> aten.reflection_pad*d.default
+        torch.ops.aten.reflection_pad1d.default,
+        torch.ops.aten.reflection_pad2d.default,
+        torch.ops.aten.reflection_pad3d.default,
+        # replication_pad: arange + clamp + index -> aten.replication_pad*d.default
+        torch.ops.aten.replication_pad1d.default,
+        torch.ops.aten.replication_pad2d.default,
+        torch.ops.aten.replication_pad3d.default,
+        # softplus: exp + log1p + gt + where -> aten.softplus.default
+        torch.ops.aten.softplus.default,
+        # lerp: many ops -> aten.lerp.*
+        torch.ops.aten.lerp.Scalar,
+        torch.ops.aten.lerp.Tensor,
+        # im2col: view operations -> aten.im2col.default
+        torch.ops.aten.im2col.default,
+        # softmax: decomposes to _softmax but we have direct support
+        torch.ops.aten.softmax.int,
+        # log_softmax: decomposes to _log_softmax but we have direct support
+        torch.ops.aten.log_softmax.int,
+        # std: var + sqrt -> aten.std.*
+        torch.ops.aten.std.default,
+        torch.ops.aten.std.dim,
+        torch.ops.aten.std.correction,
+        # std_mean: var_mean + sqrt -> aten.std_mean.*
+        torch.ops.aten.std_mean.default,
+        torch.ops.aten.std_mean.dim,
+        torch.ops.aten.std_mean.correction,
+        # baddbmm: bmm + add -> aten.baddbmm.default
+        torch.ops.aten.baddbmm.default,
+        # adaptive_avg_pool1d: unsqueeze + _adaptive_avg_pool2d + squeeze -> aten.adaptive_avg_pool1d.default
+        torch.ops.aten.adaptive_avg_pool1d.default,
+        # adaptive_max_pool1d: unsqueeze + adaptive_max_pool2d + squeeze -> aten.adaptive_max_pool1d.default
+        torch.ops.aten.adaptive_max_pool1d.default,
+        # avg_pool1d: unsqueeze + avg_pool2d + squeeze -> aten.avg_pool1d.default
+        torch.ops.aten.avg_pool1d.default,
+        # max_pool1d: unsqueeze + max_pool2d_with_indices + squeeze -> aten.max_pool1d.*
+        torch.ops.aten.max_pool1d.default,
+        torch.ops.aten.max_pool1d_with_indices.default,
+        # matmul: view + mm + view -> aten.matmul.default
+        torch.ops.aten.matmul.default,
+        # prelu: view + gt + mul + where -> aten.prelu.default
+        torch.ops.aten.prelu.default,
+        # pixel_shuffle: view + permute + clone -> aten.pixel_shuffle.default
+        torch.ops.aten.pixel_shuffle.default,
+        # pixel_unshuffle: view + permute + clone -> aten.pixel_unshuffle.default
+        torch.ops.aten.pixel_unshuffle.default,
+        # channel_shuffle: view + permute + view -> aten.channel_shuffle.default
+        torch.ops.aten.channel_shuffle.default,
     ]

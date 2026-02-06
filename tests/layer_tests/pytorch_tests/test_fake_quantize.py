@@ -61,7 +61,8 @@ class TestFakeQuantizePerTensorAffine(PytorchLayerTest):
             precision,
             ir_version,
             freeze_model=False,
-            fx_kind="aten.fake_quantize_per_tensor_affine"
+            # fake_quantize_per_tensor_affine becomes fake_quantize_per_tensor_affine_cachemask in FX
+            fx_kind="aten.fake_quantize_per_tensor_affine_cachemask.default"
         )
 
 
@@ -172,5 +173,6 @@ class TestFakeQuantizePerChannelAffine(PytorchLayerTest):
             precision,
             ir_version,
             freeze_model=False,
-            fx_kind="aten.fake_quantize_per_channel_affine"
+            # fake_quantize_per_channel_affine becomes fake_quantize_per_channel_affine_cachemask in FX
+            fx_kind="aten.fake_quantize_per_channel_affine_cachemask.default"
         )

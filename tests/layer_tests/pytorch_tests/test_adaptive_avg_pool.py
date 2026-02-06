@@ -37,7 +37,8 @@ class TestAdaptiveAvgPool3D(PytorchLayerTest):
         if ie_device == "GPU" and len(input_tensor) < 5:
             pytest.xfail(reason="Unsupported shape for adaptive pool on GPU")
         self.input_tensor = np.random.randn(*input_tensor).astype(np.float32)
-        self._test(*self.create_model(output_size), ie_device, precision, ir_version)
+        self._test(*self.create_model(output_size), ie_device, precision, ir_version,
+                   fx_kind="aten._adaptive_avg_pool3d.default")
 
 
 @pytest.mark.parametrize('input_shape', [[2, 8, 9, 10], [8, 9, 10]])
@@ -67,7 +68,8 @@ class TestAdaptiveAvgPool2D(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     def test_adaptive_avg_pool2d(self, ie_device, precision, ir_version, input_shape, output_size):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
-        self._test(*self.create_model(output_size), ie_device, precision, ir_version)
+        self._test(*self.create_model(output_size), ie_device, precision, ir_version,
+                   fx_kind="aten._adaptive_avg_pool2d.default")
 
 
 @pytest.mark.parametrize('input_shape', [[8, 9, 10], [9, 10]])
@@ -97,4 +99,5 @@ class TestAdaptiveAvgPool1D(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     def test_adaptive_avg_pool1d(self, ie_device, precision, ir_version, input_shape, output_size):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
-        self._test(*self.create_model(output_size), ie_device, precision, ir_version)
+        self._test(*self.create_model(output_size), ie_device, precision, ir_version,
+                   fx_kind="aten.adaptive_avg_pool1d.default")

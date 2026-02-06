@@ -42,4 +42,4 @@ class TestCelu(PytorchLayerTest):
         if dtype == torch.float16:
             kwargs["custom_eps"] = 1e-2
         self._test(aten_celu(alpha, dtype, inplace), None,
-                   "aten::celu_" if inplace else "aten::celu", ie_device, precision, ir_version, **kwargs)
+                   "aten::celu_" if inplace else "aten::celu", ie_device, precision, ir_version, fx_kind="aten.celu.default", **kwargs)

@@ -229,7 +229,8 @@ class TestZero(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     def test_zero(self, shape, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'shape': shape, "input_dtype": input_dtype})
+                   kwargs_to_prepare_input={'shape': shape, "input_dtype": input_dtype},
+                   fx_kind="aten.full_like.default")
 
 class TestFullLike(PytorchLayerTest):
     def _prepare_input(self, value, shape):
@@ -486,8 +487,17 @@ class TestZerosAndOnes(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     @pytest.mark.precommit_fx_backend
     def test_zeros_ones(self, op_type, shape, ie_device, precision, ir_version):
+        # Map TorchScript op names to FX op names
+        # zeros/ones decompose to full.default, zeros_like/ones_like decompose to full_like.default
+        fx_op_map = {
+            "aten::zeros": "aten.full.default",
+            "aten::ones": "aten.full.default",
+            "aten::zeros_like": "aten.full_like.default",
+            "aten::ones_like": "aten.full_like.default"
+        }
         self._test(*self.create_model(op_type), ie_device, precision,
-                   ir_version, kwargs_to_prepare_input={'shape': shape})
+                   ir_version, kwargs_to_prepare_input={'shape': shape},
+                   fx_kind=fx_op_map[op_type])
 
     @pytest.mark.parametrize("shape", [(1, 1), (1, 2), (1, 2, 3), (1, 2, 3, 4), (2, 3, 4, 5, 6)])
     @pytest.mark.parametrize("op_type", ["aten::zeros", "aten::ones"])
@@ -497,9 +507,11 @@ class TestZerosAndOnes(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     @pytest.mark.precommit_torch_export
     def test_zeros_ones_with_dtype(self, op_type, shape, dtype, with_names, ie_device, precision, ir_version):
+        # zeros/ones decompose to full.default
         self._test(*self.create_model(op_type, dtype=dtype, with_dtype=True, with_names=with_names), ie_device,
                    precision,
-                   ir_version, kwargs_to_prepare_input={'shape': shape})
+                   ir_version, kwargs_to_prepare_input={'shape': shape},
+                   fx_kind="aten.full.default")
 
     @pytest.mark.parametrize("shape", [(1, 1), (1, 2), (1, 2, 3), (1, 2, 3, 4), (2, 3, 4, 5, 6)])
     @pytest.mark.parametrize("op_type", ["aten::zeros", "aten::ones"])
@@ -517,8 +529,10 @@ class TestZerosAndOnes(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     @pytest.mark.precommit_torch_export
     def test_zeros_ones_like_with_dtype(self, op_type, shape, dtype, ie_device, precision, ir_version):
+        # zeros_like/ones_like decompose to full_like.default
         self._test(*self.create_model(op_type, dtype=dtype, with_dtype=True), ie_device, precision,
-                   ir_version, kwargs_to_prepare_input={'shape': shape})
+                   ir_version, kwargs_to_prepare_input={'shape': shape},
+                   fx_kind="aten.full_like.default")
 
     @pytest.mark.parametrize("shape", [(1, 1), (1, 2), (1, 2, 3), (1, 2, 3, 4), (2, 3, 4, 5, 6)])
     @pytest.mark.parametrize("op_type", ["aten::zeros_like", "aten::ones_like"])
@@ -578,7 +592,8 @@ class TestNewZeros(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_new_zeros(self, shape, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True)
+                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True,
+                   fx_kind="aten.full.default")
 
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("input_dtype", [bool, np.uint8, np.int8, np.int32, np.int64, np.float32, np.float64])
@@ -587,7 +602,8 @@ class TestNewZeros(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     def test_new_zeros_with_dtype(self, shape, dtype, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape, dtype=dtype, used_dtype=True), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True)
+                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True,
+                   fx_kind="aten.full.default")
 
 
 class TestNewOnes(PytorchLayerTest):
@@ -640,7 +656,8 @@ class TestNewOnes(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     def test_new_ones(self, shape, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True)
+                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True,
+                   fx_kind="aten.full.default")
 
     @pytest.mark.parametrize("shape", [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [2, 3, 4, 5, 6]])
     @pytest.mark.parametrize("input_dtype", [bool, np.uint8, np.int8, np.int32, np.int64, np.float32, np.float64])
@@ -650,4 +667,5 @@ class TestNewOnes(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     def test_new_ones_with_dtype(self, shape, dtype, input_dtype, ie_device, precision, ir_version):
         self._test(*self.create_model(shape, dtype=dtype, used_dtype=True), ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True)
+                   kwargs_to_prepare_input={'input_dtype': input_dtype}, use_convert_model=True,
+                   fx_kind="aten.full.default")

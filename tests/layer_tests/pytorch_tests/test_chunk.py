@@ -111,10 +111,12 @@ class TestChunk(PytorchLayerTest):
             elif output_chunks == 4:
                 cls = aten_chunk_4
 
+            # In torch.export mode, chunk decomposes to split_with_sizes
             self._test(cls(dim, unsafe), None,
                        "aten::unsafe_chunk" if unsafe else "aten::chunk",
                        ie_device, precision, ir_version, dynamic_shapes=False,
-                       freeze_model=True, trace_model=True)
+                       freeze_model=True, trace_model=True,
+                       fx_kind="aten.split_with_sizes")
 
     @pytest.mark.parametrize("input_shape", [
         (4, 4),
@@ -141,9 +143,11 @@ class TestChunk(PytorchLayerTest):
             output_chunks += 1 if dim_shape % chunk_size > 0 else 0
 
             for idx in [0, 1, output_chunks - 1]:
+                # In torch.export mode, chunk decomposes to split_with_sizes
                 self._test(aten_chunk_getitem(chunks, dim, idx, unsafe), None,
                            "aten::unsafe_chunk" if unsafe else "aten::chunk",
-                           ie_device, precision, ir_version)
+                           ie_device, precision, ir_version,
+                           fx_kind="aten.split_with_sizes")
 
 
 class aten_chunk_loop_getitem(torch.nn.Module):

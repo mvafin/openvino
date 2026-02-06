@@ -191,7 +191,8 @@ class TestPooling(PytorchLayerTest):
     def test_max_pool1d(self, input_shape, params, ceil_mode, dilation, ie_device, precision, ir_version, is_dynamic_shapes):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
         self._test(*self.create_model("max_pool1d", **params, ceil_mode=ceil_mode, dilation=dilation),
-                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes)
+                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes,
+                   fx_kind="aten.max_pool1d")
 
     @pytest.mark.parametrize("input_shape", [[1, 3, 15, 15], [3, 15, 15]])
     @pytest.mark.parametrize("params", d2_params)
@@ -210,7 +211,8 @@ class TestPooling(PytorchLayerTest):
             to_trace = True
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
         self._test(*self.create_model("max_pool2d", **params, ceil_mode=ceil_mode, dilation=dilation, dtype=dtype),
-                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes, trace_model=to_trace)
+                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes, trace_model=to_trace,
+                   fx_kind="aten.max_pool2d_with_indices")
 
     @pytest.mark.parametrize("input_shape", [[1, 3, 15, 15, 15], [3, 15, 15, 15]])
     @pytest.mark.parametrize("params", d3_params)
@@ -225,7 +227,8 @@ class TestPooling(PytorchLayerTest):
     def test_max_pool3d(self, input_shape, params, ceil_mode, dilation, ie_device, precision, ir_version, is_dynamic_shapes):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
         self._test(*self.create_model("max_pool3d", **params, ceil_mode=ceil_mode, dilation=dilation),
-                   ie_device, precision, ir_version,  dynamic_shapes=is_dynamic_shapes)
+                   ie_device, precision, ir_version,  dynamic_shapes=is_dynamic_shapes,
+                   fx_kind="aten.max_pool3d_with_indices")
 
     @pytest.mark.parametrize("input_shape", [[1, 3, 15], [3, 15]])
     @pytest.mark.parametrize("params", d1_params)
@@ -240,7 +243,8 @@ class TestPooling(PytorchLayerTest):
     def test_max_pool1d_indices(self, input_shape, params, ceil_mode, dilation, ie_device, precision, ir_version, is_dynamic_shapes):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
         self._test(*self.create_model("max_pool1d_with_indices", **params, ceil_mode=ceil_mode, dilation=dilation),
-                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes)
+                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes,
+                   fx_kind="aten.max_pool1d_with_indices")
 
     @pytest.mark.parametrize("input_shape", [[1, 3, 15, 15], [3, 15, 15]])
     @pytest.mark.parametrize("params", d2_params)
@@ -259,7 +263,8 @@ class TestPooling(PytorchLayerTest):
             to_trace = True
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
         self._test(*self.create_model("max_pool2d_with_indices", **params, ceil_mode=ceil_mode, dilation=dilation),
-                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes, trace_model=to_trace)
+                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes, trace_model=to_trace,
+                   fx_kind="aten.max_pool2d_with_indices")
 
     @pytest.mark.parametrize("input_shape", [[1, 3, 15, 15, 15], [3, 15, 15, 15]])
     @pytest.mark.parametrize("params", d3_params)
@@ -275,4 +280,5 @@ class TestPooling(PytorchLayerTest):
     def test_max_pool3d_indices(self, input_shape, params, ceil_mode, dilation, ie_device, precision, ir_version, is_dynamic_shapes):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
         self._test(*self.create_model("max_pool3d_with_indices", **params, ceil_mode=ceil_mode, dilation=dilation),
-                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes)
+                   ie_device, precision, ir_version, dynamic_shapes=is_dynamic_shapes,
+                   fx_kind="aten.max_pool3d_with_indices")

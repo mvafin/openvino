@@ -123,5 +123,6 @@ class TestClampMax(PytorchLayerTest):
     @pytest.mark.precommit_torch_export
     @pytest.mark.precommit_fx_backend
     def test_clamp_max(self, maximum, as_tensor, inplace, ie_device, precision, ir_version):
+        # In torch.export mode, clamp_max decomposes to clamp.default
         self._test(*self.create_model(maximum, as_tensor, inplace), ie_device,
-                   precision, ir_version, use_convert_model=True, trace_model=True, fx_kind="aten.clamp_max")
+                   precision, ir_version, use_convert_model=True, trace_model=True, fx_kind="aten.clamp")

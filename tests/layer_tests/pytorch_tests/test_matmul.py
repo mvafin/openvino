@@ -40,4 +40,6 @@ class TestMatMulOperation(PytorchLayerTest):
             precision,
             ir_version,
             kwargs_to_prepare_input={"matrix": matrix_input, "vector": vector_input},
+            # torch.mv decomposes to mul.Tensor + sum.dim_IntList in torch.export
+            fx_kind="aten.mul.Tensor"
         )

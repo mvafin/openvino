@@ -32,4 +32,4 @@ class TestPRelu(PytorchLayerTest):
     @pytest.mark.precommit
     @pytest.mark.precommit_torch_export
     def test_prelu(self, alpha, ie_device, precision, ir_version):
-        self._test(*self.create_model(alpha), ie_device, precision, ir_version)
+        self._test(*self.create_model(alpha), ie_device, precision, ir_version, fx_kind="aten.prelu.default")

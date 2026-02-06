@@ -34,4 +34,5 @@ class TestHardSigmoid(PytorchLayerTest):
     @pytest.mark.parametrize("dtype", ["float32", "float64"])
     @pytest.mark.parametrize("inplace", [skip_if_export(True), False])
     def test_hardsigmoid(self, shape, dtype, inplace, ie_device, precision, ir_version):
-        self._test(*self.create_model(inplace), ie_device, precision, ir_version, kwargs_to_prepare_input={"shape": shape, "dtype": dtype})
+        self._test(*self.create_model(inplace), ie_device, precision, ir_version,
+                   kwargs_to_prepare_input={"shape": shape, "dtype": dtype}, fx_kind="aten.hardsigmoid.default")

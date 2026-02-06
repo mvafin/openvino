@@ -59,7 +59,8 @@ class TestMaskedFill(PytorchLayerTest):
     def test_masked_fill(self, value, mask_fill, mask_dtype, input_dtype, inplace, ie_device, precision, ir_version):
         self._test(*self.create_model(value, inplace),
                    ie_device, precision, ir_version,
-                   kwargs_to_prepare_input={'mask_fill': mask_fill, 'mask_dtype': mask_dtype, "input_dtype": input_dtype})
+                   kwargs_to_prepare_input={'mask_fill': mask_fill, 'mask_dtype': mask_dtype, "input_dtype": input_dtype},
+                   fx_kind="aten.masked_fill.Scalar")
 
     @pytest.mark.skipif(parse_version(torch.__version__) >= parse_version("2.1.0"), reason="pytorch 2.1 and above does not support nonboolean mask")
     @pytest.mark.parametrize("value", [0.0, 1.0, -1.0, 2])

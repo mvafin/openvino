@@ -33,7 +33,8 @@ class TestUnflatten(PytorchLayerTest):
     @pytest.mark.precommit
     @pytest.mark.precommit_torch_export
     def test_unflatten(self, dim, shape, dtype, ie_device, precision, ir_version):
-        self._test(*self.create_model(dim, shape), ie_device, precision, ir_version, kwargs_to_prepare_input={"dtype": dtype})
+        self._test(*self.create_model(dim, shape), ie_device, precision, ir_version,
+                   kwargs_to_prepare_input={"dtype": dtype}, fx_kind="aten.view")
 
 
 class TestUnflattenListSizes(PytorchLayerTest):
@@ -68,4 +69,5 @@ class TestUnflattenListSizes(PytorchLayerTest):
     @pytest.mark.precommit
     @pytest.mark.precommit_torch_export
     def test_unflatten(self, dim, dtype, ie_device, precision, ir_version):
-        self._test(*self.create_model(dim), ie_device, precision, ir_version, kwargs_to_prepare_input={"dtype": dtype})
+        self._test(*self.create_model(dim), ie_device, precision, ir_version,
+                   kwargs_to_prepare_input={"dtype": dtype}, fx_kind="aten.view")

@@ -66,4 +66,5 @@ class TestSoftmax(PytorchLayerTest):
         if use_prim_dtype:
             input_kwargs["second_input_dtype"] = dtype
         self._test(*self.create_model(dim, dtype, use_prim_dtype), ie_device,
-                   precision, ir_version, kwargs_to_prepare_input=input_kwargs)
+                   precision, ir_version, kwargs_to_prepare_input=input_kwargs,
+                   fx_kind="aten.softmax.int")

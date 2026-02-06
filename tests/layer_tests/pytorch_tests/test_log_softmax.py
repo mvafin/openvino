@@ -44,4 +44,4 @@ class TestLogSoftmax(PytorchLayerTest):
     def test_log_softmax(self, input_dtype, convert_dtype, dim, ie_device, precision, ir_version):
         self.input_dtype = input_dtype
         self._test(aten_log_softmax(dim, convert_dtype), None, "aten::log_softmax",
-                    ie_device, precision, ir_version)
+                    ie_device, precision, ir_version, fx_kind="aten.log_softmax.int")

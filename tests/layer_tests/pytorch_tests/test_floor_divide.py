@@ -71,7 +71,9 @@ class TestFloorDivide(PytorchLayerTest):
             self.other_tensor = self.rng.standard_normal(other_tensor, dtype=np.float32)
         else:
             self.other_tensor = other_tensor
-        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True, use_convert_model=True)
+        # In torch.export mode, floor_divide decomposes to div.Tensor_mode
+        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True, use_convert_model=True,
+                   fx_kind="aten.div")
 
     @pytest.mark.parametrize('input_tensor', [
         [5, 5, 5], [1, 1, 5, 5],
@@ -124,4 +126,6 @@ class TestFloorDivide(PytorchLayerTest):
                                                   size=other_tensor).astype(np.float32)
         else:
             self.other_tensor = other_tensor
-        self._test(*self.create_model_int(), ie_device, precision, ir_version)
+        # In torch.export mode, floor_divide decomposes to div.Tensor_mode
+        self._test(*self.create_model_int(), ie_device, precision, ir_version,
+                   fx_kind="aten.div")

@@ -78,7 +78,8 @@ class TestEmbeddingBag1dOffsets(PytorchLayerTest):
                 "per_sample_weights": per_sample_weights,
             },
             trace_model=True,
-            dynamic_shapes=not per_sample_weights and ie_device != "GPU"
+            dynamic_shapes=not per_sample_weights and ie_device != "GPU",
+            fx_kind="aten._embedding_bag_forward_only"
         )
 
 
@@ -157,6 +158,7 @@ class TestEmbeddingBag2d(PytorchLayerTest):
                 "per_sample_weights": per_sample_weights,
             },
             trace_model=True,
+            fx_kind="aten._embedding_bag_forward_only",
             dynamic_shapes=not per_sample_weights and ie_device != "GPU"
         )
 
@@ -237,5 +239,6 @@ class TestEmbeddingBagPretrained(PytorchLayerTest):
                 "per_sample_weights": per_sample_weights,
             },
             trace_model=True,
-            dynamic_shapes=not per_sample_weights and ie_device != "GPU"
+            dynamic_shapes=not per_sample_weights and ie_device != "GPU",
+            fx_kind="aten._embedding_bag_forward_only"
         )

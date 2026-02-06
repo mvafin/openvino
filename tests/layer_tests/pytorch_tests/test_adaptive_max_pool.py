@@ -55,7 +55,8 @@ class TestAdaptiveMaxPool3D(PytorchLayerTest):
         if ie_device == "GPU" and len(input_shape) < 5:
             pytest.xfail(reason="Unsupported shape for adaptive pool on GPU")
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
-        self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version)
+        self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version,
+                   fx_kind="aten.adaptive_max_pool3d.default")
 
 
 class TestAdaptiveMaxPool2D(PytorchLayerTest):
@@ -100,7 +101,8 @@ class TestAdaptiveMaxPool2D(PytorchLayerTest):
                        reason='Ticket - 122715')
     def test_adaptive_max_pool2d(self, ie_device, precision, ir_version, input_shape, output_size, return_indices):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
-        self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version)
+        self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version,
+                   fx_kind="aten.adaptive_max_pool2d.default")
 
 
 class TestAdaptiveMaxPool1D(PytorchLayerTest):
@@ -147,4 +149,5 @@ class TestAdaptiveMaxPool1D(PytorchLayerTest):
                        reason='Ticket - 122715')
     def test_adaptive_max_pool1d(self, ie_device, precision, ir_version, input_shape, output_size, return_indices):
         self.input_tensor = np.random.randn(*input_shape).astype(np.float32)
-        self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version)
+        self._test(*self.create_model(output_size, return_indices), ie_device, precision, ir_version,
+                   fx_kind="aten.adaptive_max_pool1d.default")

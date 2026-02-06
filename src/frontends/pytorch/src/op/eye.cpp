@@ -46,9 +46,17 @@ OutputVector translate_eye(const NodeContext& context) {
 };
 
 OutputVector translate_eye_fx(const NodeContext& context) {
-    num_inputs_check(context, 2, 2);
+    // aten.eye.default has 1 input (n for square matrix)
+    // aten.eye.m has 2 inputs (n, m for rectangular matrix)
+    num_inputs_check(context, 1, 2);
     auto x = get_input_as_i32(context, 0);
-    auto y = get_input_as_i32(context, 1);
+    Output<Node> y;
+    if (context.get_input_size() >= 2) {
+        y = get_input_as_i32(context, 1);
+    } else {
+        // Square matrix: y = x
+        y = x;
+    }
     // aten::eye support only main diagonal
     auto diagonal = context.mark_node(v0::Constant::create(element::i32, Shape{}, {0}));
     auto dtype = element::i32;

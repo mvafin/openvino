@@ -51,4 +51,5 @@ class TestLayerNorm(PytorchLayerTest):
     @pytest.mark.precommit
     @pytest.mark.precommit_torch_export
     def test_layer_norm(self, normalized_shape, weight, bias, eps, ie_device, precision, ir_version):
-        self._test(*self.create_model(normalized_shape, weight, bias, eps), ie_device, precision, ir_version)
+        self._test(*self.create_model(normalized_shape, weight, bias, eps), ie_device, precision, ir_version,
+                   fx_kind="aten.native_layer_norm")

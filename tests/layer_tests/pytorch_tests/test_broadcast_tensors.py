@@ -37,9 +37,10 @@ class TestBroadcastTensors(PytorchLayerTest):
         ("int32", "float32", "int32"),      # mixed types
     ])
     def test_broadcast_tensors(self, x_shape, y_shape, z_shape, x_dtype, y_dtype, z_dtype, ie_device, precision, ir_version):
+        # In torch.export mode, broadcast_tensors decomposes to expand ops
         self._test(*self.create_model(), ie_device, precision, ir_version, kwargs_to_prepare_input={
             "x_shape": x_shape, "x_dtype": x_dtype,
             "y_shape": y_shape, "y_dtype": y_dtype,
             "z_shape": z_shape, "z_dtype": z_dtype,
         },
-        fx_kind="aten.broadcast_tensors.default")
+        fx_kind="aten.expand.default")

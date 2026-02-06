@@ -85,7 +85,8 @@ class TestAll(PytorchLayerTest):
         else:
             self.input_tensor = input_shape
         self._test(aten_all_noparam() if not out else aten_all_noparam_out(), None, "aten::all",
-                ie_device, precision, ir_version, trace_model=True, freeze_model=False, kwargs_to_prepare_input={"out": out})
+                ie_device, precision, ir_version, trace_model=True, freeze_model=False, kwargs_to_prepare_input={"out": out},
+                fx_kind="aten.all.default")
 
     @pytest.mark.parametrize("input_shape, d_type", [
         (np.eye(5,5), np.int64),
@@ -119,4 +120,5 @@ class TestAll(PytorchLayerTest):
             self.input_tensor = input_shape
         for dim in range(len(self.input_tensor.shape)):
             self._test(aten_all(dim, keepdim) if not out else aten_all_out(dim, keepdim), None, "aten::all",
-                    ie_device, precision, ir_version, trace_model=True, freeze_model=False, kwargs_to_prepare_input={"out": out})
+                    ie_device, precision, ir_version, trace_model=True, freeze_model=False, kwargs_to_prepare_input={"out": out},
+                    fx_kind="aten.all.dim")
