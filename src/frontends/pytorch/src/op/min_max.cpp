@@ -177,7 +177,7 @@ OutputVector translate_amin(const NodeContext& context) {
     // aten::amin.out(Tensor self, int[1] dim=[], bool keepdim=False, *, Tensor(a!) out) -> Tensor(a!)
     num_inputs_check(context, 2, 4);
     auto x = context.get_input(0);
-    auto dims = context.get_input(1);
+    auto dims = get_input_concat_if_list(context, 1);
     bool keep_dims = false;
     if (!context.input_is_none(2)) {
         keep_dims = context.const_input<bool>(2);
@@ -195,7 +195,7 @@ OutputVector translate_amax(const NodeContext& context) {
     // aten::amax.out(Tensor self, int[1] dim=[], bool keepdim=False, *, Tensor(a!) out) -> Tensor(a!)
     num_inputs_check(context, 2, 4);
     auto x = context.get_input(0);
-    auto dims = context.get_input(1);
+    auto dims = get_input_concat_if_list(context, 1);
     bool keep_dims = false;
     if (!context.input_is_none(2)) {
         keep_dims = context.const_input<bool>(2);
@@ -214,7 +214,7 @@ OutputVector translate_aminmax(const NodeContext& context) {
     auto input = context.get_input(0);
 
     // check if dim is provided, if not, get the range of axes to compute min and max
-    auto dim = !context.input_is_none(1) ? context.get_input(1) : get_axes_range(context, 0);
+    auto dim = !context.input_is_none(1) ? get_input_concat_if_list(context, 1) : get_axes_range(context, 0);
 
     // check if keepdim is provided, if not, set it to false like PyTorch
     bool keep_dims = !context.input_is_none(2) ? context.const_input<bool>(2) : false;
