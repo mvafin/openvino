@@ -96,9 +96,9 @@ The tests use pytest markers to categorize tests:
 
 ## Environment Variables
 
-- `TEST_DEVICE` - Device(s) to run tests on (default: `CPU;GPU`)
+- `TEST_DEVICE` - Device(s) to run tests on (default: `CPU`)
   - Supported values: `CPU`, `GPU`, or both separated by `;`
-- `TEST_PRECISION` - Inference precision(s) to use (default: `FP32;FP16`)
+- `TEST_PRECISION` - Inference precision(s) to use (default: `FP32`)
   - Supported values: `FP32`, `FP16`, or both separated by `;`
 
 ## Test Output

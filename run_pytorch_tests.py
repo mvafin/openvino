@@ -108,6 +108,7 @@ Examples:
         cmd.append('-v')
     
     # Add parallel execution
+    # 'logical' uses the number of logical CPU cores for parallel test execution
     if args.parallel:
         cmd.extend(['-n', 'logical'])
     
