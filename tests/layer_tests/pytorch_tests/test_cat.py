@@ -328,3 +328,50 @@ class TestCatAlignTypesPT(PytorchLayerTest):
         self._test(self.create_model_param_last(in_types), None, ["aten::cat", "prim::ListConstruct"],
                    ie_device, precision, ir_version,
                    kwargs_to_prepare_input={"in_types": in_types}, trace_model=trace_model)
+
+
+class TestSequenceMarkTransformation(PytorchLayerTest):
+    """Test that verifies SequenceMark nodes are properly removed by transformation passes.
+    
+    This test ensures that internal frontend helper nodes (SequenceMark, SequenceInsert, 
+    ConcatFromSequence) are correctly transformed to standard OpenVINO operations and 
+    don't remain in the final graph as unconverted operations.
+    """
+    
+    def _prepare_input(self):
+        return (np.random.randn(2, 3, 4).astype(np.float32),)
+    
+    def create_model_simple_list(self):
+        """Simple list construction and concatenation - creates SequenceMark"""
+        class SimpleListCat(torch.nn.Module):
+            def forward(self, x):
+                # This creates a list (SequenceMark) and concatenates it
+                list_items = [x, x, x]
+                return torch.cat(list_items, dim=1)
+        return SimpleListCat()
+    
+    def create_model_append_list(self):
+        """List with append - creates SequenceMark with SequenceInsert"""
+        class AppendListCat(torch.nn.Module):
+            def forward(self, x):
+                # This creates SequenceMark and uses append (SequenceInsert)
+                list_items = []
+                list_items.append(x)
+                list_items.append(x)
+                return torch.cat(list_items, dim=1)
+        return AppendListCat()
+    
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    def test_sequence_mark_removed_simple(self, ie_device, precision, ir_version):
+        """Test that SequenceMark from simple list construction is removed by transformation"""
+        self._test(self.create_model_simple_list(), None, ["aten::cat", "prim::ListConstruct"],
+                   ie_device, precision, ir_version, freeze_model=False)
+    
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    def test_sequence_mark_removed_append(self, ie_device, precision, ir_version):
+        """Test that SequenceMark/SequenceInsert from append is removed by transformation"""
+        self._test(self.create_model_append_list(), None, ["aten::cat", "aten::append", "prim::ListConstruct"],
+                   ie_device, precision, ir_version, freeze_model=False)
+
