@@ -66,14 +66,6 @@ ov::frontend::FrameworkNodeExtractor make_pytorch_extractor() {
             return std::make_pair(op_type_it->second, std::move(exception_msg));
         } else if (const auto& fw_node = ov::as_type_ptr<ov::op::util::FrameworkNode>(node)) {
             auto op_type = std::string(fw_node->get_type_name());
-            // Filter out internal frontend helper nodes that are used during conversion.
-            // These nodes (ConcatFromSequence, SequenceInsert, SequenceMark) are temporary
-            // and should be converted by transformation passes like SequenceConcatReplacer
-            // and SequenceMarkReplacer. They are not framework-specific operations and
-            // should not be reported as unconverted.
-            if (op_type == "ConcatFromSequence" || op_type == "SequenceInsert" || op_type == "SequenceMark") {
-                return std::nullopt;
-            }
             std::stringstream consumer;
             if (fw_node->get_output_size() > 0) {
                 auto inputs = fw_node->output(0).get_target_inputs();
