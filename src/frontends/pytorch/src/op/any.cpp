@@ -68,7 +68,7 @@ OutputVector translate_any_fx(const NodeContext& context) {
 
     Output<Node> dims;
     if (!context.input_is_none(1)) {
-        dims = context.get_input(1);
+        dims = get_input_concat_if_list(context, 1);
     } else {
         dims = get_axes_range(context, 0);
     }

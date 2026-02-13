@@ -84,7 +84,7 @@ OutputVector translate_logsumexp(const NodeContext& context) {
     auto input = context.get_input(0);
     ov::Output<ov::Node> dim;
     if (!context.input_is_none(1)) {
-        dim = context.get_input(1);
+        dim = get_input_concat_if_list(context, 1);
     } else {
         dim = context.mark_node(get_axes_range(context, 0));
     }
