@@ -63,3 +63,116 @@ class TestSplitAmaxWithoutGetitem(PytorchLayerTest):
     @pytest.mark.precommit_fx_backend
     def test_split_amax_direct(self, ie_device, precision, ir_version):
         self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True)
+
+
+class TestSplitAmaxMultiDim(PytorchLayerTest):
+    """Test case for split_with_sizes followed by amax with multiple dimensions.
+    
+    Tests that SequenceMark is correctly handled when amax operates on multiple dimensions.
+    """
+
+    def _prepare_input(self):
+        return (self.random.randn(2, 4, 5, 6),)
+
+    def create_model(self):
+        class SplitAmaxMultiDimModel(torch.nn.Module):
+            def forward(self, x):
+                # Split along dimension 1
+                chunk1, chunk2 = x.split([2, 2], dim=1)
+                # Apply amax on multiple dimensions
+                result = chunk1.amax(dim=[1, 2])
+                return result
+
+        return SplitAmaxMultiDimModel(), ["aten::split_with_sizes", "aten::amax"]
+
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    @pytest.mark.precommit_torch_export
+    @pytest.mark.precommit_fx_backend
+    def test_split_amax_multidim(self, ie_device, precision, ir_version):
+        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True)
+
+
+class TestSplitAmin(PytorchLayerTest):
+    """Test case for split_with_sizes followed by amin operation.
+    
+    Verifies that SequenceMark handling also works for amin (minimum reduction).
+    """
+
+    def _prepare_input(self):
+        return (self.random.randn(2, 6, 40),)
+
+    def create_model(self):
+        class SplitAminModel(torch.nn.Module):
+            def forward(self, x):
+                # Split along dimension 1
+                splits = x.split([2, 2, 2], dim=1)
+                # Apply amin to the second split
+                result = splits[1].amin(dim=1)
+                return result
+
+        return SplitAminModel(), ["aten::split_with_sizes", "aten::amin"]
+
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    @pytest.mark.precommit_torch_export
+    @pytest.mark.precommit_fx_backend
+    def test_split_amin(self, ie_device, precision, ir_version):
+        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True)
+
+
+class TestSplitSum(PytorchLayerTest):
+    """Test case for split_with_sizes followed by sum operation.
+    
+    Tests that SequenceMark handling works with sum reduction.
+    """
+
+    def _prepare_input(self):
+        return (self.random.randn(3, 9, 20),)
+
+    def create_model(self):
+        class SplitSumModel(torch.nn.Module):
+            def forward(self, x):
+                # Split along dimension 1
+                chunk1, chunk2, chunk3 = x.split([3, 3, 3], dim=1)
+                # Apply sum with dimension parameter
+                result = chunk2.sum(dim=[1, 2])
+                return result
+
+        return SplitSumModel(), ["aten::split_with_sizes", "aten::sum"]
+
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    @pytest.mark.precommit_torch_export
+    @pytest.mark.precommit_fx_backend
+    def test_split_sum(self, ie_device, precision, ir_version):
+        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True)
+
+
+class TestSplitLogsumexp(PytorchLayerTest):
+    """Test case for split_with_sizes followed by logsumexp operation.
+    
+    Verifies SequenceMark handling with logsumexp which internally uses ReduceMax.
+    """
+
+    def _prepare_input(self):
+        return (self.random.randn(2, 4, 30),)
+
+    def create_model(self):
+        class SplitLogsumexpModel(torch.nn.Module):
+            def forward(self, x):
+                # Split along dimension 1
+                chunk1, chunk2 = x.split([2, 2], dim=1)
+                # Apply logsumexp with dimension parameter
+                result = torch.logsumexp(chunk1, dim=1)
+                return result
+
+        return SplitLogsumexpModel(), ["aten::split_with_sizes", "aten::logsumexp"]
+
+    @pytest.mark.nightly
+    @pytest.mark.precommit
+    @pytest.mark.precommit_torch_export
+    @pytest.mark.precommit_fx_backend
+    def test_split_logsumexp(self, ie_device, precision, ir_version):
+        self._test(*self.create_model(), ie_device, precision, ir_version, trace_model=True)
+
