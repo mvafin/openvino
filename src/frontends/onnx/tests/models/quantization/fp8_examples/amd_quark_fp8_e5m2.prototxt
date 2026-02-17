@@ -1,0 +1,182 @@
+ir_version: 13
+producer_name: "AMD Quark Example Generator"
+graph {
+  node {
+    input: "input"
+    input: "input_scale"
+    output: "input_quantized"
+    name: "quantize_input"
+    op_type: "QuantizeLinear"
+  }
+  node {
+    input: "input_quantized"
+    input: "input_scale"
+    output: "input_dequantized"
+    name: "dequantize_input"
+    op_type: "DequantizeLinear"
+  }
+  node {
+    input: "conv_weight"
+    input: "weight_scale"
+    output: "weight_quantized"
+    name: "quantize_weight"
+    op_type: "QuantizeLinear"
+    attribute {
+      name: "axis"
+      i: 0
+      type: INT
+    }
+  }
+  node {
+    input: "weight_quantized"
+    input: "weight_scale"
+    output: "weight_dequantized"
+    name: "dequantize_weight"
+    op_type: "DequantizeLinear"
+    attribute {
+      name: "axis"
+      i: 0
+      type: INT
+    }
+  }
+  node {
+    input: "input_dequantized"
+    input: "weight_dequantized"
+    output: "output"
+    name: "conv"
+    op_type: "Conv"
+    attribute {
+      name: "kernel_shape"
+      ints: 3
+      ints: 3
+      type: INTS
+    }
+    attribute {
+      name: "pads"
+      ints: 0
+      ints: 0
+      ints: 0
+      ints: 0
+      type: INTS
+    }
+    attribute {
+      name: "strides"
+      ints: 1
+      ints: 1
+      type: INTS
+    }
+  }
+  name: "amd_quark_fp8_example"
+  initializer {
+    data_type: 1
+    float_data: 0.10000000149011612
+    name: "input_scale"
+  }
+  initializer {
+    dims: 2
+    dims: 3
+    dims: 3
+    dims: 3
+    data_type: 1
+    name: "conv_weight"
+    raw_data: "QQ~>(\225\215\275\353\316\245>\244\362B?\347\305\357\275\231\301\357\275\245#J?\232v\304>\362^p\2767\345\212>\025Em\276!tn\276\365\304\367=^\346t\277\034\312\\\277\023\362\217\276s\244\001\277\007\345 >Dt\350\276^\3064\277a\232;?\3471\347\275:L\n=&^6\277\253\\\213\276b+c=\302S\023\277~[@>u\303\231\276\342X\025\276r\t\232\276t\027m?w#\335\273\022c\007\277N\222\322>\233D\034\277W\340\325=x\326z\277\000\002*\277\376\225\311=%\014\275>+{\257=\002\331l\275C*\032\2765@=\277\266G\270\276\330\330k\276\310O\007?\275\356/>M\253a\277V\356%>\201)E\276\303J\255\276\321\226\234>"
+  }
+  initializer {
+    dims: 2
+    data_type: 1
+    name: "weight_scale"
+    raw_data: "\n\327\243<\217\302\365<"
+  }
+  input {
+    name: "input"
+    type {
+      tensor_type {
+        elem_type: 1
+        shape {
+          dim {
+            dim_value: 1
+          }
+          dim {
+            dim_value: 3
+          }
+          dim {
+            dim_value: 8
+          }
+          dim {
+            dim_value: 8
+          }
+        }
+      }
+    }
+  }
+  output {
+    name: "output"
+    type {
+      tensor_type {
+        elem_type: 1
+        shape {
+          dim {
+            dim_value: 1
+          }
+          dim {
+            dim_value: 2
+          }
+          dim {
+            dim_value: 6
+          }
+          dim {
+            dim_value: 6
+          }
+        }
+      }
+    }
+  }
+  value_info {
+    name: "input_quantized"
+    type {
+      tensor_type {
+        elem_type: 19
+        shape {
+          dim {
+            dim_value: 1
+          }
+          dim {
+            dim_value: 3
+          }
+          dim {
+            dim_value: 8
+          }
+          dim {
+            dim_value: 8
+          }
+        }
+      }
+    }
+  }
+  value_info {
+    name: "weight_quantized"
+    type {
+      tensor_type {
+        elem_type: 19
+        shape {
+          dim {
+            dim_value: 2
+          }
+          dim {
+            dim_value: 3
+          }
+          dim {
+            dim_value: 3
+          }
+          dim {
+            dim_value: 3
+          }
+        }
+      }
+    }
+  }
+}
+opset_import {
+  domain: ""
+  version: 19
+}

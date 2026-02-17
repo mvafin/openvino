@@ -1,0 +1,125 @@
+ir_version: 13
+producer_name: "NVIDIA ModelOpt Example Generator"
+graph {
+  node {
+    input: "input"
+    input: "input_scale"
+    output: "input_quantized"
+    name: "quantize_input"
+    op_type: "QuantizeLinear"
+  }
+  node {
+    input: "input_quantized"
+    input: "input_scale"
+    output: "input_dequantized"
+    name: "dequantize_input"
+    op_type: "DequantizeLinear"
+  }
+  node {
+    input: "weight"
+    input: "weight_scale"
+    output: "weight_quantized"
+    name: "quantize_weight"
+    op_type: "QuantizeLinear"
+  }
+  node {
+    input: "weight_quantized"
+    input: "weight_scale"
+    output: "weight_dequantized"
+    name: "dequantize_weight"
+    op_type: "DequantizeLinear"
+  }
+  node {
+    input: "input_dequantized"
+    input: "weight_dequantized"
+    output: "output"
+    name: "matmul"
+    op_type: "MatMul"
+  }
+  name: "nvidia_modelopt_fp8_example"
+  initializer {
+    data_type: 1
+    float_data: 0.05000000074505806
+    name: "input_scale"
+  }
+  initializer {
+    dims: 4
+    dims: 4
+    data_type: 1
+    name: "weight"
+    raw_data: "\000\000\000?\232\231\231\276\315\314L>\315\314L?\315\314\314=\315\314\314>\232\231\031\277\232\231\231>333?\315\314L\276\000\000\000?\315\314\314\276\232\231\231>\232\231\031?\315\314\314\275fff?"
+  }
+  initializer {
+    data_type: 1
+    float_data: 0.0099999997764825821
+    name: "weight_scale"
+  }
+  input {
+    name: "input"
+    type {
+      tensor_type {
+        elem_type: 1
+        shape {
+          dim {
+            dim_value: 1
+          }
+          dim {
+            dim_value: 4
+          }
+        }
+      }
+    }
+  }
+  output {
+    name: "output"
+    type {
+      tensor_type {
+        elem_type: 1
+        shape {
+          dim {
+            dim_value: 1
+          }
+          dim {
+            dim_value: 4
+          }
+        }
+      }
+    }
+  }
+  value_info {
+    name: "input_quantized"
+    type {
+      tensor_type {
+        elem_type: 17
+        shape {
+          dim {
+            dim_value: 1
+          }
+          dim {
+            dim_value: 4
+          }
+        }
+      }
+    }
+  }
+  value_info {
+    name: "weight_quantized"
+    type {
+      tensor_type {
+        elem_type: 17
+        shape {
+          dim {
+            dim_value: 4
+          }
+          dim {
+            dim_value: 4
+          }
+        }
+      }
+    }
+  }
+}
+opset_import {
+  domain: ""
+  version: 19
+}
