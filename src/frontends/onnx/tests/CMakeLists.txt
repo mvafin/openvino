@@ -64,6 +64,7 @@ set(MULTI_TEST_SRC
     onnx_import_rnn.in.cpp
     onnx_import_signal.in.cpp
     onnx_import_quant.in.cpp
+    onnx_import_fp8_quant.in.cpp
     onnx_import_with_editor.in.cpp)
 set(SRC
     conversion.cpp
