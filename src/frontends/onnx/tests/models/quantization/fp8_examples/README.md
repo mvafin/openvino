@@ -26,7 +26,8 @@ FP8 quantization is a technique for reducing model size and accelerating inferen
 
 **Key Characteristics**:
 - Uses FP8 E4M3FN format for both activations and weights
-- Per-tensor quantization with dynamic scales
+- Per-tensor quantization with dynamic scales for activations
+- **Weights are pre-quantized and folded into FP8 constants** (no runtime QuantizeLinear for weights)
 - Pattern: `Input -> QuantizeLinear -> DequantizeLinear -> MatMul -> Output`
 - Optimized for NVIDIA GPU architectures (Hopper H100, Blackwell, etc.)
 
@@ -41,7 +42,12 @@ QuantizeLinear (scale: 0.05) -> input_quantized (FP8 E4M3FN)
 DequantizeLinear (scale: 0.05) -> input_dequantized (FP32)
   |
   v
-MatMul (with FP8 quantized weights)
+MatMul (with pre-quantized FP8 E4M3FN weight constant)
+  |                    ^
+  |                    |
+  |         DequantizeLinear (scale: 1.0)
+  |                    |
+  |           weight_fp8 (FP8 E4M3FN constant)
   |
   v
 Output (FP32, shape: [1, 4])

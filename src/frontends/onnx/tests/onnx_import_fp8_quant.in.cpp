@@ -17,6 +17,7 @@ static std::string s_device = backend_name_to_device("${BACKEND_NAME}");
  * 
  * This test verifies that the ONNX frontend can correctly load a model with:
  * - FP8 E4M3FN data types
+ * - Pre-quantized FP8 weight constants (folded)
  * - QuantizeLinear/DequantizeLinear operations
  * - MatMul operation with quantized inputs
  */
@@ -29,10 +30,11 @@ OPENVINO_TEST(${BACKEND_NAME}, onnx_fp8_nvidia_modelopt_e4m3) {
     EXPECT_EQ(model->get_parameters().size(), 1);
     
     // Verify the model contains expected number of operations
-    // Expected: Parameter, Constant(scale), Constant(weight), Constant(scale), 
-    //           QuantizeLinear, DequantizeLinear, QuantizeLinear, DequantizeLinear, MatMul, Result
+    // Expected: Parameter, Constant(input_scale), Constant(weight_fp8 - FP8), Constant(weight_scale), 
+    //           QuantizeLinear (input), DequantizeLinear (input), DequantizeLinear (weight), MatMul, Result
+    // Note: Weight is pre-quantized, so no QuantizeLinear for weight
     auto ops = model->get_ordered_ops();
-    EXPECT_GT(ops.size(), 5);  // At least Parameter, 2x Quantize, 2x Dequantize, MatMul, Result
+    EXPECT_GT(ops.size(), 4);  // At least Parameter, 1x Quantize, 2x Dequantize, MatMul, Result
     
     // Check that we can find QuantizeLinear and DequantizeLinear ops
     bool has_quantize = false;
@@ -52,8 +54,8 @@ OPENVINO_TEST(${BACKEND_NAME}, onnx_fp8_nvidia_modelopt_e4m3) {
         }
     }
     
-    EXPECT_TRUE(has_quantize) << "Model should contain QuantizeLinear operations";
-    EXPECT_TRUE(has_dequantize) << "Model should contain DequantizeLinear operations";
+    EXPECT_TRUE(has_quantize) << "Model should contain QuantizeLinear operations (for input)";
+    EXPECT_TRUE(has_dequantize) << "Model should contain DequantizeLinear operations (for input and weight)";
     EXPECT_TRUE(has_matmul) << "Model should contain MatMul operation";
 }
 

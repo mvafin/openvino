@@ -16,14 +16,7 @@ graph {
     op_type: "DequantizeLinear"
   }
   node {
-    input: "weight"
-    input: "weight_scale"
-    output: "weight_quantized"
-    name: "quantize_weight"
-    op_type: "QuantizeLinear"
-  }
-  node {
-    input: "weight_quantized"
+    input: "weight_fp8"
     input: "weight_scale"
     output: "weight_dequantized"
     name: "dequantize_weight"
@@ -45,13 +38,13 @@ graph {
   initializer {
     dims: 4
     dims: 4
-    data_type: 1
-    name: "weight"
-    raw_data: "\000\000\000?\232\231\231\276\315\314L>\315\314L?\315\314\314=\315\314\314>\232\231\031\277\232\231\231>333?\315\314L\276\000\000\000?\315\314\314\276\232\231\231>\232\231\031?\315\314\314\275fff?"
+    data_type: 17
+    name: "weight_fp8"
+    raw_data: "0\252%5\035-\262*3\2450\255*2\2356"
   }
   initializer {
     data_type: 1
-    float_data: 0.0099999997764825821
+    float_data: 1
     name: "weight_scale"
   }
   input {
@@ -94,22 +87,6 @@ graph {
         shape {
           dim {
             dim_value: 1
-          }
-          dim {
-            dim_value: 4
-          }
-        }
-      }
-    }
-  }
-  value_info {
-    name: "weight_quantized"
-    type {
-      tensor_type {
-        elem_type: 17
-        shape {
-          dim {
-            dim_value: 4
           }
           dim {
             dim_value: 4
