@@ -36,22 +36,27 @@ FP8 quantization is a technique for reducing model size and accelerating inferen
 Input (FP32, shape: [1, 4])
   |
   v
-QuantizeLinear (scale: 0.05) -> input_quantized (FP8 E4M3FN)
+QuantizeLinear (scale: 0.05)
   |
   v
-DequantizeLinear (scale: 0.05) -> input_dequantized (FP32)
+input_quantized (FP8 E4M3FN)
   |
   v
-MatMul (with pre-quantized FP8 E4M3FN weight constant)
-  |                    ^
-  |                    |
-  |         DequantizeLinear (scale: 1.0)
-  |                    |
-  |           weight_fp8 (FP8 E4M3FN constant)
+DequantizeLinear (scale: 0.05)
   |
   v
-Output (FP32, shape: [1, 4])
+input_dequantized (FP32) ----+
+                              |
+weight_fp8 (FP8 E4M3FN) ------+---> MatMul --> Output (FP32, shape: [1, 4])
+  |                           |
+  v                           |
+DequantizeLinear (scale: 1.0)-+
+  |
+  v
+weight_dequantized (FP32)
 ```
+
+**Note**: The weight is pre-quantized and stored directly as an FP8 E4M3FN constant, eliminating the need for runtime quantization.
 
 **Reference**: [NVIDIA TensorRT Model Optimizer](https://github.com/NVIDIA/TensorRT-Model-Optimizer)
 

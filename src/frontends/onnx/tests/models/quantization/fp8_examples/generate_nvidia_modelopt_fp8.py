@@ -62,14 +62,10 @@ def create_nvidia_modelopt_fp8_model():
         # Convert to FP8 E4M3FN
         weight_data_fp8 = weight_data_fp32.astype(ml_dtypes.float8_e4m3fn)
     except ImportError:
-        # Fallback: Use raw bytes representation
-        # This is an approximation - in reality, proper FP8 conversion would be needed
-        weight_data_fp8 = np.array([[0.5, -0.3125, 0.1875, 0.75],
-                                     [0.09375, 0.375, -0.625, 0.3125],
-                                     [0.6875, -0.1875, 0.5, -0.375],
-                                     [0.3125, 0.625, -0.09375, 0.875]], dtype=np.float32)
-        # Cast the array to use FP8 type (this is a workaround for demonstration)
-        weight_data_fp8 = weight_data_fp8.view(dtype=np.uint8)
+        raise ImportError(
+            "ml_dtypes package is required to properly convert FP32 weights to FP8. "
+            "Please install it with: pip install ml_dtypes"
+        )
     
     # Create the weight tensor in FP8 format
     weight_tensor_fp8 = helper.make_tensor(
