@@ -43,6 +43,7 @@
 #include "openvino/util/log.hpp"
 #include "ops_bridge.hpp"
 #include "sequence_concat_replacer.hpp"
+#include "sequence_loop_decomposer.hpp"
 #include "transformations/resolve_names_collisions.hpp"
 #include "translate_session.hpp"
 #include "unconverted_ops_report.hpp"
@@ -256,6 +257,7 @@ void FrontEnd::normalize(const std::shared_ptr<ov::Model>& model) const {
     // Here, you can register transformations as a second step of importing process
     // In particular, you can operate on not supported ops (it allows to N:N ONNX->OV mapping).
     ov::pass::Manager manager("Frontend:ONNX:normalize");
+    manager.register_pass<ov::frontend::pass::SequenceLoopDecomposer>();
     manager.register_pass<ov::frontend::pass::SequenceConcatReplacer>();
     manager.register_pass<ov::pass::ResolveNameCollisions>(true);
     manager.run_passes(model);
