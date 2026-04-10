@@ -11,15 +11,21 @@
 
 #include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
+#include "openvino/frontend/sequence_insert.hpp"
 #include "openvino/frontend/sequence_mark.hpp"
+#include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
+#include "openvino/op/gather.hpp"
 #include "openvino/op/greater.hpp"
 #include "openvino/op/if.hpp"
 #include "openvino/op/loop.hpp"
 #include "openvino/op/parameter.hpp"
+#include "openvino/op/reshape.hpp"
 #include "openvino/op/result.hpp"
+#include "openvino/op/scatter_nd_update.hpp"
 #include "openvino/op/select.hpp"
+#include "openvino/op/unsqueeze.hpp"
 #include "openvino/op/util/framework_node.hpp"
 
 using namespace ov::op;
@@ -91,9 +97,7 @@ int64_t find_max_sequence_size(const std::shared_ptr<ov::Model>& model) {
     return max_n;
 }
 
-void replace_sequence_consumers(const ov::Output<ov::Node>& seq_output,
-                                const ov::OutputVector& elements,
-                                int64_t n) {
+void replace_sequence_consumers(const ov::Output<ov::Node>& seq_output, const ov::OutputVector& elements, int64_t n) {
     // Copy targets since we modify edges
     auto consumers = seq_output.get_target_inputs();
     for (const auto& consumer : consumers) {
@@ -129,6 +133,100 @@ void replace_sequence_consumers(const ov::Output<ov::Node>& seq_output,
     }
 }
 
+// Stack SequenceMark elements into a single tensor [N, elem_shape...].
+ov::Output<ov::Node> stack_sequence_elements(const std::shared_ptr<ov::frontend::SequenceMark>& sm) {
+    auto axis = v0::Constant::create(ov::element::i64, ov::Shape{1}, {0});
+    ov::OutputVector unsqueezed;
+    for (size_t i = 0; i < sm->get_input_size(); ++i) {
+        unsqueezed.push_back(std::make_shared<v0::Unsqueeze>(sm->input_value(i), axis));
+    }
+    return std::make_shared<v0::Concat>(unsqueezed, 0);
+}
+
+// Replace SequenceMark results in If body branches with stacked tensors.
+bool tensorize_if_sequence_result(const std::shared_ptr<v8::If>& if_node, size_t output_idx, int64_t n) {
+    bool replaced = false;
+    for (int bi : {0, 1}) {
+        auto body = if_node->get_function(bi);
+        for (const auto& desc : if_node->get_output_descriptions(bi)) {
+            if (desc->m_output_index == output_idx) {
+                auto& results = body->get_results();
+                if (desc->m_body_value_index < results.size()) {
+                    auto src = results[desc->m_body_value_index]->input_value(0).get_node_shared_ptr();
+                    if (auto sm = ov::as_type_ptr<ov::frontend::SequenceMark>(src)) {
+                        if (static_cast<int64_t>(sm->get_input_size()) == n) {
+                            auto stacked = stack_sequence_elements(sm);
+                            results[desc->m_body_value_index]->input(0).replace_source_output(stacked);
+                            replaced = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (replaced)
+        if_node->validate_and_infer_types();
+    return replaced;
+}
+
+// Recursively replace sequence ops (SequenceAt, SequenceErase+SequenceInsert)
+// that consume seq_output inside a model body with tensor operations.
+bool tensorize_body_sequence_ops(const std::shared_ptr<ov::Model>& body, const ov::Output<ov::Node>& seq_output) {
+    bool modified = false;
+
+    // Pass 1: Replace SequenceAt → Gather and recurse into If bodies
+    for (auto& op : body->get_ordered_ops()) {
+        if (is_framework_node_type(op, "SequenceAt") && op->input_value(0) == seq_output) {
+            auto position = op->input_value(1);
+            auto axis = v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
+            auto gather = std::make_shared<v8::Gather>(seq_output, position, axis);
+            gather->set_friendly_name(op->get_friendly_name());
+            op->output(0).replace(gather->output(0));
+            modified = true;
+        } else if (auto ifn = ov::as_type_ptr<v8::If>(op)) {
+            for (int bi : {0, 1}) {
+                for (const auto& desc : ifn->get_input_descriptions(bi)) {
+                    if (ifn->input_value(desc->m_input_index) == seq_output) {
+                        auto sub_body = ifn->get_function(bi);
+                        auto sub_param = sub_body->get_parameters()[desc->m_body_parameter_index];
+                        modified |= tensorize_body_sequence_ops(sub_body, sub_param->output(0));
+                    }
+                }
+            }
+            if (modified)
+                ifn->validate_and_infer_types();
+        }
+    }
+
+    // Pass 2: Replace SequenceInsert(SequenceErase(seq, pos), val, pos) → ScatterNDUpdate
+    for (auto& op : body->get_ordered_ops()) {
+        auto si = ov::as_type_ptr<ov::frontend::SequenceInsert>(op);
+        if (!si || !si->has_position())
+            continue;
+
+        auto erase = si->input_value(0).get_node_shared_ptr();
+        if (!is_framework_node_type(erase, "SequenceErase"))
+            continue;
+        if (erase->input_value(0) != seq_output)
+            continue;
+
+        auto new_elem = si->get_tensor();
+        auto pos = si->get_position();
+
+        // ScatterNDUpdate(stacked, [[pos]], unsqueeze(new_elem, 0))
+        auto idx_shape = v0::Constant::create(ov::element::i64, ov::Shape{2}, {1, 1});
+        auto indices = std::make_shared<v1::Reshape>(pos, idx_shape, false);
+        auto zero_axis = v0::Constant::create(ov::element::i64, ov::Shape{1}, {0});
+        auto updates = std::make_shared<v0::Unsqueeze>(new_elem, zero_axis);
+        auto scatter = std::make_shared<v15::ScatterNDUpdate>(seq_output, indices, updates);
+        scatter->set_friendly_name(si->get_friendly_name());
+        si->output(0).replace(scatter->output(0));
+        modified = true;
+    }
+
+    return modified;
+}
+
 bool decompose_sequences_in_model(const std::shared_ptr<ov::Model>& model);
 
 // Split an If output that carries a SequenceMark into N individual outputs.
@@ -145,8 +243,7 @@ ov::OutputVector split_if_sequence_output(const std::shared_ptr<v8::If>& if_node
         if (d->m_output_index == output_idx)
             else_ridx = d->m_body_value_index;
 
-    if (then_ridx == std::numeric_limits<size_t>::max() ||
-        else_ridx == std::numeric_limits<size_t>::max())
+    if (then_ridx == std::numeric_limits<size_t>::max() || else_ridx == std::numeric_limits<size_t>::max())
         return {};
 
     auto then_body = if_node->get_then_body();
@@ -197,8 +294,7 @@ ov::OutputVector split_if_sequence_output(const std::shared_ptr<v8::If>& if_node
                         auto et = ref_out.get_element_type();
                         if (et == ov::element::dynamic)
                             et = ov::element::f32;
-                        new_results.push_back(
-                            std::make_shared<v0::Result>(v0::Constant::create(et, ov::Shape{}, {0})));
+                        new_results.push_back(std::make_shared<v0::Result>(v0::Constant::create(et, ov::Shape{}, {0})));
                     }
                 }
             } else {
@@ -241,9 +337,7 @@ ov::OutputVector split_if_sequence_output(const std::shared_ptr<v8::If>& if_node
     for (const auto& d : if_node->get_input_descriptions(v8::If::THEN_BODY_INDEX)) {
         if (then_param_covered.count(d->m_body_parameter_index))
             continue;
-        new_if->set_input(if_node->input_value(d->m_input_index),
-                          new_then_params[d->m_body_parameter_index],
-                          nullptr);
+        new_if->set_input(if_node->input_value(d->m_input_index), new_then_params[d->m_body_parameter_index], nullptr);
         then_param_covered.insert(d->m_body_parameter_index);
     }
 
@@ -251,9 +345,7 @@ ov::OutputVector split_if_sequence_output(const std::shared_ptr<v8::If>& if_node
     for (const auto& d : if_node->get_input_descriptions(v8::If::ELSE_BODY_INDEX)) {
         if (else_param_covered.count(d->m_body_parameter_index))
             continue;
-        new_if->set_input(if_node->input_value(d->m_input_index),
-                          nullptr,
-                          new_else_params[d->m_body_parameter_index]);
+        new_if->set_input(if_node->input_value(d->m_input_index), nullptr, new_else_params[d->m_body_parameter_index]);
         else_param_covered.insert(d->m_body_parameter_index);
     }
 
@@ -341,8 +433,7 @@ bool decompose_sequences_in_model(const std::shared_ptr<ov::Model>& model) {
                 for (const auto& t : output.get_target_inputs()) {
                     auto c = t.get_node()->shared_from_this();
                     if (is_framework_node_type(c, "SequenceAt") || is_framework_node_type(c, "SequenceLength") ||
-                        is_framework_node_type(c, "SequenceErase") ||
-                        ov::as_type_ptr<ov::frontend::SequenceMark>(c)) {
+                        is_framework_node_type(c, "SequenceErase") || ov::as_type_ptr<ov::frontend::SequenceMark>(c)) {
                         needs_split = true;
                         break;
                     }
@@ -424,6 +515,50 @@ bool decompose_sequences_in_model(const std::shared_ptr<ov::Model>& model) {
             auto select = std::make_shared<ov::op::v1::Select>(gt, n_const, zero_i64);
             select->set_friendly_name(op->get_friendly_name());
             op->output(0).replace(select->output(0));
+            modified = true;
+        }
+    }
+
+    // Phase 4: Tensorize Loop sequence states.
+    // When a Loop carries a sequence as merged state (backed by SequenceMarks),
+    // stack the elements into a tensor and lower sequence ops to Gather/ScatterNDUpdate.
+    for (auto& op : model->get_ordered_ops()) {
+        auto loop = ov::as_type_ptr<v5::Loop>(op);
+        if (!loop)
+            continue;
+
+        for (const auto& input_desc : loop->get_input_descriptions()) {
+            auto merged = std::dynamic_pointer_cast<const v5::Loop::MergedInputDescription>(input_desc);
+            if (!merged)
+                continue;
+
+            auto ext_input = loop->input_value(merged->m_input_index);
+            int64_t n = get_sequence_size(ext_input);
+            if (n <= 0)
+                continue;
+
+            // Tensorize the external source: replace SequenceMark with stacked tensor
+            bool source_ok = false;
+            if (auto sm = ov::as_type_ptr<ov::frontend::SequenceMark>(ext_input.get_node_shared_ptr())) {
+                auto stacked = stack_sequence_elements(sm);
+                loop->input(merged->m_input_index).replace_source_output(stacked);
+                source_ok = true;
+            } else if (auto ifn = ov::as_type_ptr<v8::If>(ext_input.get_node_shared_ptr())) {
+                source_ok = tensorize_if_sequence_result(ifn, ext_input.get_index(), n);
+            }
+            if (!source_ok)
+                continue;
+
+            // Tensorize sequence ops in the Loop body
+            auto body = loop->get_function();
+            auto body_param = body->get_parameters()[merged->m_body_parameter_index];
+            tensorize_body_sequence_ops(body, body_param->output(0));
+
+            // Note: We intentionally do NOT call loop->validate_and_infer_types() here.
+            // The Loop body has fully dynamic shapes ([...]) after tensorization, and
+            // Loop::validate_and_infer_types() attempts to create evaluation tensors
+            // that fail with uninitialized tensor errors on dynamic shapes.
+            // Shape inference will be performed by the containing scope later.
             modified = true;
         }
     }
