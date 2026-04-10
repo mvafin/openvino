@@ -20,11 +20,17 @@ namespace ov {
 namespace frontend {
 namespace onnx {
 std::shared_ptr<ov::Node> ONNXFrameworkNode::clone_with_new_inputs(const ov::OutputVector& inputs) const {
-    return std::make_shared<ONNXFrameworkNode>(m_node, inputs);
+    return std::make_shared<ONNXFrameworkNode>(m_node, inputs, get_output_size(), m_opset_version, get_attrs());
 }
 
 std::shared_ptr<ov::Node> ONNXSubgraphFrameworkNode::clone_with_new_inputs(const ov::OutputVector& inputs) const {
-    return std::make_shared<ONNXSubgraphFrameworkNode>(m_node, m_models, inputs);
+    auto clone = std::make_shared<ONNXSubgraphFrameworkNode>(m_node,
+                                                             m_models,
+                                                             inputs,
+                                                             get_output_size(),
+                                                             m_opset_version,
+                                                             get_attrs());
+    return clone;
 }
 
 std::shared_ptr<ov::Node> NotSupportedONNXNode::clone_with_new_inputs(const ov::OutputVector& inputs) const {

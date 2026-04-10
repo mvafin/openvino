@@ -45,13 +45,15 @@ ov::OutputVector fusedmatmul(const ov::frontend::onnx::Node& node) {
     const auto transBatchB = node.get_attribute_value<int64_t>("transBatchB", 0);
 
     CHECK_VALID_NODE(node,
-                     A.get_element_type() == ov::element::f16 || A.get_element_type() == ov::element::f32 ||
-                         A.get_element_type() == ov::element::f64 || A.get_element_type() == ov::element::bf16,
+                     A.get_element_type().is_dynamic() || A.get_element_type() == ov::element::f16 ||
+                         A.get_element_type() == ov::element::f32 || A.get_element_type() == ov::element::f64 ||
+                         A.get_element_type() == ov::element::bf16,
                      "Unsupported input A type, accepted FP16, FP32, FP64, BFP16 got: ",
                      A.get_element_type());
     CHECK_VALID_NODE(node,
-                     B.get_element_type() == ov::element::f16 || B.get_element_type() == ov::element::f32 ||
-                         B.get_element_type() == ov::element::f64 || B.get_element_type() == ov::element::bf16,
+                     B.get_element_type().is_dynamic() || B.get_element_type() == ov::element::f16 ||
+                         B.get_element_type() == ov::element::f32 || B.get_element_type() == ov::element::f64 ||
+                         B.get_element_type() == ov::element::bf16,
                      "Unsupported input B type, accepted FP16, FP32, FP64, BFP16 got: ",
                      B.get_element_type());
 
@@ -74,7 +76,8 @@ ov::OutputVector fusedmatmul(const ov::frontend::onnx::Node& node) {
 
     auto matmul_result = std::make_shared<v0::MatMul>(A, B, transA, transB);
 
-    auto alpha_const = std::make_shared<v0::Constant>(A.get_element_type(), Shape{}, std::vector<float>{alpha});
+    auto alpha_type = A.get_element_type().is_dynamic() ? ov::element::f32 : A.get_element_type();
+    auto alpha_const = std::make_shared<v0::Constant>(alpha_type, Shape{}, std::vector<float>{alpha});
     auto scaled_result = std::make_shared<v1::Multiply>(matmul_result, alpha_const);
 
     return {scaled_result};

@@ -39,11 +39,24 @@ public:
 
     ONNXFrameworkNode(const ov::frontend::onnx::Node& node, const ov::OutputVector& inputs)
         : ov::op::util::FrameworkNode(inputs, node.get_outputs_size()),
-          m_node(node) {
+          m_node(node),
+          m_opset_version(node.opset_version()) {
         ov::op::util::FrameworkNodeAttrs attrs;
         attrs.set_type_name(node.op_type());
         attrs.set_opset_name(node.domain());
         set_attrs(attrs);
+    }
+
+    /// Clone-safe constructor: creates node from cached state without accessing the ONNX decoder.
+    ONNXFrameworkNode(const ov::frontend::onnx::Node& node,
+                      const ov::OutputVector& inputs,
+                      size_t output_count,
+                      int64_t opset_ver,
+                      const ov::op::util::FrameworkNodeAttrs& cached_attrs)
+        : ov::op::util::FrameworkNode(inputs, output_count),
+          m_node(node),
+          m_opset_version(opset_ver) {
+        set_attrs(cached_attrs);
     }
 
     ov::OutputVector get_ov_nodes(const std::shared_ptr<ov::frontend::onnx::Graph>& graph) const {
@@ -55,15 +68,17 @@ public:
     }
 
     int64_t opset_version() const {
-        return m_node.opset_version();
+        return m_opset_version;
     }
 
     virtual std::shared_ptr<ov::Node> clone_with_new_inputs(const ov::OutputVector& inputs) const override;
 
     virtual bool visit_attributes(ov::AttributeVisitor& visitor) override {
         // TODO: implement reading as well, now it work for serialization only
-        std::string domain = m_node.domain();
-        std::string op_type = m_node.op_type();
+        // Use cached attrs (set in constructor) instead of m_node which may hold a dangling decoder pointer.
+        const auto& attrs = get_attrs();
+        std::string domain = attrs.get_opset_name();
+        std::string op_type = attrs.get_type_name();
         visitor.on_attribute("ONNX_META_domain", domain);
         visitor.on_attribute("ONNX_META_type", op_type);
         return true;
@@ -71,6 +86,7 @@ public:
 
 protected:
     ov::frontend::onnx::Node m_node;
+    int64_t m_opset_version;
 };
 
 class ONNXSubgraphFrameworkNode : public ONNXFrameworkNode {
@@ -81,6 +97,16 @@ public:
                               const std::vector<std::shared_ptr<ov::Model>>& models,
                               const ov::OutputVector& inputs)
         : ONNXFrameworkNode(node, inputs),
+          m_models(models) {}
+
+    /// Clone-safe constructor: creates node from cached state without accessing the ONNX decoder.
+    ONNXSubgraphFrameworkNode(const ov::frontend::onnx::Node& node,
+                              const std::vector<std::shared_ptr<ov::Model>>& models,
+                              const ov::OutputVector& inputs,
+                              size_t output_count,
+                              int64_t opset_ver,
+                              const ov::op::util::FrameworkNodeAttrs& cached_attrs)
+        : ONNXFrameworkNode(node, inputs, output_count, opset_ver, cached_attrs),
           m_models(models) {}
 
     void infer_inputs_from_parent() {

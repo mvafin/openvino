@@ -1,0 +1,146 @@
+ir_version: 7
+producer_name: "OpenVINO ONNX Frontend"
+doc_string: "Test: custom domain op in Loop body triggers clone_with_new_inputs"
+graph {
+  name: "custom_op_in_loop"
+
+  node {
+    input: "trip_count"
+    input: "cond_init"
+    input: "x"
+    output: "y"
+    op_type: "Loop"
+    attribute {
+      name: "body"
+      g {
+        name: "loop_body"
+
+        node {
+          input: "cond_in"
+          output: "cond_out"
+          op_type: "Identity"
+        }
+
+        node {
+          input: "state_in"
+          output: "processed"
+          op_type: "CustomProcess"
+          domain: "custom.test"
+        }
+
+        input {
+          name: "iter"
+          type {
+            tensor_type {
+              elem_type: 7
+              shape {
+              }
+            }
+          }
+        }
+        input {
+          name: "cond_in"
+          type {
+            tensor_type {
+              elem_type: 9
+              shape {
+              }
+            }
+          }
+        }
+        input {
+          name: "state_in"
+          type {
+            tensor_type {
+              elem_type: 1
+              shape {
+                dim {
+                  dim_value: 2
+                }
+              }
+            }
+          }
+        }
+
+        output {
+          name: "cond_out"
+          type {
+            tensor_type {
+              elem_type: 9
+              shape {
+              }
+            }
+          }
+        }
+        output {
+          name: "processed"
+          type {
+            tensor_type {
+              elem_type: 1
+              shape {
+                dim {
+                  dim_value: 2
+                }
+              }
+            }
+          }
+        }
+      }
+      type: GRAPH
+    }
+  }
+
+  input {
+    name: "trip_count"
+    type {
+      tensor_type {
+        elem_type: 7
+        shape {
+        }
+      }
+    }
+  }
+  input {
+    name: "cond_init"
+    type {
+      tensor_type {
+        elem_type: 9
+        shape {
+        }
+      }
+    }
+  }
+  input {
+    name: "x"
+    type {
+      tensor_type {
+        elem_type: 1
+        shape {
+          dim {
+            dim_value: 2
+          }
+        }
+      }
+    }
+  }
+  output {
+    name: "y"
+    type {
+      tensor_type {
+        elem_type: 1
+        shape {
+          dim {
+            dim_value: 2
+          }
+        }
+      }
+    }
+  }
+}
+opset_import {
+  version: 14
+}
+opset_import {
+  domain: "custom.test"
+  version: 1
+}
