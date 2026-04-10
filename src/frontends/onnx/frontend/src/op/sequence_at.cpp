@@ -12,6 +12,7 @@
 #include "openvino/frontend/sequence_mark.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/constant.hpp"
+#include "openvino/op/util/framework_node.hpp"
 #include "utils/common.hpp"
 
 namespace ov {
@@ -32,23 +33,36 @@ ov::OutputVector sequence_at(const ov::frontend::onnx::Node& node) {
     const auto& inputs = node.get_ov_inputs();
 
     const auto& input_sequence = as_type_ptr<SequenceMark>(inputs[0].get_node_shared_ptr());
-    OPENVINO_ASSERT(input_sequence, "SequenceAt: 'input' must be a sequence");
 
     auto position = inputs[1];
     OPENVINO_ASSERT(position.get_partial_shape().rank().compatible(0), "SequenceAt: 'position' input must be a scalar");
 
     const auto position_const = ov::util::get_constant_from_source(position);
-    OPENVINO_ASSERT(position_const, "SequenceAt: 'position' input must be constant");
 
-    const auto position_value = position_const->cast_vector<std::int64_t>()[0];
+    // When both the sequence and position are compile-time known, extract directly.
+    if (input_sequence && position_const) {
+        const auto position_value = position_const->cast_vector<std::int64_t>()[0];
+        const auto input_sequence_length = static_cast<std::int64_t>(input_sequence->get_sequence().size());
+        const auto position_value_normalized =
+            position_value < 0 ? position_value + input_sequence_length : position_value;
+        OPENVINO_ASSERT(position_value_normalized >= 0 && position_value_normalized < input_sequence_length,
+                        "SequenceAt: 'position' is out of bounds");
+        return {input_sequence->get_sequence().at(position_value_normalized)};
+    }
 
-    const auto input_sequence_length = static_cast<std::int64_t>(input_sequence->get_sequence().size());
-
-    const auto position_value_normalized = position_value < 0 ? position_value + input_sequence_length : position_value;
-    OPENVINO_ASSERT(position_value_normalized >= 0 && position_value_normalized < input_sequence_length,
-                    "SequenceAt: 'position' is out of bounds");
-
-    return {input_sequence->get_sequence().at(position_value_normalized)};
+    // Otherwise create a placeholder FrameworkNode that the normalize pass will resolve.
+    // This handles: runtime sequence (Loop state / If output), non-constant position
+    // (e.g. loop iteration variable), or both.
+    ov::op::util::FrameworkNodeAttrs attrs;
+    attrs.set_type_name("SequenceAt");
+    if (position_const) {
+        attrs["position"] = std::to_string(position_const->cast_vector<std::int64_t>()[0]);
+    }
+    auto placeholder = std::make_shared<ov::op::util::FrameworkNode>(ov::OutputVector{inputs[0], position},
+                                                                     /*output_count=*/1);
+    placeholder->set_attrs(attrs);
+    placeholder->set_friendly_name(node.get_name());
+    return placeholder->outputs();
 }
 
 /// @brief Registers the SequenceAt operator implementation in the ONNX frontend
