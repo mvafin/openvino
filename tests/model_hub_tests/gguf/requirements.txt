@@ -1,0 +1,12 @@
+# Runtime dependencies for tests/model_hub_tests/gguf.
+#
+# These are intentionally narrow: only what is needed to fetch a GGUF from
+# the Hugging Face Hub and compare a small number of OV outputs against the
+# Hugging Face reference implementation.
+huggingface_hub
+transformers>=4.51
+# Pillow is used to build a synthetic RGB image for the vision-encoder test.
+Pillow
+# torch (CPU) is used only as the HF reference runtime for logits comparison.
+torch
+numpy
