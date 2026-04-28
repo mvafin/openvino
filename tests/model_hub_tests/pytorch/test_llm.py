@@ -22,6 +22,206 @@ def is_quantized_model(config):
     return quantization_config and quantization_config["quant_method"] in ["gptq", "awq"]
 
 
+def is_mxfp4_model(config):
+    config_dict = config.to_dict() if not isinstance(config, dict) else config
+    quantization_config = config_dict.get("quantization_config", None)
+    return quantization_config and quantization_config.get("quant_method") == "mxfp4"
+
+
+def patch_mxfp4():
+    """Monkey-patch the MXFP4 quantizer to store raw blocks/scales without Triton swizzling.
+
+    This allows loading MXFP4 models on CPU without Triton kernels.  The raw
+    uint8 blocks and scales are stored as nn.Parameter on the Mxfp4GptOssExperts
+    module, ready to be consumed by the ov_ext::mxfp4_experts custom op.
+    """
+    orig_validate_environment = None
+    orig_deserialize_convert = None
+    orig_process_after = None
+    orig_process_before = None
+    orig_replace_with_mxfp4 = None
+
+    try:
+        from transformers.quantizers.quantizer_mxfp4 import Mxfp4HfQuantizer
+        from transformers.integrations.mxfp4 import (
+            Mxfp4Deserialize,
+            Mxfp4GptOssExperts,
+        )
+        import transformers.integrations.mxfp4 as mxfp4_module
+
+        # 1. Patch validate_environment to not force dequantize=True on CPU
+        orig_validate_environment = Mxfp4HfQuantizer.validate_environment
+
+        def _validate_env_cpu(self, *args, **kwargs):
+            # Skip all Triton/kernels/GPU checks — we handle decompression in OV
+            pass
+
+        Mxfp4HfQuantizer.validate_environment = _validate_env_cpu
+
+        # 2. Patch _process_model_after_weight_loading to be a no-op
+        orig_process_after = Mxfp4HfQuantizer._process_model_after_weight_loading
+
+        def _process_after_noop(self, model, **kwargs):
+            pass
+
+        Mxfp4HfQuantizer._process_model_after_weight_loading = _process_after_noop
+
+        # 2b. Patch _process_model_before_weight_loading to not force dequantize=True on CPU
+        orig_process_before = Mxfp4HfQuantizer._process_model_before_weight_loading
+
+        def _process_before_no_dequant(self, model, **kwargs):
+            from transformers.integrations import replace_with_mxfp4_linear
+            self.modules_to_not_convert = self.get_modules_to_not_convert(
+                model, self.quantization_config.modules_to_not_convert, model._keep_in_fp32_modules
+            )
+            model = replace_with_mxfp4_linear(
+                model, modules_to_not_convert=self.modules_to_not_convert,
+                quantization_config=self.quantization_config,
+            )
+
+        Mxfp4HfQuantizer._process_model_before_weight_loading = _process_before_no_dequant
+
+        # 3. Patch replace_with_mxfp4_linear to replace modules without Triton
+        orig_replace_with_mxfp4 = mxfp4_module.replace_with_mxfp4_linear
+
+        def _replace_without_triton(model, quantization_config=None, modules_to_not_convert=None):
+            """Replace GptOssExperts with Mxfp4GptOssExperts but skip Triton imports."""
+            from transformers.quantizers.quantizers_utils import should_convert_module
+            from transformers.integrations.mxfp4 import (
+                FP4_VALUES, _convert_moe_packed_tensors,
+            )
+
+            for module_name, module in model.named_modules():
+                if modules_to_not_convert and not should_convert_module(
+                        module_name, modules_to_not_convert):
+                    continue
+                if module.__class__.__name__ == "GptOssExperts":
+                    with torch.device("meta"):
+                        new_mod = Mxfp4GptOssExperts(model.config)
+                    # Replace the Triton forward with a CPU-compatible version
+                    # that uses the original GptOssExperts loop logic with
+                    # dequantized weights for the initialization pass.
+                    from types import MethodType
+
+                    def _cpu_forward(self, hidden_states, router_indices=None,
+                                     routing_weights=None):
+                        """CPU-compatible forward for Mxfp4GptOssExperts using dequantized weights."""
+                        # Lazily dequantize and cache weights
+                        if not hasattr(self, '_deq_gate_up'):
+                            self._deq_gate_up = _convert_moe_packed_tensors(
+                                self.gate_up_proj_blocks, self.gate_up_proj_scales
+                            ).to(hidden_states.dtype)
+                            self._deq_down = _convert_moe_packed_tensors(
+                                self.down_proj_blocks, self.down_proj_scales
+                            ).to(hidden_states.dtype)
+
+                        gate_up_w = self._deq_gate_up
+                        down_w = self._deq_down
+
+                        next_states = torch.zeros_like(hidden_states)
+                        with torch.no_grad():
+                            expert_mask = torch.nn.functional.one_hot(
+                                router_indices, num_classes=self.num_experts
+                            ).permute(2, 1, 0)
+                            expert_hit = torch.greater(
+                                expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+                        for expert_idx in expert_hit:
+                            expert_idx = expert_idx[0]
+                            if expert_idx == self.num_experts:
+                                continue
+                            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+                            current_state = hidden_states[token_idx]
+                            # gate_up_w: [E, hidden, 2*inter] after dequant
+                            # matmul: [tokens, hidden] @ [hidden, 2*inter]
+                            gate_up = current_state @ gate_up_w[expert_idx] + self.gate_up_proj_bias[expert_idx]
+                            # SwiGLU activation (interleaved)
+                            gate, up = gate_up[..., ::2], gate_up[..., 1::2]
+                            gate = gate.clamp(max=self.limit)
+                            up = up.clamp(min=-self.limit, max=self.limit)
+                            glu = gate * torch.sigmoid(gate * self.alpha)
+                            gated_output = (up + 1) * glu
+                            # down: [E, inter, hidden] after dequant
+                            out = gated_output @ down_w[expert_idx] + self.down_proj_bias[expert_idx]
+                            weighted_output = out * routing_weights[token_idx, top_k_pos, None]
+                            next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
+                        return next_states
+
+                    new_mod.forward = MethodType(_cpu_forward, new_mod)
+                    model.set_submodule(module_name, new_mod)
+                # Do NOT replace GptOssMLP.forward — keep the original
+                # routing logic which is traceable without Triton
+            return model
+
+        mxfp4_module.replace_with_mxfp4_linear = _replace_without_triton
+
+        # 4. Patch Mxfp4Deserialize.convert to store raw blocks/scales without swizzling
+        orig_deserialize_convert = Mxfp4Deserialize.convert
+
+        def _deserialize_raw(self, input_dict, model=None, full_layer_name=None,
+                             missing_keys=None, **kwargs):
+            import torch
+            from transformers.quantizers.quantizers_utils import get_module_from_name
+
+            proj = "gate_up_proj" if "gate_up_proj" in full_layer_name else "down_proj"
+            blocks_key = f"{proj}_blocks"
+            scales_key = f"{proj}_scales"
+
+            blocks = input_dict.get(blocks_key)
+            scales = input_dict.get(scales_key)
+            if blocks is None or scales is None:
+                return {}
+
+            if isinstance(blocks, list):
+                blocks = blocks[0]
+            if isinstance(scales, list):
+                scales = scales[0]
+
+            module, _ = get_module_from_name(model, full_layer_name)
+
+            # Store raw blocks and scales as nn.Parameters (no swizzling)
+            # Remove the original nn.Parameter for the proj if it exists
+            if proj in module._parameters:
+                del module._parameters[proj]
+
+            module.register_parameter(
+                blocks_key, torch.nn.Parameter(blocks.to(torch.uint8), requires_grad=False))
+            module.register_parameter(
+                scales_key, torch.nn.Parameter(scales.to(torch.uint8), requires_grad=False))
+
+            if missing_keys is not None:
+                missing_keys.discard(full_layer_name)
+            module._is_hf_initialized = True
+            return {}
+
+        Mxfp4Deserialize.convert = _deserialize_raw
+
+    except ImportError:
+        pass
+
+    return orig_validate_environment, orig_deserialize_convert, orig_process_after, orig_process_before, orig_replace_with_mxfp4
+
+
+def unpatch_mxfp4(orig_validate_environment, orig_deserialize_convert, orig_process_after, orig_process_before, orig_replace_with_mxfp4):
+    """Restore original MXFP4 quantizer behavior."""
+    try:
+        from transformers.quantizers.quantizer_mxfp4 import Mxfp4HfQuantizer
+        from transformers.integrations.mxfp4 import Mxfp4Deserialize
+        import transformers.integrations.mxfp4 as mxfp4_module
+
+        if orig_validate_environment is not None:
+            Mxfp4HfQuantizer.validate_environment = orig_validate_environment
+        if orig_process_after is not None:
+            Mxfp4HfQuantizer._process_model_after_weight_loading = orig_process_after
+        if orig_process_before is not None:
+            Mxfp4HfQuantizer._process_model_before_weight_loading = orig_process_before
+        if orig_deserialize_convert is not None:
+            Mxfp4Deserialize.convert = orig_deserialize_convert
+        if orig_replace_with_mxfp4 is not None:
+            mxfp4_module.replace_with_mxfp4_linear = orig_replace_with_mxfp4
+    except ImportError:
+        pass
+
+
 def patch_gptq():
     orig_cuda_is_available = torch.cuda.is_available
     orig_cuda_is_bf16_supported = torch.cuda.is_bf16_supported
@@ -376,6 +576,7 @@ class TestLLMModel(TestTorchConvertModel):
     def setup_class(self):
         self.infer_timeout = 1800
         self.cuda_available, self.gptq_postinit, self.awq_postinit, self.orig_gemm_forward, self.orig_default_dtype = None, None, None, None, None
+        self.mxfp4_orig = None
         self.export_mode = False
 
     @retry(3, exceptions=(OSError,), delay=1)
@@ -390,8 +591,13 @@ class TestLLMModel(TestTorchConvertModel):
             config = {}
         model_kwargs = {}
         is_quant = is_quantized_model(config)
+        is_mxfp4 = is_mxfp4_model(config)
 
-        if is_quant:
+        if is_mxfp4:
+            self.mxfp4_orig = patch_mxfp4()
+            model_kwargs["dtype"] = torch.float32
+            self.ov_config = {"DYNAMIC_QUANTIZATION_GROUP_SIZE": "0"}
+        elif is_quant:
             self.cuda_available, self.gptq_postinit, self.awq_postinit, self.orig_gemm_forward, self.orig_default_dtype = patch_gptq()
             model_kwargs["dtype"] = torch.float32
             self.ov_config = {"DYNAMIC_QUANTIZATION_GROUP_SIZE": "0"}
@@ -404,7 +610,7 @@ class TestLLMModel(TestTorchConvertModel):
         # dequantized weights) before any forward pass, to prevent gptqmodel
         # from repacking weights and to keep bitwise ops out of the graph.
         _replace_awq_with_linear(self.model)
-        if is_quant:
+        if is_quant or is_mxfp4:
             model = self.model
         else:
             model = copy.deepcopy(self.model).float()
@@ -571,6 +777,10 @@ class TestLLMModel(TestTorchConvertModel):
 
     def teardown_method(self):
         self.export_mode = False
+        # restore after mxfp4 patching
+        if self.mxfp4_orig is not None:
+            unpatch_mxfp4(*self.mxfp4_orig)
+            self.mxfp4_orig = None
         # restore after gptq patching
         if self.cuda_available is not None:
             unpatch_gptq(self.cuda_available, self.gptq_postinit, self.awq_postinit, self.orig_gemm_forward, self.orig_default_dtype)
@@ -649,6 +859,7 @@ class TestLLMModel(TestTorchConvertModel):
                      marks=pytest.mark.xfail(reason="GPTQ QUANT_TYPE=cuda is not supported")),
         ("qwen2_awq", "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"),
         ("mixstral_awq", "TheBloke/SauerkrautLM-Mixtral-8x7B-AWQ"),
+        ("gpt_oss_mxfp4", "nvidia/GPT-OSS-20B-Preview"),
     ])
     def test_convert_model_very_large(self, name, type, ie_device):
         self.run(model_name=name, model_link=type, ie_device=ie_device)
@@ -665,5 +876,13 @@ class TestLLMModel(TestTorchConvertModel):
     @pytest.mark.precommit
     @pytest.mark.nightly
     def test_export_model_precommit(self, name, type, ie_device):
+        self.export_mode = True
+        self.run(model_name=name, model_link=type, ie_device=ie_device)
+
+    @pytest.mark.parametrize("type,name", [
+        ("gpt_oss_mxfp4", "tiny-random/gpt-oss-mxfp4"),
+    ])
+    @pytest.mark.nightly
+    def test_export_mxfp4_model(self, name, type, ie_device):
         self.export_mode = True
         self.run(model_name=name, model_link=type, ie_device=ie_device)

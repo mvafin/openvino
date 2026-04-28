@@ -124,6 +124,33 @@ def _build_quantized_extensions(
                     *args[0].shape[:-1], module.out_features))  # type: ignore
         except ImportError:
             pass
+    elif quant_type == "mxfp4":
+        try:
+            from transformers.integrations.mxfp4 import Mxfp4GptOssExperts
+
+            def _mxfp4_convert(
+                module: Any, target_op: Callable[..., torch.Tensor],
+                *args: Any, **kwargs: Any,
+            ) -> torch.Tensor:
+                return target_op(
+                    args[0],
+                    module.gate_up_proj_blocks,
+                    module.gate_up_proj_scales,
+                    module.gate_up_proj_bias,
+                    module.down_proj_blocks,
+                    module.down_proj_scales,
+                    module.down_proj_bias,
+                    args[1],   # router_indices
+                    args[2],   # routing_weights
+                )
+
+            extensions[Mxfp4GptOssExperts] = ModuleExtension(
+                Mxfp4GptOssExperts, "ov_ext::mxfp4_experts",
+                convert=_mxfp4_convert,
+                evaluate=lambda module, *args, **kwargs: fp32_tensor(
+                    *args[0].shape[:-1], module.hidden_size))  # type: ignore
+        except ImportError:
+            pass
     elif quant_type == "gptq":
         # GPTQ is handled separately — not via ModuleExtension for TorchScript,
         # and via attribute-based patching for torch.export (see _patch_gptq_for_export).
@@ -152,6 +179,10 @@ def patch_quantized_for_export(model: torch.nn.Module) -> None:
 
     if quant_type == "gptq":
         _patch_gptq_for_export(model)
+        return
+
+    if quant_type == "mxfp4":
+        _patch_mxfp4_for_export(model)
         return
 
     extensions = _build_quantized_extensions(quant_type, for_export=True)
@@ -205,6 +236,54 @@ def _patch_gptq_for_export(model: torch.nn.Module) -> None:
                     args[0], mod.qweight, mod.qzeros, mod.scales,
                     mod.group_size, mod.bits, sym,
                     mod.bias)
+            return new_forward
+
+        module.forward = _make_forward(module)
+
+
+def _patch_mxfp4_for_export(model: torch.nn.Module) -> None:
+    """Patch Mxfp4GptOssExperts modules for ``torch.export`` using ``ov_ext::mxfp4_experts``.
+
+    Replaces the Triton-based forward of ``Mxfp4GptOssExperts`` with a call to
+    the ``ov_ext::mxfp4_experts`` custom op so that ``torch.export`` captures
+    it as a single ``call_function`` node.
+    """
+    import openvino.frontend.pytorch.ov_custom_ops  # noqa: F401
+
+    try:
+        from transformers.integrations.mxfp4 import Mxfp4GptOssExperts
+    except ImportError:
+        raise RuntimeError(
+            "Cannot patch MXFP4 model: transformers.integrations.mxfp4 not available.")
+
+    target_op = torch.ops.ov_ext.mxfp4_experts
+
+    for name, module in model.named_modules():
+        if hasattr(module, "_openvino_quantized_patch_orig_forward"):
+            log.debug("Skipping already-patched MXFP4 module %s", name)
+            continue
+        if not isinstance(module, Mxfp4GptOssExperts):
+            continue
+
+        module._openvino_quantized_patch_orig_forward = module.forward
+
+        def _make_forward(mod: torch.nn.Module) -> Callable[..., torch.Tensor]:
+            @functools.wraps(mod.forward)
+            def new_forward(*args: Any, **kwargs: Any) -> torch.Tensor:
+                hidden_states = args[0]
+                router_indices = args[1] if len(args) > 1 else kwargs.get("router_indices")
+                routing_weights = args[2] if len(args) > 2 else kwargs.get("routing_weights")
+                return target_op(
+                    hidden_states,
+                    mod.gate_up_proj_blocks,
+                    mod.gate_up_proj_scales,
+                    mod.gate_up_proj_bias,
+                    mod.down_proj_blocks,
+                    mod.down_proj_scales,
+                    mod.down_proj_bias,
+                    router_indices,
+                    routing_weights,
+                )
             return new_forward
 
         module.forward = _make_forward(module)

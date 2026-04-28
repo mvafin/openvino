@@ -4,11 +4,23 @@
 
 #include "openvino/frontend/pytorch/node_context.hpp"
 #include "openvino/op/add.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/clamp.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/convert_like.hpp"
+#include "openvino/op/gather.hpp"
+#include "openvino/op/gather_nd.hpp"
 #include "openvino/op/matmul.hpp"
 #include "openvino/op/multiply.hpp"
+#include "openvino/op/reduce_sum.hpp"
 #include "openvino/op/reshape.hpp"
 #include "openvino/op/shape_of.hpp"
+#include "openvino/op/sigmoid.hpp"
 #include "openvino/op/subtract.hpp"
+#include "openvino/op/transpose.hpp"
+#include "openvino/op/unsqueeze.hpp"
 #include "utils.hpp"
 
 namespace ov {
@@ -342,6 +354,261 @@ OutputVector translate_linear_bitnet(const NodeContext& context) {
     }
     return {matmul};
 };
+
+namespace {
+
+/// Build the standard MXFP4 weight decompression subgraph that CPU/GPU plugins
+/// recognise and fuse into MatMul natively.
+///
+/// The graph emitted is:
+///   Constant(f4e2m1)[E, O, G, 32]
+///       → Convert(f32)
+///       → Multiply( Constant(f8e8m0)[E, O, G] → Convert(f32) → Unsqueeze )
+///       → Reshape[E, O, I]
+///
+/// The Multiply→Reshape→MatMul chain is detected by
+/// Transformations::is_decompression_multiply() in the CPU plugin, which marks
+/// it for native on-the-fly decompression inside oneDNN (no f32 materialisation).
+///
+/// blocks: [E, O, G, 16] uint8  (each byte = 2 E2M1 values)
+/// scales: [E, O, G]    uint8  (each byte = one E8M0 exponent)
+///
+/// Returns: weight [1, E, O, I] in f32 (logically; never materialised when fused).
+/// The leading 1 enables NumPy-style broadcast with [T, 1, 1, I] in 4D MatMul.
+Output<Node> mxfp4_decompression_subgraph(const NodeContext& context,
+                                          const Output<Node>& blocks,
+                                          const Output<Node>& scales) {
+    auto blocks_const = ov::as_type_ptr<v0::Constant>(blocks.get_node_shared_ptr());
+    FRONT_END_OP_CONVERSION_CHECK(blocks_const, "MXFP4 blocks must be a Constant.");
+    auto blocks_shape = blocks_const->get_shape();
+    FRONT_END_OP_CONVERSION_CHECK(blocks_shape.size() == 4, "MXFP4 blocks must be 4D.");
+    const auto num_experts = blocks_shape[0];
+    const auto out_features = blocks_shape[1];
+    const auto num_groups = blocks_shape[2];
+    const auto bytes_per_group = blocks_shape[3];               // 16
+    const auto in_features = num_groups * bytes_per_group * 2;  // 2 f4e2m1 values per byte
+
+    // Reinterpret uint8 blocks as f4e2m1: [E, O, G, 16] u8 → [E, O, G, 32] f4e2m1
+    auto f4e2m1_shape = Shape{num_experts, out_features, num_groups, bytes_per_group * 2};
+    auto f4e2m1_weight = std::make_shared<v0::Constant>(element::f4e2m1, f4e2m1_shape, blocks_const->get_data_ptr());
+    f4e2m1_weight->set_friendly_name(blocks_const->get_friendly_name() + "_f4e2m1");
+
+    // Convert f4e2m1 → f32   [E, O, G, 32]
+    auto weight_f32 = context.mark_node(std::make_shared<v0::Convert>(f4e2m1_weight, element::f32));
+
+    // Reinterpret uint8 scales as f8e8m0: [E, O, G]
+    auto scales_const = ov::as_type_ptr<v0::Constant>(scales.get_node_shared_ptr());
+    FRONT_END_OP_CONVERSION_CHECK(scales_const, "MXFP4 scales must be a Constant.");
+    auto f8e8m0_scales =
+        std::make_shared<v0::Constant>(element::f8e8m0, scales_const->get_shape(), scales_const->get_data_ptr());
+    f8e8m0_scales->set_friendly_name(scales_const->get_friendly_name() + "_f8e8m0");
+
+    // Convert f8e8m0 → f32, then Unsqueeze to [E, O, G, 1] for broadcast
+    auto scales_f32 = context.mark_node(std::make_shared<v0::Convert>(f8e8m0_scales, element::f32));
+    auto unsqueeze_axis = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{3});
+    auto scales_4d = context.mark_node(std::make_shared<v0::Unsqueeze>(scales_f32, unsqueeze_axis));
+
+    // Multiply: [E, O, G, 32] * [E, O, G, 1] → [E, O, G, 32]
+    auto scaled_weight = context.mark_node(std::make_shared<v1::Multiply>(weight_f32, scales_4d));
+
+    // Reshape to [1, E, O, I]  — merges the group dimension, adds leading 1 for broadcast
+    auto target_shape = v0::Constant::create(element::i64,
+                                             Shape{4},
+                                             std::vector<int64_t>{1,
+                                                                  static_cast<int64_t>(num_experts),
+                                                                  static_cast<int64_t>(out_features),
+                                                                  static_cast<int64_t>(in_features)});
+    auto weight_4d = context.mark_node(std::make_shared<v1::Reshape>(scaled_weight, target_shape, false));
+
+    return weight_4d;
+}
+
+}  // anonymous namespace
+
+OutputVector translate_mxfp4_experts(const NodeContext& context) {
+    // ov_ext::mxfp4_experts(input, gate_up_blocks, gate_up_scales, gate_up_bias,
+    //                        down_blocks, down_scales, down_bias,
+    //                        router_indices, routing_weights) -> Tensor
+    num_inputs_check(context, 9, 9);
+    auto input = context.get_input(0);            // [tokens, hidden]
+    auto gate_up_blocks = context.get_input(1);   // [E, 2*inter, hidden//32, 16] uint8
+    auto gate_up_scales = context.get_input(2);   // [E, 2*inter, hidden//32] uint8
+    auto gate_up_bias = context.get_input(3);     // [E, 2*inter]
+    auto down_blocks = context.get_input(4);      // [E, hidden, inter//32, 16] uint8
+    auto down_scales = context.get_input(5);      // [E, hidden, inter//32] uint8
+    auto down_bias = context.get_input(6);        // [E, hidden]
+    auto router_indices = context.get_input(7);   // [tokens, top_k]
+    auto routing_weights = context.get_input(8);  // [tokens, top_k]
+
+    // Build decompression subgraphs — CPU plugin will recognise the
+    // Const(f4e2m1)→Convert→Multiply(scales)→Reshape→MatMul pattern and
+    // fuse the decompression into oneDNN, avoiding f32 weight materialisation.
+    //
+    // gate_up_w: [1, E, 2*inter, hidden]  (out=2*inter, in=hidden)
+    auto gate_up_w = mxfp4_decompression_subgraph(context, gate_up_blocks, gate_up_scales);
+    // down_w: [1, E, hidden, inter]  (out=hidden, in=inter)
+    auto down_w = mxfp4_decompression_subgraph(context, down_blocks, down_scales);
+
+    // Convert biases to f32
+    gate_up_bias = context.mark_node(std::make_shared<v0::Convert>(gate_up_bias, element::f32));
+    down_bias = context.mark_node(std::make_shared<v0::Convert>(down_bias, element::f32));
+
+    // --- Gate-up projection (all experts at once via 4D broadcast MatMul) ---
+    // weight: [1, E, 2*inter, hidden] with transpose_b=true → [1, E, hidden, 2*inter]
+    // input:  [tokens, hidden] → [tokens, 1, 1, hidden]
+    // MatMul: [tokens, 1, 1, hidden] @ [1, E, hidden, 2*inter] → [tokens, E, 1, 2*inter]
+    auto unsqueeze_12 = v0::Constant::create(element::i64, Shape{2}, std::vector<int64_t>{1, 2});
+    auto input_4d = context.mark_node(std::make_shared<v0::Unsqueeze>(input, unsqueeze_12));
+
+    auto gate_up_4d = context.mark_node(std::make_shared<v0::MatMul>(input_4d, gate_up_w, false, true));
+    // gate_up_4d: [tokens, E, 1, 2*inter]
+
+    // Reshape to [tokens, E, 2*inter] — squeeze the matmul dim
+    auto axis_0 = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{0});
+    auto tokens_shape = context.mark_node(std::make_shared<v3::ShapeOf>(input, element::i64));
+    auto tokens_dim = context.mark_node(
+        std::make_shared<v8::Gather>(tokens_shape,
+                                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{0}),
+                                     axis_0));
+    auto hidden_dim = context.mark_node(
+        std::make_shared<v8::Gather>(tokens_shape,
+                                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1}),
+                                     axis_0));
+
+    // Get E and 2*inter from the weight shape [1, E, 2*inter, hidden]
+    auto w_shape = context.mark_node(std::make_shared<v3::ShapeOf>(gate_up_w, element::i64));
+    auto e_dim = context.mark_node(
+        std::make_shared<v8::Gather>(w_shape,
+                                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1}),
+                                     axis_0));
+    auto gate_up_out_dim = context.mark_node(
+        std::make_shared<v8::Gather>(w_shape,
+                                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{2}),
+                                     axis_0));
+
+    auto gate_up_3d_shape =
+        context.mark_node(std::make_shared<v0::Concat>(OutputVector{tokens_dim, e_dim, gate_up_out_dim}, 0));
+    auto gate_up_all = context.mark_node(std::make_shared<v1::Reshape>(gate_up_4d, gate_up_3d_shape, false));
+    // gate_up_all: [tokens, E, 2*inter]
+
+    // Add bias: [E, 2*inter] broadcasts to [tokens, E, 2*inter]
+    gate_up_all = context.mark_node(std::make_shared<v1::Add>(gate_up_all, gate_up_bias));
+
+    // --- Select per-token expert results using router_indices ---
+    auto ri_shape = context.mark_node(std::make_shared<v3::ShapeOf>(router_indices, element::i64));
+    auto top_k_val = context.mark_node(
+        std::make_shared<v8::Gather>(ri_shape,
+                                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1}),
+                                     axis_0));
+
+    // Gather per-token expert gate_up results:
+    // gate_up_all[tokens, E, 2*inter] → gather along axis=1 using router_indices
+    // For each token t, gather gate_up_all[t, router_indices[t, k], :] for k in top_k
+    // Use GatherND with batch_dims=1:
+    //   data:    [tokens, E, 2*inter]
+    //   indices: [tokens, top_k, 1]  (the "1" selects along the E dimension)
+    //   result:  [tokens, top_k, 2*inter]
+    auto indices_unsqueezed = context.mark_node(
+        std::make_shared<v0::Unsqueeze>(router_indices,
+                                        v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{2})));
+    // indices_unsqueezed: [tokens, top_k, 1]
+
+    auto gate_up_selected = context.mark_node(std::make_shared<v8::GatherND>(gate_up_all, indices_unsqueezed, 1));
+    // gate_up_selected: [tokens, top_k, 2*inter]
+
+    // Flatten to [tokens*top_k, 2*inter] for activation
+    auto n_total = context.mark_node(std::make_shared<v1::Multiply>(tokens_dim, top_k_val));
+    auto one = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1});
+    auto flat_2d = context.mark_node(std::make_shared<v0::Concat>(
+        OutputVector{n_total, v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{-1})},
+        0));
+    auto gate_up_result = context.mark_node(std::make_shared<v1::Reshape>(gate_up_selected, flat_2d, false));
+
+    // --- SwiGLU activation (interleaved gate/up) ---
+    // Reshape to [tokens*top_k, inter, 2], then split
+    auto inter_shape = context.mark_node(std::make_shared<v0::Concat>(
+        OutputVector{n_total,
+                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{-1}),
+                     v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{2})},
+        0));
+    auto gate_up_3d = context.mark_node(std::make_shared<v1::Reshape>(gate_up_result, inter_shape, false));
+
+    auto axis_2 = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{2});
+    auto idx_0 = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{0});
+    auto idx_1 = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1});
+    auto gate = context.mark_node(std::make_shared<v8::Gather>(gate_up_3d, idx_0, axis_2));
+    auto up = context.mark_node(std::make_shared<v8::Gather>(gate_up_3d, idx_1, axis_2));
+
+    // Squeeze trailing dim: [tokens*top_k, inter, 1] → [tokens*top_k, inter]
+    gate = context.mark_node(std::make_shared<v1::Reshape>(gate, flat_2d, false));
+    up = context.mark_node(std::make_shared<v1::Reshape>(up, flat_2d, false));
+
+    // gate = clamp(gate, max=7.0)
+    gate = context.mark_node(std::make_shared<v0::Clamp>(gate, -std::numeric_limits<double>::infinity(), 7.0));
+    // up = clamp(up, min=-7.0, max=7.0)
+    up = context.mark_node(std::make_shared<v0::Clamp>(up, -7.0, 7.0));
+
+    // glu = gate * sigmoid(gate * 1.702)
+    Output<Node> alpha = v0::Constant::create(element::f32, Shape{}, std::vector<float>{1.702f});
+    auto gate_alpha = context.mark_node(std::make_shared<v1::Multiply>(gate, alpha));
+    auto sigmoid_out = context.mark_node(std::make_shared<v0::Sigmoid>(gate_alpha));
+    auto glu = context.mark_node(std::make_shared<v1::Multiply>(gate, sigmoid_out));
+
+    // gated_output = (up + 1) * glu
+    Output<Node> one_f = v0::Constant::create(element::f32, Shape{}, std::vector<float>{1.0f});
+    auto up_plus_1 = context.mark_node(std::make_shared<v1::Add>(up, one_f));
+    auto gated_output = context.mark_node(std::make_shared<v1::Multiply>(up_plus_1, glu));
+    // gated_output: [tokens*top_k, inter]
+
+    // --- Down projection (all experts at once via 4D broadcast MatMul) ---
+    // gated_output: [tokens*top_k, inter] → [tokens*top_k, 1, 1, inter]
+    // down_w: [1, E, hidden, inter] with transpose_b=true → [1, E, inter, hidden]
+    // MatMul: [tokens*top_k, 1, 1, inter] @ [1, E, inter, hidden] → [tokens*top_k, E, 1, hidden]
+    auto gated_4d = context.mark_node(std::make_shared<v0::Unsqueeze>(gated_output, unsqueeze_12));
+    // gated_4d: [tokens*top_k, 1, 1, inter]
+
+    auto down_4d = context.mark_node(std::make_shared<v0::MatMul>(gated_4d, down_w, false, true));
+    // down_4d: [tokens*top_k, E, 1, hidden]
+
+    // Reshape to [tokens*top_k, E, hidden] — squeeze the matmul dim
+    auto down_3d_shape = context.mark_node(std::make_shared<v0::Concat>(OutputVector{n_total, e_dim, hidden_dim}, 0));
+    auto down_all = context.mark_node(std::make_shared<v1::Reshape>(down_4d, down_3d_shape, false));
+    // down_all: [tokens*top_k, E, hidden]
+
+    // Add bias: [E, hidden] broadcasts to [tokens*top_k, E, hidden]
+    down_all = context.mark_node(std::make_shared<v1::Add>(down_all, down_bias));
+
+    // Select the correct expert for each (token, k) pair.
+    // flat_indices: [tokens*top_k] — expert index for each (token, k) pair
+    auto flat_shape = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{-1});
+    auto flat_indices = context.mark_node(std::make_shared<v1::Reshape>(router_indices, flat_shape, false));
+    // Unsqueeze to [tokens*top_k, 1] for GatherND batch_dims=1
+    auto unsqueeze_1 = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1});
+    auto flat_indices_2d = context.mark_node(std::make_shared<v0::Unsqueeze>(flat_indices, unsqueeze_1));
+
+    // Reshape down_all to [tokens*top_k, E, hidden]
+    auto down_2d_select = context.mark_node(std::make_shared<v8::GatherND>(down_all, flat_indices_2d, 1));
+    // down_2d_select: [tokens*top_k, hidden]
+
+    // --- Weighted accumulation ---
+    // routing_weights: [tokens, top_k] → [tokens*top_k, 1]
+    auto rw_flat_shape = context.mark_node(std::make_shared<v0::Concat>(OutputVector{n_total, one}, 0));
+    auto rw_flat = context.mark_node(std::make_shared<v1::Reshape>(routing_weights, rw_flat_shape, false));
+    rw_flat = context.mark_node(std::make_shared<v0::Convert>(rw_flat, element::f32));
+
+    // Weight the outputs: [tokens*top_k, hidden] * [tokens*top_k, 1]
+    auto weighted = context.mark_node(std::make_shared<v1::Multiply>(down_2d_select, rw_flat));
+
+    // Reshape to [tokens, top_k, hidden] and sum over top_k
+    auto result_3d_shape =
+        context.mark_node(std::make_shared<v0::Concat>(OutputVector{tokens_dim, top_k_val, hidden_dim}, 0));
+    auto result_3d = context.mark_node(std::make_shared<v1::Reshape>(weighted, result_3d_shape, false));
+    auto reduce_axis = v0::Constant::create(element::i64, Shape{1}, std::vector<int64_t>{1});
+    auto result = context.mark_node(std::make_shared<v1::ReduceSum>(result_3d, reduce_axis, false));
+    // result: [tokens, hidden]
+
+    return {result};
+}
 
 OutputVector translate_bmm_ext(const NodeContext& context) {
     // ov_ext::bmm - batch matrix multiplication for 16-bit models

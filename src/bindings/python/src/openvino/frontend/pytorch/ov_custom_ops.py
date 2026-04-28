@@ -145,4 +145,52 @@ def _gptq_gemm_cpu(
     return out.to(data.dtype)
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  ov_ext::mxfp4_experts  (input, gate_up_blocks, gate_up_scales,
+#                           gate_up_bias, down_blocks, down_scales,
+#                           down_bias, router_indices,
+#                           routing_weights) → Tensor
+# ──────────────────────────────────────────────────────────────────────
+_ov_ext_lib.define(
+    "mxfp4_experts(Tensor input, Tensor gate_up_blocks, "
+    "Tensor gate_up_scales, Tensor gate_up_bias, "
+    "Tensor down_blocks, Tensor down_scales, "
+    "Tensor down_bias, Tensor router_indices, "
+    "Tensor routing_weights) -> Tensor")
+
+
+@torch.library.impl(_ov_ext_lib, "mxfp4_experts", "Meta")
+def _mxfp4_experts_meta(
+    data: torch.Tensor,
+    _gate_up_blocks: torch.Tensor, _gate_up_scales: torch.Tensor,
+    _gate_up_bias: torch.Tensor,
+    _down_blocks: torch.Tensor, _down_scales: torch.Tensor,
+    down_bias: torch.Tensor,
+    _router_indices: torch.Tensor, _routing_weights: torch.Tensor,
+) -> torch.Tensor:
+    # Output shape matches input shape: [batch, hidden_size]
+    hidden_size = down_bias.shape[-1]
+    return torch.empty(
+        *data.shape[:-1], hidden_size,
+        dtype=data.dtype, device="meta")
+
+
+@torch.library.impl(_ov_ext_lib, "mxfp4_experts", "CPU")
+def _mxfp4_experts_cpu(
+    data: torch.Tensor,
+    _gate_up_blocks: torch.Tensor, _gate_up_scales: torch.Tensor,
+    _gate_up_bias: torch.Tensor,
+    _down_blocks: torch.Tensor, _down_scales: torch.Tensor,
+    down_bias: torch.Tensor,
+    _router_indices: torch.Tensor, _routing_weights: torch.Tensor,
+) -> torch.Tensor:
+    # Placeholder – actual dequantisation + batched matmul happens in
+    # the C++ OV translator.
+    hidden_size = down_bias.shape[-1]
+    out = torch.zeros(
+        *data.shape[:-1], hidden_size,
+        dtype=torch.float32, device=data.device)
+    return out.to(data.dtype)
+
+
 log.debug("Registered ov_ext custom ops for torch.export")
