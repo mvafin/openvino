@@ -963,14 +963,6 @@ ov::npuw::LLMCompiledModel::LLMCompiledModel(const std::shared_ptr<ov::Model>& m
     merge_config_with(prefill_config, prefill_config_addition_value);
     merge_config_with(generate_config, generate_config_addition_value);
 
-    // Convert LLM-specific attention hints to NPUW_ATTN
-    if (npuw_llm_props.count("NPUW_LLM_PREFILL_ATTENTION_HINT")) {
-        prefill_config["NPUW_ATTN"] = npuw_llm_props["NPUW_LLM_PREFILL_ATTENTION_HINT"];
-    }
-    if (npuw_llm_props.count("NPUW_LLM_GENERATE_ATTENTION_HINT")) {
-        generate_config["NPUW_ATTN"] = npuw_llm_props["NPUW_LLM_GENERATE_ATTENTION_HINT"];
-    }
-
     // Generate a random weights bank name unique to this LLMCompiledModel object
     auto weights_bank_name = ov::npuw::util::generate_random_string();
     LOG_VERB("Generated a unique weights bank name: " << weights_bank_name);
@@ -985,12 +977,28 @@ ov::npuw::LLMCompiledModel::LLMCompiledModel(const std::shared_ptr<ov::Model>& m
         {"NPUW_ONLINE_KEEP_BLOCK_SIZE", "4"},
         {"NPUW_UNFOLD_IREQS", "NO"},
     };
-    if (prefill_attn_dyn || prefill_attn_pyramid || prefill_attn_hfa) {
+
+    if (m_use_chunk_prefill && (prefill_attn_pyramid || prefill_attn_hfa || prefill_attn_dyn)) {
+        prefill_config["NPUW_ATTN"] = ::intel_npu::NPUW_LLM_PREFILL_ATTENTION_HINT::toString(prefill_attn_hint);
         merge_config_with(prefill_config, dyn_attn_opts);
     }
-    if (generate_attn_dyn || generate_attn_pyramid || generate_attn_hfa) {
+
+    if (generate_attn_pyramid || generate_attn_hfa || generate_attn_dyn) {
+        generate_config["NPUW_ATTN"] = ::intel_npu::NPUW_LLM_GENERATE_ATTENTION_HINT::toString(generate_attn_hint);
         merge_config_with(generate_config, dyn_attn_opts);
     }
+
+    // Note: with dynamic attention in EITHER STAGE, we have to
+    // explicitly disable the run-time fallback to so extra ov::Model
+    // references won't be held by the npuw::CompiledModel, resulting
+    // in a higher memory consumption. This behavior should be reworked!
+    // The reason here is that NPUW_DEVICES may come as a global setting,
+    // impacting all the stages.
+    if (prefill_attn_dyn || generate_attn_dyn) {
+        prefill_config["NPUW_FALLBACK_EXEC"] = "NO";
+        generate_config["NPUW_FALLBACK_EXEC"] = "NO";
+    }
+
     if (is_moe) {
         // Apply MoE configuration for prefill stage
         const auto prefill_moe_hint = m_cfg.get<::intel_npu::NPUW_LLM_PREFILL_MOE_HINT>();
@@ -1008,17 +1016,6 @@ ov::npuw::LLMCompiledModel::LLMCompiledModel(const std::shared_ptr<ov::Model>& m
             }
             LOG_INFO("DEVICE_ROUTED MoE transformations completed");
         }
-    }
-    // Note: with dynamic attention in EITHER STAGE, we have to
-    // explicitly disable the run-time fallback to so extra ov::Model
-    // references won't be held by the npuw::CompiledModel, resulting
-    // in a higher memory consumption. This behavior should be reworked!
-    // The reason here is that NPUW_DEVICES may come as a global setting,
-    // impacting all the stages.
-    if (prefill_attn_dyn || generate_attn_dyn) {
-        const ov::AnyMap no_runtime_fallback = {{"NPUW_FALLBACK_EXEC", "NO"}};
-        merge_config_with(prefill_config, no_runtime_fallback);
-        merge_config_with(generate_config, no_runtime_fallback);
     }
 
     if (m_is_whisper) {
