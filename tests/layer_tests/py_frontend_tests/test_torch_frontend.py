@@ -2248,6 +2248,9 @@ def test_no_stderr_when_probing_onnx_as_pytorch_on_disk():
 
         # Capture stderr produced while probing the ONNX file.
         captured = io.StringIO()
+        # argv.input_model is the only attribute of argv read by the function;
+        # args is a plain dict from which 'example_input' and 'share_weights' may
+        # be fetched — an empty dict matches the real call site in convert_impl.py.
         argv = argparse.Namespace(input_model=onnx_path, framework=None)
         args = {}
         with contextlib.redirect_stderr(captured):
