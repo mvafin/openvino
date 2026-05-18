@@ -2,7 +2,10 @@
 # Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
+import contextlib
 import glob
+import io
 import itertools
 import math
 import os
@@ -10,6 +13,7 @@ import re
 import sys
 import logging
 import platform
+import tempfile
 from pathlib import Path
 
 import torch
@@ -2220,3 +2224,40 @@ def test_dynamo_auto_patches_gptq():
 
     # Verify output shape
     assert ov_model.output(0).get_partial_shape()[-1].get_length() == out_features
+
+
+def test_no_stderr_when_probing_onnx_as_pytorch_on_disk():
+    """Verify that probing an ONNX file as a PyTorch model produces no stderr output.
+
+    PR #34930 caused torch.export.load() to emit warning messages to stderr when
+    an ONNX model file was passed to convert_model / get_pytorch_decoder_for_model_on_disk.
+    The fix wraps the probe call in contextlib.redirect_stderr so that spurious
+    torch internals messages are silently suppressed.
+    """
+    from openvino.tools.ovc.moc_frontend.pytorch_frontend_utils import get_pytorch_decoder_for_model_on_disk
+
+    # Build a minimal model and export it to ONNX so we have an on-disk .onnx file.
+    class SimpleModel(torch.nn.Module):
+        def forward(self, x):
+            return x + 1.0
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        onnx_path = os.path.join(tmp_dir, "model.onnx")
+        dummy_input = torch.randn(1, 4)
+        torch.onnx.export(SimpleModel(), dummy_input, onnx_path, opset_version=11)
+
+        # Capture stderr produced while probing the ONNX file.
+        captured = io.StringIO()
+        argv = argparse.Namespace(input_model=onnx_path, framework=None)
+        args = {}
+        with contextlib.redirect_stderr(captured):
+            result = get_pytorch_decoder_for_model_on_disk(argv, args)
+
+        # The probe must not identify the ONNX file as a PyTorch model.
+        assert result is False, "ONNX file should not be detected as a PyTorch model"
+
+        # No messages should have been written to stderr during the probe.
+        stderr_output = captured.getvalue()
+        assert stderr_output == "", (
+            f"Expected no stderr output when probing an ONNX file, but got:\n{stderr_output}"
+        )
