@@ -1,6 +1,8 @@
 # Copyright (C) 2018-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
+import io
 import logging as log
 import pathlib
 import sys
@@ -212,7 +214,11 @@ def get_pytorch_decoder_for_model_on_disk(argv, args):
         pass
     # attempt to load exported model
     try:
-        exported_program = torch.export.load(input_model)
+        # Suppress warnings and log messages emitted by torch when probing
+        # non-PyTorch files (e.g. ONNX). If this is not the right format,
+        # we will silently fall through and let other components handle it.
+        with contextlib.redirect_stderr(io.StringIO()):
+            exported_program = torch.export.load(input_model)
         if hasattr(torch, "export") and isinstance(exported_program, (torch.export.ExportedProgram)):
             argv.input_model = TorchFXPythonDecoder.from_exported_program(exported_program)
             argv.framework = 'pytorch'
