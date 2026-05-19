@@ -447,3 +447,70 @@ TEST(type_prop, if_invalid_false_body) {
     EXPECT_EQ(then_op_res->get_element_type(), ov::element::dynamic);
     EXPECT_EQ(else_op_res->get_element_type(), ov::element::f16);
 }
+
+// Both branches feed the same If output slot, so at runtime their ranks must agree. When only one
+// branch resolves to a rank-dynamic shape (typically an upstream shape-inference imprecision such
+// as a chain through rank-dynamic intermediates), the rank-static branch must win instead of
+// demoting the whole If output to rank-dynamic - which downstream consumers (notably the CPU
+// plugin) reject.
+TEST(type_prop, if_prefer_rank_static_branch_over_rank_dynamic) {
+    auto X = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{2, 3});
+    auto Y = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape::dynamic());
+    auto cond = make_shared<ov::op::v0::Parameter>(element::boolean, Shape{});
+
+    // then branch: rank-static [2, 3]
+    auto Xt = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{2, 3});
+    auto then_op = std::make_shared<op::v1::Add>(Xt, Xt);
+    auto then_body_res = make_shared<ov::op::v0::Result>(then_op);
+    auto then_body = make_shared<ov::Model>(OutputVector{then_body_res}, ParameterVector{Xt});
+
+    // else branch: rank-dynamic
+    auto Ye = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape::dynamic());
+    auto else_op = std::make_shared<op::v1::Maximum>(Ye, Ye);
+    auto else_body_res = make_shared<ov::op::v0::Result>(else_op);
+    auto else_body = make_shared<ov::Model>(OutputVector{else_body_res}, ParameterVector{Ye});
+
+    auto if_op = make_shared<op::v8::If>(cond);
+    if_op->set_then_body(then_body);
+    if_op->set_else_body(else_body);
+    if_op->set_input(X, Xt, nullptr);
+    if_op->set_input(Y, nullptr, Ye);
+    auto res = if_op->set_output(then_body_res, else_body_res);
+    auto result0 = make_shared<ov::op::v0::Result>(res);
+
+    // The rank-static then branch must be preserved, not demoted to rank-dynamic.
+    EXPECT_EQ(result0->get_output_partial_shape(0), (PartialShape{2, 3}));
+}
+
+// Higher-rank mismatch between branches: one branch produces a low-rank "sentinel" while the other
+// produces an actual rank-N tensor. Only one branch executes at runtime, so the output's actual
+// rank equals the higher branch rank. Falling back to fully rank-dynamic loses recoverable rank
+// information; the result must keep the maximum rank with all dims dynamic.
+TEST(type_prop, if_mismatched_higher_rank_branches_keep_max_rank) {
+    auto X = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{2, 3, 4});
+    auto Y = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{5});
+    auto cond = make_shared<ov::op::v0::Parameter>(element::boolean, Shape{});
+
+    // then branch: rank 3
+    auto Xt = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{2, 3, 4});
+    auto then_op = std::make_shared<op::v1::Add>(Xt, Xt);
+    auto then_body_res = make_shared<ov::op::v0::Result>(then_op);
+    auto then_body = make_shared<ov::Model>(OutputVector{then_body_res}, ParameterVector{Xt});
+
+    // else branch: rank 1
+    auto Ye = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{5});
+    auto else_op = std::make_shared<op::v1::Maximum>(Ye, Ye);
+    auto else_body_res = make_shared<ov::op::v0::Result>(else_op);
+    auto else_body = make_shared<ov::Model>(OutputVector{else_body_res}, ParameterVector{Ye});
+
+    auto if_op = make_shared<op::v8::If>(cond);
+    if_op->set_then_body(then_body);
+    if_op->set_else_body(else_body);
+    if_op->set_input(X, Xt, nullptr);
+    if_op->set_input(Y, nullptr, Ye);
+    auto res = if_op->set_output(then_body_res, else_body_res);
+    auto result0 = make_shared<ov::op::v0::Result>(res);
+
+    // Output keeps the maximum rank (3) with all dimensions dynamic.
+    EXPECT_EQ(result0->get_output_partial_shape(0), PartialShape::dynamic(3));
+}

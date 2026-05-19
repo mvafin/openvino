@@ -1354,3 +1354,35 @@ TEST(type_prop, reshape_symbol_deducing) {
     EXPECT_EQ(reshape->get_output_partial_shape(0), ov::PartialShape({-1, -1, 12, 64}));
     EXPECT_TRUE(ov::symbol::are_equal(B, C));
 }
+
+// special_zero == true (ONNX allowzero == 0) means "0 copies the corresponding input dimension".
+// When the `0` is at an index beyond the input rank, the copy source does not exist. If the pattern
+// is a genuine compile-time Constant this is an unrecoverable model error and must fail.
+TEST(type_prop, reshape_special_zero_out_of_range_const_pattern_throws) {
+    auto param = make_shared<op::v0::Parameter>(element::f32, PartialShape{3, 1});
+
+    OV_EXPECT_THROW(
+        ignore = make_shared<op::v1::Reshape>(
+            param,
+            op::v0::Constant::create(element::i64, {3}, std::vector<int64_t>{3, 1, 0}),
+            true),
+        NodeValidationFailure,
+        HasSubstr("'0' dimension is out of range"));
+}
+
+// Same out-of-range `0` with special_zero, but the pattern is NOT a literal Constant - it is
+// value-propagated through a Concat (as happens across dynamic If/Loop bodies that may never
+// execute). Here the `0` can be a spurious artifact, so shape inference must emit a dynamic
+// dimension instead of failing the whole model compilation.
+TEST(type_prop, reshape_special_zero_out_of_range_non_const_pattern_dynamic) {
+    auto param = make_shared<op::v0::Parameter>(element::f32, PartialShape{3, 1});
+
+    const auto d0 = op::v0::Constant::create(element::i64, {1}, std::vector<int64_t>{3});
+    const auto d1 = op::v0::Constant::create(element::i64, {1}, std::vector<int64_t>{1});
+    const auto d2 = op::v0::Constant::create(element::i64, {1}, std::vector<int64_t>{0});
+    const auto pattern = make_shared<op::v0::Concat>(OutputVector{d0, d1, d2}, 0);
+
+    const auto r = make_shared<op::v1::Reshape>(param, pattern, true);
+    EXPECT_EQ(r->get_element_type(), element::f32);
+    EXPECT_EQ(r->get_output_partial_shape(0), PartialShape({3, 1, Dimension::dynamic()}));
+}

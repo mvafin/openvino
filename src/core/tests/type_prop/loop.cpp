@@ -1429,3 +1429,87 @@ TEST(type_prop, loop_operation_dynamic_iter_dynamic_shapes_unsqueeze) {
     EXPECT_EQ(outer_model->get_output_size(), 1);
     EXPECT_EQ(outer_result->get_output_partial_shape(0), outer_shape);
 }
+
+// Autoregressive KV-cache pattern: the outer initial value of a merged input is an empty cache
+// (a statically-zero growable axis), and the body grows it every iteration. The merged input slot
+// holds non-empty data from iteration 1 onwards, so its zero axis must be widened to dynamic.
+// Without the Pass-A zero-dim widening the strict "compatible" merge leaves the axis pinned to 0,
+// which freezes the cache empty and produces wrong (empty) Loop outputs.
+TEST(type_prop, loop_merged_input_zero_dim_widening_kv_cache) {
+    // Outer initial cache value is empty along axis 0.
+    auto X = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{0, 4});
+    // New rows appended each iteration; dynamic length on axis 0.
+    auto K = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{Dimension::dynamic(), 4});
+    auto T = make_shared<ov::op::v0::Parameter>(element::i64, Shape{});
+
+    // Body parameters.
+    auto Xi = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{0, 4});
+    auto Ki = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape{Dimension::dynamic(), 4});
+
+    auto body_condition = make_shared<ov::op::v0::Constant>(element::boolean, Shape{}, true);
+    auto exec_condition = make_shared<ov::op::v0::Constant>(element::boolean, Shape{}, true);
+
+    // Body: append rows to the cache -> [?, 4].
+    auto Zo = make_shared<ov::op::v0::Concat>(NodeVector{Xi, Ki}, 0);
+    auto Z = make_shared<ov::op::v0::Result>(Zo);
+    auto body = make_shared<Model>(OutputVector{Z, body_condition}, ParameterVector{Xi, Ki});
+
+    auto loop = make_shared<ov::op::v5::Loop>(T, exec_condition);
+    loop->set_function(body);
+    loop->set_special_body_ports(ov::op::v5::Loop::SpecialBodyPorts{-1, 1});
+    loop->set_merged_input(Xi, X, Z);
+    loop->set_invariant_input(Ki, K);
+
+    auto out1 = loop->get_iter_value(Z, -1);
+    auto result1 = make_shared<ov::op::v0::Result>(out1);
+    auto f = make_shared<Model>(ResultVector{result1}, ParameterVector{X, K, T});
+
+    // The body merged parameter's zero axis must be widened to dynamic (not left pinned at 0).
+    const auto& merged_param_ps = body->get_parameters().at(0)->get_partial_shape();
+    EXPECT_TRUE(merged_param_ps[0].is_dynamic());
+    EXPECT_EQ(merged_param_ps[1], Dimension(4));
+
+    // The Loop output for the merged slot must likewise be non-empty (dynamic axis 0).
+    const auto loop_out_ps = result1->get_output_partial_shape(0);
+    ASSERT_TRUE(loop_out_ps.rank().is_static());
+    EXPECT_TRUE(loop_out_ps[0].is_dynamic());
+    EXPECT_EQ(loop_out_ps[1], Dimension(4));
+}
+
+// A body value that becomes rank-dynamic (e.g. through a Reshape with a dynamic-length pattern, or
+// an inner If with mismatched-rank branches) while feeding a back-edge into a rank-static merged
+// input must not demote the Loop output to fully rank-dynamic. The back-edge value is shape-
+// compatible with the input slot at runtime, so the rank-static input parameter is a sound upper
+// bound: recover its rank for the Loop output. Otherwise the whole Loop body goes rank-dynamic,
+// which the CPU plugin rejects.
+TEST(type_prop, loop_merged_input_recovers_rank_from_rank_dynamic_body_value) {
+    auto X = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape::dynamic(4));
+    // Reshape pattern of unknown (dynamic) length -> reshape output is rank-dynamic.
+    auto P = make_shared<ov::op::v0::Parameter>(element::i64, PartialShape{Dimension::dynamic()});
+    auto T = make_shared<ov::op::v0::Parameter>(element::i64, Shape{});
+
+    auto Xi = make_shared<ov::op::v0::Parameter>(element::f32, PartialShape::dynamic(4));
+    auto Pi = make_shared<ov::op::v0::Parameter>(element::i64, PartialShape{Dimension::dynamic()});
+
+    auto body_condition = make_shared<ov::op::v0::Constant>(element::boolean, Shape{}, true);
+    auto exec_condition = make_shared<ov::op::v0::Constant>(element::boolean, Shape{}, true);
+
+    auto reshaped = make_shared<op::v1::Reshape>(Xi, Pi, false);
+    auto Z = make_shared<ov::op::v0::Result>(reshaped);
+    // Sanity: the body value is genuinely rank-dynamic.
+    ASSERT_TRUE(reshaped->get_output_partial_shape(0).rank().is_dynamic());
+    auto body = make_shared<Model>(OutputVector{Z, body_condition}, ParameterVector{Xi, Pi});
+
+    auto loop = make_shared<ov::op::v5::Loop>(T, exec_condition);
+    loop->set_function(body);
+    loop->set_special_body_ports(ov::op::v5::Loop::SpecialBodyPorts{-1, 1});
+    loop->set_merged_input(Xi, X, Z);
+    loop->set_invariant_input(Pi, P);
+
+    auto out1 = loop->get_iter_value(Z, -1);
+    auto result1 = make_shared<ov::op::v0::Result>(out1);
+    auto f = make_shared<Model>(ResultVector{result1}, ParameterVector{X, P, T});
+
+    // Rank recovered from the rank-static (rank 4) merged input - not fully rank-dynamic.
+    EXPECT_EQ(result1->get_output_partial_shape(0), PartialShape::dynamic(4));
+}

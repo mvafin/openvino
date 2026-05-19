@@ -172,7 +172,33 @@ void Loop::validate_and_infer_types() {
             const auto& input_partial_shape = input(index).get_partial_shape();
             const auto& input_type = input(index).get_element_type();
 
-            body_parameter->set_partial_shape(input_partial_shape);
+            // Union the incoming outer-input shape with the current body-parameter
+            // shape so that any prior Pass-A widening (performed on a previous
+            // validate call) is preserved instead of being clobbered on subsequent
+            // validations. This is essential for autoregressive KV-cache patterns
+            // where the outer initial value is empty (e.g. [0,N,0,K]) and the
+            // body produces a growing tensor across iterations.
+            const auto& current_ps = body_parameter->get_partial_shape();
+            PartialShape effective_ps = input_partial_shape;
+            if (current_ps.rank().is_static() && input_partial_shape.rank().is_static() &&
+                current_ps.rank().get_length() == input_partial_shape.rank().get_length()) {
+                const auto rank_len = current_ps.rank().get_length();
+                for (int64_t j = 0; j < rank_len; j++) {
+                    const auto& a = current_ps[j];
+                    const auto& b = input_partial_shape[j];
+                    if (a == b) {
+                        continue;
+                    }
+                    int64_t a_lo = a.get_min_length();
+                    int64_t a_hi = a.is_dynamic() ? -1 : a.get_max_length();
+                    int64_t b_lo = b.get_min_length();
+                    int64_t b_hi = b.is_dynamic() ? -1 : b.get_max_length();
+                    int64_t u_lo = std::min(a_lo, b_lo);
+                    int64_t u_hi = (a_hi < 0 || b_hi < 0) ? -1 : std::max(a_hi, b_hi);
+                    effective_ps[j] = (u_hi < 0) ? Dimension::dynamic() : Dimension(u_lo, u_hi);
+                }
+            }
+            body_parameter->set_partial_shape(effective_ps);
             body_parameter->set_element_type(input_type);
             back_edges[merged_input_description->m_body_value_index] = merged_input_description->m_body_parameter_index;
         } else if (auto invariant_input_description =
@@ -196,6 +222,59 @@ void Loop::validate_and_infer_types() {
         bool need_reinvalidate = false;
         for (i = 0; i < max_num_of_iterations; i++) {
             need_reinvalidate = false;
+            // Pass A: zero-dim widening on merged inputs. Applies to every back-edge
+            // (including those exposed as Loop outputs - the original BodyOutputDescription-
+            // driven merge in Pass B uses a strict "compatible" check and would leave a
+            // statically-zero input dim untouched when the body produces a dynamic interval
+            // for it, even though that input slot will hold non-empty data from iteration 1
+            // onwards). This is the typical autoregressive KV-cache pattern where the outer
+            // initial value is an empty cache shaped like [0,N,0,K] and the back-edge result
+            // is [?,N,?,K].
+            for (const auto& be : back_edges) {
+                auto body_value = m_bodies[0]->get_results().at(be.first)->input_value(0);
+                const auto& body_value_shape = body_value.get_partial_shape();
+                auto input_param = m_bodies[0]->get_parameters().at(be.second);
+                const auto& input_param_ps = input_param->get_partial_shape();
+                if (!body_value_shape.rank().is_static() || !input_param_ps.rank().is_static())
+                    continue;
+                if (body_value_shape.rank().get_length() != input_param_ps.rank().get_length())
+                    continue;
+                const auto rank_len = body_value_shape.rank().get_length();
+                PartialShape new_ps = input_param_ps;
+                bool shape_changed = false;
+                for (auto j = 0; j < rank_len; j++) {
+                    const auto& in_d = input_param_ps[j];
+                    const auto& body_d = body_value_shape[j];
+                    if (!body_d.compatible(in_d))
+                        continue;  // leave to subsequent passes / original semantics
+                    const bool in_is_static = in_d.is_static();
+                    const bool in_is_zero = in_is_static && in_d.get_length() == 0;
+                    const bool body_covers_nonzero = body_d.is_dynamic() || body_d.get_max_length() > 0;
+                    const bool extend_static =
+                        in_is_static && !in_is_zero && body_d.is_dynamic() &&
+                        (body_d.get_min_length() != in_d.get_length() || body_d.get_max_length() != in_d.get_length());
+                    if (!((in_is_zero && body_covers_nonzero) || extend_static))
+                        continue;
+                    const auto in_lo = in_d.get_min_length();
+                    const auto body_lo = body_d.get_min_length();
+                    const auto body_hi = body_d.get_max_length();
+                    int64_t new_lo = std::min<int64_t>(in_lo, body_lo);
+                    int64_t new_hi = body_hi;
+                    if (new_hi >= 0 && in_lo > new_hi) {
+                        new_hi = in_lo;
+                    }
+                    Dimension merged_d = (new_hi < 0) ? Dimension::dynamic() : Dimension(new_lo, new_hi);
+                    if (merged_d != in_d) {
+                        new_ps[j] = merged_d;
+                        shape_changed = true;
+                    }
+                }
+                if (shape_changed) {
+                    need_reinvalidate = true;
+                    input_param->set_partial_shape(new_ps);
+                }
+            }
+            // Pass B: original merge driven by BodyOutputDescription entries (unchanged).
             for (const auto& output_description : m_output_descriptions[0]) {
                 auto body_value = m_bodies[0]->get_results().at(output_description->m_body_value_index)->input_value(0);
 
@@ -238,13 +317,14 @@ void Loop::validate_and_infer_types() {
                                 input_param->set_partial_shape(new_ps);
                             }
                         }
-                    } else {
-                        if (input_param_ps.rank().is_static()) {
-                            // output shape is dynamic, let the input known now we are dynamic shape
-                            input_param->set_partial_shape(body_value_shape);
-                            need_reinvalidate = true;
-                        }
                     }
+                    // If body_value rank is dynamic, preserve the rank-static input slot:
+                    // a rank-dynamic body value typically reflects upstream shape-inference
+                    // imprecision (e.g. an If with mismatched-rank branches) rather than a
+                    // real runtime shape variation, and the back-edge value must still be
+                    // shape-compatible with the input slot at runtime. Demoting the input
+                    // slot to rank-dynamic forces the entire Loop body to rank-dynamic and
+                    // is rejected by downstream consumers (notably the CPU plugin).
                 }
             }
             // only input shape changed we will re-compute output shape
@@ -287,7 +367,30 @@ void Loop::validate_and_infer_types() {
 
         else if (auto body_output_description =
                      as_type_ptr<v0::TensorIterator::BodyOutputDescription>(output_description)) {
-            const auto& body_value_shape = body_value.get_partial_shape();
+            auto body_value_shape = body_value.get_partial_shape();
+            // If the body value's shape is rank-dynamic but this result is also the source
+            // of a back-edge into a rank-static merged input, recover rank/shape from the
+            // matched input parameter: the back-edge value must be shape-compatible with
+            // the input slot at runtime, so the input param's shape is a sound upper bound
+            // for the Loop output. Without this, an upstream inference imprecision inside
+            // the body (e.g. an If with mismatched-rank branches) propagates a rank-dynamic
+            // Loop output, which the CPU plugin rejects.
+            if (body_value_shape.rank().is_dynamic()) {
+                const auto be_it = back_edges.find(output_description->m_body_value_index);
+                if (be_it != back_edges.end()) {
+                    const auto& input_param_ps = m_bodies[0]->get_parameters().at(be_it->second)->get_partial_shape();
+                    if (input_param_ps.rank().is_static()) {
+                        // Recover only the rank, not the full per-dim shape: the back-edge
+                        // value must match the input slot at runtime in rank, but per-dim
+                        // shapes inside the body can diverge from the outer initial shape
+                        // (e.g. growing KV caches, masks resized per iteration). Forcing
+                        // the input's per-dim shape onto the Loop output would create false
+                        // dimension equalities across consumers that share symbolic dims,
+                        // leading to runtime broadcast mismatches in the CPU plugin.
+                        body_value_shape = PartialShape::dynamic(input_param_ps.rank().get_length());
+                    }
+                }
+            }
             if (body_value_shape.is_dynamic()) {
                 set_output_type(index, body_value.get_element_type(), body_value_shape);
             } else {

@@ -27,10 +27,21 @@ static ov::PartialShape resolve_shape(const ov::PartialShape& then_pshape, const
     auto then_rank = then_pshape.rank();
     auto else_rank = else_pshape.rank();
 
-    // if rangs of shapes are not equal or rang of one of them is dynamic function
-    // return shape with dynamic rank
-    if (then_rank.is_dynamic() || else_rank.is_dynamic()) {
+    // if both ranks are dynamic, the result is rank-dynamic. If only one branch is
+    // rank-dynamic (typically due to an upstream shape-inference imprecision such as
+    // a chain through rank-dynamic intermediates), prefer the rank-static branch -
+    // both branches feed the same If output slot, so their runtime ranks must agree.
+    // Without this, a rank-dynamic shape on a single branch forces the entire If
+    // output to rank-dynamic, which downstream consumers (notably the CPU plugin)
+    // reject.
+    if (then_rank.is_dynamic() && else_rank.is_dynamic()) {
         return ov::PartialShape::dynamic();
+    }
+    if (then_rank.is_dynamic()) {
+        return else_pshape;
+    }
+    if (else_rank.is_dynamic()) {
+        return then_pshape;
     }
     if (then_rank.get_length() != else_rank.get_length()) {
         auto is_one_element = [](const ov::PartialShape& pshape) {
@@ -40,9 +51,15 @@ static ov::PartialShape resolve_shape(const ov::PartialShape& then_pshape, const
         if (then_rank.get_length() <= 1 && else_rank.get_length() <= 1) {
             return (is_one_element(then_pshape) && is_one_element(else_pshape)) ? ov::PartialShape{1}
                                                                                 : ov::PartialShape::dynamic(1);
-        } else {
-            return ov::PartialShape::dynamic();
         }
+        // Higher-rank mismatch: one branch produces a scalar/low-rank "sentinel" while the
+        // other produces an actual rank-N tensor. The runtime executes only one branch, so
+        // the output's actual rank equals that branch's rank. Falling back to fully rank-
+        // dynamic here loses recoverable information and forces every downstream consumer
+        // to rank-dynamic - which the CPU plugin (and similar SubGraphOp consumers) reject.
+        // Emit a soft hint shape with the higher rank, all dims dynamic. This matches the
+        // spirit of the rank-0/1 case above which returns PartialShape::dynamic(1).
+        return ov::PartialShape::dynamic(std::max(then_rank.get_length(), else_rank.get_length()));
     }
 
     ov::PartialShape new_dims;

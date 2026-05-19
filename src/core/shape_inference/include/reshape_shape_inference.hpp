@@ -5,6 +5,7 @@
 
 #include "compare.hpp"
 #include "dimension_util.hpp"
+#include "openvino/op/constant.hpp"
 #include "openvino/op/reshape.hpp"
 #include "utils.hpp"
 
@@ -317,8 +318,21 @@ std::vector<TRShape> shape_infer(const Reshape* op,
                 if (static_cast<int64_t>(i) == minus_one_idx) {
                     output_shape.emplace_back();
                 } else if (ignore_pattern_dim) {
-                    NODE_SHAPE_INFER_CHECK(op, input_shapes, i < input_shape.size(), "'0' dimension is out of range");
-                    output_shape.push_back(*input_iter);
+                    if (i < input_shape.size()) {
+                        output_shape.push_back(*input_iter);
+                    } else {
+                        // `output_pattern[i] == 0` with special_zero (ONNX allowzero=0) means
+                        // "copy the corresponding input dimension", but the input has no
+                        // dimension at index `i`. If the pattern is a real compile-time
+                        // Constant this is a hard model bug -> fail. If the pattern was
+                        // resolved symbolically through value propagation (e.g. across
+                        // dynamic If/Loop bodies that may never execute), the `0` can be a
+                        // spurious artifact - emit a dynamic dim instead of failing
+                        // compilation, matching the dynamic-rank-input branch above.
+                        const auto pattern_is_const = ov::is_type<ov::op::v0::Constant>(op->get_input_node_ptr(1));
+                        NODE_SHAPE_INFER_CHECK(op, input_shapes, !pattern_is_const, "'0' dimension is out of range");
+                        output_shape.emplace_back(dim::inf_bound);
+                    }
                     // Exclude special zero dimension from product calculation
                 } else {
                     output_shape.push_back(pattern_dim);
