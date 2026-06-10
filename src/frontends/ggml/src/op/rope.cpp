@@ -37,7 +37,7 @@ OutputVector translate_rope(const NodeContext& context) {
 
     auto data_node = context.get_input(0).get_node_shared_ptr();
     auto output_shape = context.get_output_shape().to_shape();
-    int32_t* op_params = context.get_output_op_params();
+    auto rope_config = context.get_attribute<RopeConfig>("rope_config");
     const int mode = (op_case & 0xFFFF0000) >> 16;
     op_case = (op_case & 0x0000FFFF);
 
@@ -56,7 +56,7 @@ OutputVector translate_rope(const NodeContext& context) {
         if (context.get_input_size() == 3) {
             rope_freqs_weight = context.get_input(2).get_node_shared_ptr();
         }
-        auto sin_cos = make_sin_cos(op_params, inp_pos, rope_freqs_weight, mode == TYPE_IMROPE);
+        auto sin_cos = make_sin_cos(rope_config, inp_pos, rope_freqs_weight, mode == TYPE_IMROPE);
         sin_theta_node = sin_cos.first;
         cos_theta_node = sin_cos.second;
     }

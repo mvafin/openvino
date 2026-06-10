@@ -15,10 +15,8 @@ namespace op {
 OutputVector translate_scale(const NodeContext& context) {
     num_inputs_check(context, 1, 1);
 
-    float scale;
-    float bias;
-    memcpy(&scale, (float*)context.get_output_op_params() + 0, sizeof(float));
-    memcpy(&bias, (float*)context.get_output_op_params() + 1, sizeof(float));
+    float scale = context.get_attribute<float>("scale");
+    float bias = context.get_attribute<float>("bias");
 
     auto scale_node = std::make_shared<ov::op::v0::Constant>(ov::element::f32, ov::Shape{}, std::vector<float>{scale});
     auto scaled = std::make_shared<ov::op::v1::Multiply>(context.get_input(0), scale_node);

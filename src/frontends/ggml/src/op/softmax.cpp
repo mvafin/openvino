@@ -29,11 +29,8 @@ OutputVector translate_soft_max(const NodeContext& context) {
     auto input_node = context.get_input(0).get_node_shared_ptr();
     ov::Output<Node> res;
 
-    float scale = 1.0f;
-    float max_bias = 0.0f;
-    auto* op_params = context.get_output_op_params();
-    memcpy(&scale, (float*)op_params + 0, sizeof(float));
-    memcpy(&max_bias, (float*)op_params + 1, sizeof(float));
+    float scale = context.get_attribute<float>("scale");
+    float max_bias = context.get_attribute<float>("max_bias");
     auto src0_shape = context.get_input_shape(0).get_shape();
     const uint32_t h = src0_shape[2];
     const uint32_t n_head = src0_shape[0];

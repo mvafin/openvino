@@ -64,7 +64,7 @@ std::shared_ptr<ov::Node> get_dimensions(const std::shared_ptr<ov::Node>& node, 
 
 OutputVector rename_outputs_with_suffix(const OutputVector& outputs, const std::string& suffix);
 
-std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(int32_t* rope_params,
+std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(const RopeConfig& rope_config,
                                                            std::shared_ptr<ov::Node> inp_pos,
                                                            std::shared_ptr<ov::Node> rope_freqs_weight = nullptr,
                                                            bool imrope = false,

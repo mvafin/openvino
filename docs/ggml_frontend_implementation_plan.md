@@ -130,7 +130,7 @@ that would otherwise force the synthetic gguf decoder to fake ggml layout:
 | `flash_attn_ext` | `(float*)params[0..2]` | `"scale"`, `"max_bias"`, `"logit_softcap" -> float` |
 | `glu_swiglu`/`glu_geglu` | `params[1]` (swapped) | `"swapped" -> bool` |
 | `rope` | `make_sin_cos(rope_params[1,4,5..10])` | `"rope" -> RopeConfig` (typed struct: n_dims, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow, mode) |
-| `permute` / `process_view_input` | `offset=*(size_t*)params; offset/stride` | `"view_offset_elems" -> int64_t` (decoder precomputes `offset/stride`, exposes element offset directly) |
+| `permute` / `process_view_input` | `offset=*(size_t*)params; offset/stride` | `get_input_view_offset(node_idx, name) -> int64_t` (byte offset of the input VIEW; the two call sites divide by *different* strides, so the byte offset is the single source of truth and the bytes→elements division stays in the translator using `get_input_stride`) |
 
 **(b) The opaque `op_case` integer**, computed *only* from ggml node topology
 (`compute_op_case` walks `src[]->op` chains: is this PERMUTE on a kv-cache / SWA / rope'd
@@ -196,7 +196,7 @@ producing a graph that matches the cgraph path's model.
   - op tag as a **string** (`"GGML_OP_MUL_MAT"`, …) — decision: string, not enum, to
     avoid any ggml header leak and to match the existing `op_table` keys verbatim.
   - input references (by output-name), **typed op attributes** (the M1.5 attribute set:
-    `eps`, `scale`, `RopeConfig`, `swapped`, `view_offset_elems`, semantic role/intent
+    `eps`, `scale`, `RopeConfig`, `swapped`, `get_input_view_offset`, semantic role/intent
     enums), output name/shape/type. **No raw ggml `op_params` layout** — that's the whole
     point of M1.5; the builder sets attributes by construction since it knows each
     tensor's role.

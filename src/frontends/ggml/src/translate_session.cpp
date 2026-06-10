@@ -130,8 +130,7 @@ void add_sliced_mask(TensorMap& tensor_map, GgmlDecoder& ggml_model_decoder) {
 }
 
 void add_rope_sin_cos(TensorMap& tensor_map, GgmlDecoder& ggml_model_decoder) {
-    int32_t* rope_params = ggml_model_decoder.get_rope_params();
-    if (tensor_map.find("inp_pos") == tensor_map.end() || rope_params == nullptr) {
+    if (tensor_map.find("inp_pos") == tensor_map.end() || !ggml_model_decoder.has_rope()) {
         return;
     }
     auto inp_pos = tensor_map.at("inp_pos").get_node_shared_ptr();
@@ -140,7 +139,7 @@ void add_rope_sin_cos(TensorMap& tensor_map, GgmlDecoder& ggml_model_decoder) {
         rope_freqs_weight = tensor_map.at("rope_freqs.weight").get_node_shared_ptr();
     }
 
-    auto sin_cos = make_sin_cos(rope_params, inp_pos, rope_freqs_weight);
+    auto sin_cos = make_sin_cos(ggml_model_decoder.get_rope_config(), inp_pos, rope_freqs_weight);
     auto sin_theta = sin_cos.first;
     auto cos_theta = sin_cos.second;
 

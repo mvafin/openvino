@@ -26,10 +26,9 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
     auto v = context.get_input(2);
     auto mask = context.get_input(3);
 
-    float* params = reinterpret_cast<float*>(context.get_output_op_params());
-    float scale = params[0];
-    // float max_bias      = params[1];
-    // float logit_softcap = params[2];
+    float scale = context.get_attribute<float>("scale");
+    // float max_bias      = context.get_attribute<float>("max_bias");
+    // float logit_softcap = context.get_attribute<float>("logit_softcap");
 
     auto q = std::make_shared<ov::op::v0::Convert>(q_f32, ov::element::f16);
     auto scale_node = std::make_shared<ov::op::v0::Constant>(ov::element::f16, ov::Shape{}, std::vector<float>{scale});

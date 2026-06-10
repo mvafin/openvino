@@ -115,7 +115,7 @@ void ggml_rope_yarn_corr_dims(int n_dims,
 }
 }  // namespace
 
-std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(int32_t* rope_params,
+std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(const RopeConfig& rope_config,
                                                            std::shared_ptr<ov::Node> inp_pos,
                                                            std::shared_ptr<ov::Node> rope_freqs_weight,
                                                            bool imrope,
@@ -141,21 +141,15 @@ std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(int32_t* rope_params,
         inp_pos = std::make_shared<ov::op::v1::Transpose>(inp_pos, pos_perm);
     }
 
-    float freq_base;
-    float freq_scale;
-    float ext_factor;
-    float attn_factor;
-    float beta_fast;
-    float beta_slow;
-    const int n_dims = rope_params[1];
+    const float freq_base = rope_config.freq_base;
+    const float freq_scale = rope_config.freq_scale;
+    const float ext_factor = rope_config.ext_factor;
+    const float attn_factor = rope_config.attn_factor;
+    const float beta_fast = rope_config.beta_fast;
+    const float beta_slow = rope_config.beta_slow;
+    const int n_dims = rope_config.n_dims;
     const size_t n_dims_half = n_dims >> 1;
-    const int n_ctx_orig = rope_params[4];
-    memcpy(&freq_base, rope_params + 5, sizeof(float));
-    memcpy(&freq_scale, rope_params + 6, sizeof(float));
-    memcpy(&ext_factor, rope_params + 7, sizeof(float));
-    memcpy(&attn_factor, rope_params + 8, sizeof(float));
-    memcpy(&beta_fast, rope_params + 9, sizeof(float));
-    memcpy(&beta_slow, rope_params + 10, sizeof(float));
+    const int n_ctx_orig = rope_config.n_ctx_orig;
 
     const float theta_scale = powf(freq_base, -2.0f / n_dims);
 
@@ -236,10 +230,9 @@ ov::Output<ov::Node> process_view_input(const NodeContext& context, int input_in
     // Only works for VIEW operations that slice at the lowest dimension
     // If the VIEW also reshape the result, `slice_len` should be provided
     auto input = context.get_input(input_index);
-    auto* op_params = (size_t*)context.get_input_op_params(input_index);
     auto src1_stride = context.get_input_stride(input_index);
 
-    int64_t split_addr = op_params[0] / src1_stride[3];
+    int64_t split_addr = context.get_input_view_offset(input_index) / (int64_t)src1_stride[3];
     if (slice_len == 0) {
         slice_len = context.get_input_shape(input_index)[3].get_length();
     }

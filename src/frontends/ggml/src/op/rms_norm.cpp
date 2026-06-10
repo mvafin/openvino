@@ -29,8 +29,7 @@ OutputVector translate_rms_norm(const NodeContext& context) {
                                                  ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {-1}),
                                                  true);
 
-    float eps;
-    memcpy(&eps, context.get_output_op_params(), sizeof(float));
+    float eps = context.get_attribute<float>("eps");
 
     auto rms = std::make_shared<ov::op::v0::Sqrt>(
         std::make_shared<ov::op::v1::Add>(mean, ov::op::v0::Constant::create(ov::element::f32, ov::Shape{1}, {eps})));

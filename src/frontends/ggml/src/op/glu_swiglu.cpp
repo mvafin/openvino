@@ -43,9 +43,7 @@ OutputVector translate_glu_swiglu(const NodeContext& context) {
         src1 = std::make_shared<ov::op::v8::Slice>(combined, start1, stop1, step, axis);
     }
 
-    int32_t* params = context.get_output_op_params();
-    const int32_t swapped = params[1];
-    if (swapped) {
+    if (context.get_attribute<bool>("swapped")) {
         std::swap(src0, src1);
     }
 
