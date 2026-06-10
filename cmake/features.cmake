@@ -154,6 +154,7 @@ ov_option(ENABLE_OV_PYTORCH_FRONTEND "Enable PyTorch FrontEnd" ON)
 ov_option(ENABLE_OV_JAX_FRONTEND "Enable JAX FrontEnd" ON)
 ov_option(ENABLE_OV_TF_FRONTEND "Enable TensorFlow FrontEnd" ON)
 ov_option(ENABLE_OV_TF_LITE_FRONTEND "Enable TensorFlow Lite FrontEnd" ON)
+ov_option(ENABLE_OV_GGML_FRONTEND "Enable GGML/GGUF FrontEnd" ON)
 
 if(WIN32 AND AARCH64 AND CMAKE_CL_64)
     # Failed: openvino/src/bindings/js/node/thirdparty/node-lib.def: no such file or directory
