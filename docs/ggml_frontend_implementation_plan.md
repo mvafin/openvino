@@ -181,14 +181,23 @@ only needs to answer *semantic* questions — not reproduce ggml's `op_params` l
 Goal: `core.read_model("qwen3-8b.gguf")` → `ov::Model` with **no llama.cpp dependency**,
 producing a graph that matches the cgraph path's model.
 
-### M2.1 Vendor the gguf reader
-- Copy into `src/frontends/ggml/src/builder/`:
-  - `gguf.{hpp,cpp}` (container parse, metadata, tensor table) from GenAI.
-  - `gguf_quants.{hpp,cpp}` (Q4_0/Q4_1/Q4_K/Q6_K/Q8_0 dequant→OV `u4/u8 + scale + zp`).
-- Add `gguflib` via FetchContent in the frontend CMake (pinned commit, matching the
-  hash GenAI already uses), gated by the frontend enable flag.
-- Strip GenAI-only coupling: replace `ov::genai::utils::*` logging with frontend-local
-  logging; drop `gguf_tokenizer.*` (not needed for graph conversion).
+### M2.1 Native gguf reader (no third-party dependency) — DONE
+- **Decision (kickoff +2): write our own GGUF parser instead of vendoring gguflib.** The
+  frontend is now fully self-contained with *zero* third-party dependency — appropriate
+  for a default-wheel component and removes the gguflib FetchContent/submodule entirely.
+- `src/frontends/ggml/src/builder/`:
+  - `gguf.{hpp,cpp}` — native container parser: memory-maps the file via
+    `ov::load_mmap_object` (zero-copy, lifetime-managed) and parses the GGUF v2/v3 binary
+    format directly (header, kv-metadata, tensor-info, alignment). Exposes the same
+    `gguf_tensor` struct + `gguf_tensor_type`/`gguf_value_type` enums the dequant code
+    consumes, plus `get_gguf_data` (tensors by raw ggml name) and `config_from_meta`.
+  - `gguf_quants.cpp` — Q4_0/Q4_1/Q4_K/Q6_K/Q8_0 dequant→OV `u32 + f16 scale + f16 bias`,
+    ported from GenAI essentially verbatim (reads from the mmap, so pointers are const).
+- All code lives in `ov::frontend::ggml`. No `ov::genai::*` coupling; `gguf_tokenizer.*`
+  not ported (not needed for graph conversion). A `.gitignore` negation re-includes
+  `src/builder/` (the root `[Bb]uild*/` rule otherwise matches the dir name).
+- Verified: parses Qwen3-0.6B-Q8_0.gguf — 704 tensors, correct config (qwen3, 28 layers,
+  16/8 GQA heads, head_size 128, rope_freq_base 1e6) and tensor shapes/dtypes.
 
 ### M2.2 `GgmlGraph` — the ggml-independent intermediate
 - New `builder/ggml_graph.{hpp,cpp}`: a lightweight node list mirroring what
