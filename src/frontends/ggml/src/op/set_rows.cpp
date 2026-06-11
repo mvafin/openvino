@@ -55,7 +55,19 @@ OutputVector translate_set_rows(const NodeContext& context) {
             data,
             ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t)1, (int64_t)-1, dim2, dim3}),
             false);
-        res = std::make_shared<ov::op::v0::Concat>(OutputVector{dst, data}, concat_axis);
+        // Reorder the past cache along the batch axis by beam_idx before concatenating the
+        // new tokens. With batch=1 / beam_idx=[0] this is an identity gather, but emitting it
+        // produces the exact ReadValue->Gather(beam_idx)->Concat shape that the CPU plugin's
+        // stateful_sdpa_fusion matches, so the downstream SDPA fuses into
+        // ScaledDotProductAttentionWithKVCache (in-place KV update) instead of running as an
+        // unfused MatMul/Softmax/MatMul. Mirrors genai's create_cache.
+        Output<Node> past = dst;
+        if (context.has_input("beam_idx")) {
+            auto beam_idx = context.get_input("beam_idx");
+            auto axis0 = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
+            past = std::make_shared<ov::op::v8::Gather>(dst, beam_idx, axis0);
+        }
+        res = std::make_shared<ov::op::v0::Concat>(OutputVector{past, data}, concat_axis);
     } else {
         res = std::make_shared<ov::op::v3::ScatterUpdate>(dst, ind_squeezed, data_reshaped, axes);
     }

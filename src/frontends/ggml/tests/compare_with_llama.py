@@ -46,6 +46,8 @@ def build_inputs(tokens, past_len):
         allowed = past_len + i + 1
         mask[0, 0, i, allowed:] = -np.inf
     token_len = np.array([n], dtype=np.int64)
+    # beam_idx: identity beam reorder for the (single-beam, batch-1) stateful KV cache.
+    beam_idx = np.zeros((1,), dtype=np.int32)
     return {
         "inp_tokens": ov.Tensor(inp_tokens),
         "inp_pos": ov.Tensor(inp_pos),
@@ -55,6 +57,7 @@ def build_inputs(tokens, past_len):
         # full causal mask, so the same tensor is correct here.
         "self_kq_mask_swa": ov.Tensor(mask.copy()),
         "token_len_per_seq": ov.Tensor(token_len),
+        "beam_idx": ov.Tensor(beam_idx),
     }
 
 

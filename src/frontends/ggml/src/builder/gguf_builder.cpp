@@ -435,6 +435,13 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
     if (m_has_swa) {
         add_input("self_kq_mask_swa", ov::element::f32, ps({1, 1, D, D}));
     }
+    // beam_idx: per-batch beam reorder index for the stateful KV cache. Used to gather the
+    // cache along the batch axis before the SET_ROWS concat, which is the exact
+    // ReadValue->Gather(beam_idx)->Concat->SDPA shape the CPU plugin's stateful_sdpa_fusion
+    // matches (so SDPA becomes the fused ScaledDotProductAttentionWithKVCache). With batch=1
+    // and beam_idx=[0] this is an identity reorder. Matches genai's create_cache.
+    add_input("beam_idx", i32, ps({D}));
+
     // KV-cache update index (consumed by SET_ROWS; unused in the stateful Concat branch).
     add_input("inp_kv_idx", i32, ps({1, 1, 1, D}));
     m_tensor_shapes["inp_kv_idx"] = ps({1, 1, 1, T});
@@ -559,11 +566,13 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         m_graph->model_output_names.push_back(kc);
         m_graph->model_output_names.push_back(vc);
 
-        // PERMUTE q/k/v 0,2,1,3 -> [1, n_head(_kv), n_tokens, head_size] (Transpose in
-        // stateful mode).
-        q = add_op("GGML_OP_PERMUTE", p + "q_perm", {q}, ps({1, m_n_head, T, m_head_size}), f32, 1);
-        k = add_op("GGML_OP_PERMUTE", p + "k_perm", {k}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
-        v = add_op("GGML_OP_PERMUTE", p + "v_perm", {v}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
+        // NOTE: q/k/v stay in the ggml-natural [1, n_tokens, n_head(_kv), head_size] layout
+        // here. The PERMUTE to [1, n_head, n_tokens, head_size] is done INSIDE the FLASH_ATTN
+        // translator, AFTER the GQA broadcast of K/V. That ordering -- Concat -> GQA tile ->
+        // single Transpose -> SDPA -- is the exact shape the CPU plugin's stateful_sdpa_fusion
+        // matches (its multi-query-bcst sits on the concat output, before one transpose), so
+        // the attention fuses into ScaledDotProductAttentionWithKVCache. Permuting before the
+        // tile (the old order) put the transpose between concat and tile and blocked the fuse.
 
         // FLASH_ATTN_EXT(q, k, v, mask[, sinks]) -> [1, n_tokens, n_head, head_size].
         // gpt-oss: even layers use the sliding-window mask; plus a per-head sink logit.

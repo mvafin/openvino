@@ -4,8 +4,10 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <openvino/core/graph_util.hpp>
 #include <openvino/core/node.hpp>
 #include <openvino/core/preprocess/pre_post_process.hpp>
+#include <openvino/core/rt_info.hpp>
 #include <openvino/op/add.hpp>
 #include <openvino/op/broadcast.hpp>
 #include <openvino/op/concat.hpp>
@@ -15,8 +17,11 @@
 #include <openvino/op/divide.hpp>
 #include <openvino/op/gather.hpp>
 #include <openvino/op/multiply.hpp>
+#include <openvino/op/assign.hpp>
+#include <openvino/op/constant.hpp>
 #include <openvino/op/parameter.hpp>
 #include <openvino/op/range.hpp>
+#include <openvino/op/read_value.hpp>
 #include <openvino/op/reshape.hpp>
 #include <openvino/op/result.hpp>
 #include <openvino/op/sin.hpp>
@@ -153,6 +158,43 @@ void add_rope_sin_cos(TensorMap& tensor_map, GgmlDecoder& ggml_model_decoder) {
 void preprocess(TensorMap& tensor_map, GgmlDecoder& ggml_model_decoder) {
     add_sliced_mask(tensor_map, ggml_model_decoder);
     add_rope_sin_cos(tensor_map, ggml_model_decoder);
+}
+
+// Give every KV-cache ReadValue an explicit zero-length init subgraph. MakeStateful emits
+// init-less ReadValue(variable) nodes; that is fine for the unfused attention path, but the
+// CPU plugin's stateful_sdpa_fusion folds the cache into ScaledDotProductAttentionWithKVCache,
+// whose MemoryInputSDPA requires the ReadValue to have an init input (matching how genai /
+// optimum build the cache: ReadValue(zeros, variable)). Without it the CPU graph builder hits
+// a MemoryInput with zero parent edges and aborts. The init is an empty tensor with the
+// cache's element type and partial shape, with the (single) dynamic sequence dimension set to
+// 0, so it contributes no past tokens on the first inference.
+void add_kvcache_readvalue_init(const std::shared_ptr<ov::Model>& model) {
+    for (const auto& op : model->get_ops()) {
+        auto rv = ov::as_type_ptr<ov::op::v6::ReadValue>(op);
+        if (!rv || rv->get_input_size() != 0) {
+            continue;
+        }
+        const auto variable = rv->get_variable();
+        const auto& info = variable->get_info();
+        const auto& pshape = info.data_shape;
+        if (pshape.rank().is_dynamic()) {
+            continue;
+        }
+        // Build the static init dims: dynamic dims become 0 (an empty cache), static dims
+        // keep their length.
+        std::vector<int64_t> init_dims;
+        init_dims.reserve(pshape.size());
+        for (const auto& d : pshape) {
+            init_dims.push_back(d.is_static() ? d.get_length() : 0);
+        }
+        ov::Shape init_shape(init_dims.begin(), init_dims.end());
+        auto init = std::make_shared<ov::op::v0::Constant>(info.data_type, init_shape, std::vector<float>{});
+
+        auto rv_with_init = std::make_shared<ov::op::v6::ReadValue>(init, variable);
+        rv_with_init->set_friendly_name(rv->get_friendly_name());
+        ov::copy_runtime_info(rv, rv_with_init);
+        ov::replace_node(rv, rv_with_init);
+    }
 }
 
 }  // namespace
@@ -302,6 +344,11 @@ std::shared_ptr<Model> TranslateSession::apply_transformations(std::shared_ptr<M
             manager.register_pass<pass::SqueezeMatmul>();
         }
         manager.run_passes(model);
+        if (ggml_model_decoder->is_stateful()) {
+            // MakeStateful produced init-less ReadValues; the CPU fused SDPA-with-KV-cache
+            // path needs an init subgraph on each (see helper).
+            add_kvcache_readvalue_init(model);
+        }
         if (ggml_model_decoder->is_stateful()) {
             auto output_names = ggml_model_decoder->get_model_output_names();
             std::map<std::string, int> model_output_indexes;
