@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <memory>
 #include <openvino/op/add.hpp>
+#include <openvino/op/broadcast.hpp>
+#include <openvino/op/concat.hpp>
 #include <openvino/op/constant.hpp>
 #include <openvino/op/convert.hpp>
 #include <openvino/op/gather.hpp>
@@ -46,24 +48,55 @@ using namespace ov::op;
 // matmul against the corresponding column of `b`.
 OutputVector translate_mul_mat_id(const NodeContext& context) {
     num_inputs_check(context, 3, 3);
-    auto as = context.get_input(0);   // [n_expert, rows, cols]
-    auto b = context.get_input(1);    // [n_tokens, n_expert_used, cols]
-    auto ids = context.get_input(2);  // [n_tokens, n_expert_used] i32
+    auto as = context.get_input(0);   // expert weights, OV [n_expert, rows, cols]
+    auto b = context.get_input(1);    // routed input
+    auto ids = context.get_input(2);  // selected experts
 
     if (as.get_element_type() != b.get_element_type()) {
         as = std::make_shared<v0::Convert>(as, b.get_element_type());
     }
 
-    // Gather expert matrices for every (token, slot): result [n_tokens, n_expert_used, rows, cols].
-    auto gather_axis = v0::Constant::create(element::i32, Shape{}, {0});
-    auto experts = std::make_shared<v8::Gather>(as, ids, gather_axis);  // [n_tokens, n_expert_used, rows, cols]
+    // Canonicalize ids to 2D [T, K] (the builder may carry leading 1-dims).
+    auto ids_2d = std::make_shared<v1::Reshape>(
+        ids,
+        std::make_shared<v0::Concat>(
+            OutputVector{v0::Constant::create(element::i64, Shape{1}, {-1}),
+                         get_dimensions(ids.get_node_shared_ptr(), {static_cast<int>(ids.get_partial_shape().size()) - 1})},
+            0),
+        false);  // [T, K]
+    const int64_t K = ids.get_partial_shape()[ids.get_partial_shape().size() - 1].get_length();
 
-    // b: [n_tokens, n_expert_used, cols] -> [n_tokens, n_expert_used, cols, 1]
-    auto b_col = std::make_shared<v0::Unsqueeze>(b, v0::Constant::create(element::i64, Shape{1}, {-1}));
+    // Gather per-(token,slot) expert matrix: [T, K, rows, cols].
+    auto experts = std::make_shared<v8::Gather>(as, ids_2d, v0::Constant::create(element::i32, Shape{}, {0}));
 
-    // [..., rows, cols] @ [..., cols, 1] -> [..., rows, 1] -> squeeze last -> [..., rows]
+    // Canonicalize b to [T, K, cols]: it is either [.., T, cols] (broadcast across K, e.g.
+    // gate/up from the shared norm) or [.., T, K, cols] (e.g. the down input which already
+    // has a per-expert dim). Detect by the last-but-one dim against K.
+    const auto& bps = b.get_partial_shape();
+    const int64_t cols = bps[bps.size() - 1].get_length();
+    Output<Node> b_ck;
+    bool has_k = K > 1 && bps.size() >= 2 && bps[bps.size() - 2].is_static() &&
+                 bps[bps.size() - 2].get_length() == K;
+    if (has_k) {
+        // [.., T, K, cols] -> [T, K, cols]
+        b_ck = std::make_shared<v1::Reshape>(
+            b, v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{-1, K, cols}), false);
+    } else {
+        // [.., T, cols] -> [T, 1, cols] -> broadcast to [T, K, cols]
+        auto b_t1 = std::make_shared<v1::Reshape>(
+            b, v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{-1, 1, cols}), false);
+        auto tgt = std::make_shared<v0::Concat>(
+            OutputVector{get_dimensions(b_t1, {0}), v0::Constant::create(element::i64, Shape{1}, {K}),
+                         v0::Constant::create(element::i64, Shape{1}, {cols})},
+            0);
+        b_ck = std::make_shared<v3::Broadcast>(b_t1, tgt, ov::op::BroadcastType::BIDIRECTIONAL);
+    }
+
+    // [T,K,rows,cols] @ [T,K,cols,1] -> [T,K,rows,1] -> squeeze -> [T,K,rows] -> [1,T,K,rows].
+    auto b_col = std::make_shared<v0::Unsqueeze>(b_ck, v0::Constant::create(element::i64, Shape{1}, {-1}));
     auto mm = std::make_shared<v0::MatMul>(experts, b_col, false, false);
-    auto res = std::make_shared<v0::Squeeze>(mm, v0::Constant::create(element::i64, Shape{1}, {-1}));
+    auto sq = std::make_shared<v0::Squeeze>(mm, v0::Constant::create(element::i64, Shape{1}, {-1}));
+    auto res = std::make_shared<v0::Unsqueeze>(sq, v0::Constant::create(element::i64, Shape{1}, {0}));
     return rename_outputs_with_suffix({res}, context.get_name());
 }
 
@@ -98,10 +131,12 @@ OutputVector translate_argsort(const NodeContext& context) {
                                             v11::TopK::Mode::MAX,
                                             v11::TopK::SortType::SORT_VALUES,
                                             element::i32);
-    return rename_outputs_with_suffix({topk->output(1)}, context.get_name());
+    auto idx = std::make_shared<v0::Convert>(topk->output(1), element::i32);
+    return rename_outputs_with_suffix({idx}, context.get_name());
 }
 
-// ggml_top_k(a, k): the top-k indices along the last axis (descending).
+// ggml_top_k(a, k): the top-k indices along the last axis (descending). Wrap the index
+// output in a Convert so downstream consumers see a single-output source node.
 OutputVector translate_top_k(const NodeContext& context) {
     num_inputs_check(context, 1, 1);
     auto a = context.get_input(0);
@@ -113,7 +148,8 @@ OutputVector translate_top_k(const NodeContext& context) {
                                             v11::TopK::Mode::MAX,
                                             v11::TopK::SortType::SORT_VALUES,
                                             element::i32);
-    return rename_outputs_with_suffix({topk->output(1)}, context.get_name());
+    auto idx = std::make_shared<v0::Convert>(topk->output(1), element::i32);
+    return rename_outputs_with_suffix({idx}, context.get_name());
 }
 
 // ggml_sum_rows: sum over the last (ggml ne0 / OV last) axis, keeping that dim as 1.
