@@ -10,6 +10,7 @@
 #include "gguf.hpp"
 
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <optional>
 
@@ -363,7 +364,7 @@ GGUFLoad get_gguf_data(const std::string& file) {
         tensor.weights_data = base + abs_off;
 
         const std::string& name = ti.name;
-        if (ti.type == GGUF_TYPE_Q4_0 || ti.type == GGUF_TYPE_Q4_1 || ti.type == GGUF_TYPE_Q8_0 ||
+        if (ti.type == GGUF_TYPE_Q4_0 || ti.type == GGUF_TYPE_Q4_1 || ti.type == GGUF_TYPE_Q5_0 || ti.type == GGUF_TYPE_Q8_0 ||
             ti.type == GGUF_TYPE_Q4_K || ti.type == GGUF_TYPE_Q5_K || ti.type == GGUF_TYPE_Q6_K) {
             gguf_load_quantized(arrays, qtype, tensor);
         } else {
@@ -407,13 +408,22 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
                                          ? metadata_to_int(metadata, arch + ".rope.dimension_count")
                                          : std::get<int>(config["head_size"]);
 
-    // Optional per-architecture scalars (MiniCPM family); absent -> 1.0 (no-op).
-    config["embedding_scale"] =
-        metadata.count(arch + ".embedding_scale") ? metadata_to_float(metadata, arch + ".embedding_scale") : 1.0f;
-    config["residual_scale"] =
-        metadata.count(arch + ".residual_scale") ? metadata_to_float(metadata, arch + ".residual_scale") : 1.0f;
+    // Per-architecture scalars (MiniCPM family). MiniCPM bakes these into hparams with
+    // backward-compatible defaults when the GGUF lacks the keys (older exports); newer
+    // exports carry the keys and override. Other archs default to 1.0 (no-op).
+    const bool is_minicpm = arch.rfind("minicpm", 0) == 0;
+    const float def_embedding_scale = is_minicpm ? 12.0f : 1.0f;
+    const float def_residual_scale =
+        is_minicpm ? 1.4f / std::sqrt(static_cast<float>(std::get<int>(config["layer_num"]))) : 1.0f;
+    const float def_logit_scale = is_minicpm ? 256.0f / static_cast<float>(std::get<int>(config["hidden_size"])) : 1.0f;
+    config["embedding_scale"] = metadata.count(arch + ".embedding_scale")
+                                    ? metadata_to_float(metadata, arch + ".embedding_scale")
+                                    : def_embedding_scale;
+    config["residual_scale"] = metadata.count(arch + ".residual_scale")
+                                   ? metadata_to_float(metadata, arch + ".residual_scale")
+                                   : def_residual_scale;
     config["logit_scale"] =
-        metadata.count(arch + ".logit_scale") ? metadata_to_float(metadata, arch + ".logit_scale") : 1.0f;
+        metadata.count(arch + ".logit_scale") ? metadata_to_float(metadata, arch + ".logit_scale") : def_logit_scale;
     // Optional explicit attention (softmax) scale; 0 -> use 1/sqrt(head_size).
     config["attention_scale"] =
         metadata.count(arch + ".attention.scale") ? metadata_to_float(metadata, arch + ".attention.scale") : 0.0f;

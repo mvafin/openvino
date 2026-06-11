@@ -163,6 +163,7 @@ std::shared_ptr<ov::Node> make_weight_node(const std::string& base,
     case GGUF_TYPE_Q4_K:
         node = make_int4(base, weights);
         break;
+    case GGUF_TYPE_Q5_0:  // 5-bit values stored in u8 by gguf_quants
     case GGUF_TYPE_Q8_0:
     case GGUF_TYPE_Q5_K:  // 5-bit values stored in u8 by gguf_quants
     case GGUF_TYPE_Q6_K:  // dequantized to (u8 weight + scale + bias) by gguf_quants

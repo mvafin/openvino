@@ -94,6 +94,34 @@ void extract_q8_0_data(const gguf_tensor& tensor,
     }
 }
 
+// Extracts (weight, scales, biases) from Q5_0 tensors (legacy 5-bit, symmetric).
+// Block: |16-bit scale d|32-bit qh high bits|16 bytes ql (32x4bit)|. weight = ql|(qh<<4)
+// in 0..31, dequant = d*(w-16), so scale=d, bias=-16*d. Output u8 weights (0..31).
+void extract_q5_0_data(const gguf_tensor& tensor,
+                       ov::Tensor& weights_arr,
+                       ov::Tensor& scales_arr,
+                       ov::Tensor& biases_arr) {
+    const uint64_t weights_per_block = 32;
+    const uint64_t bytes_per_block = 2 + 4 + 16;
+    auto data = static_cast<const uint8_t*>(tensor.weights_data);
+    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    for (size_t i = 0; i < scales_arr.get_size(); i++) {
+        const uint8_t* block_data = data + i * bytes_per_block;
+        scales[i] = ov::float16::from_bits(*(uint16_t*)block_data);
+        biases[i] = ov::float16(-16.f * static_cast<float>(scales[i]));
+        uint32_t qh;
+        std::memcpy(&qh, block_data + 2, sizeof(qh));
+        const uint8_t* ql = block_data + 6;
+        for (uint64_t j = 0; j < weights_per_block; ++j) {
+            const uint8_t lo = (j < 16) ? (ql[j] & 0x0F) : (ql[j - 16] >> 4);
+            const uint8_t hi = (qh >> j) & 1;
+            weights[i * weights_per_block + j] = lo | (hi << 4);
+        }
+    }
+}
+
 void unpack_256_4(const uint8_t* data, uint8_t* dst) {
     // Initialize the output array with zeros
     std::fill_n(dst, 128, 0);
@@ -300,6 +328,8 @@ void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,
         extract_q4_0_data(tensor, weights, scales, biases);
     } else if (tensor.type == GGUF_TYPE_Q4_1) {
         extract_q4_1_data(tensor, weights, scales, biases);
+    } else if (tensor.type == GGUF_TYPE_Q5_0) {
+        extract_q5_0_data(tensor, weights, scales, biases);
     } else if (tensor.type == GGUF_TYPE_Q8_0) {
         extract_q8_0_data(tensor, weights, scales, biases);
     } else if (tensor.type == GGUF_TYPE_Q6_K) {
