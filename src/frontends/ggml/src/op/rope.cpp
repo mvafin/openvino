@@ -22,6 +22,8 @@
 #include "../node_context.hpp"
 #include "../op_table.hpp"
 #include "../utils.hpp"
+#include "openvino/decompositions/rope.hpp"
+#include "openvino/pass/node_registry.hpp"
 
 namespace ov {
 namespace frontend {
@@ -113,22 +115,49 @@ OutputVector translate_rope(const NodeContext& context) {
             std::vector<int64_t>{1, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
         res = std::make_shared<ov::op::v1::Reshape>(stack, data_shape, false);
     } else if (mode == TYPE_NEOX) {
-        auto data_split =
-            std::make_shared<ov::op::v1::Split>(data_node,
-                                                ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {-1}),
-                                                2);
-        Output<Node> slice_data_node_0 = data_split->outputs()[0];
-        Output<Node> slice_data_node_1 = data_split->outputs()[1];
+        // Build the canonical NEOX RoPE via the shared decomposition helper, which emits the
+        // exact split-halves + Multiply(-1)+Add + Concat pattern that ov::pass::RoPEFusion
+        // (specifically the RoPEFusionGPTOSS matcher) folds into the fused
+        // ov::op::internal::RoPE primitive on CPU/GPU.
+        //
+        // That matcher only fires when the rotated tensor is laid out as [B, H, L, S] and the
+        // cos/sin caches are [?, 1, ?, head/2]. Our tensors are ggml-natural: data is
+        // [B, L, H, S] (or [L, H, S] when stateful) and cos/sin are [B, L, 1, head/2] (or
+        // [L, 1, head/2]). So we transpose every operand into the canonical [B, H, L, S]
+        // layout (heads on axis 1), run the decomposition there, and transpose the result
+        // back to the ggml layout. The math is unchanged; the wrapping Transposes are sunk /
+        // cancelled against the adjacent PERMUTE during TransposeSinking.
+        //
+        // The ggml-natural shapes here are: data [B,L,H,S] (or [L,H,S] when stateful) and
+        // cos/sin [B,L,1,head/2]. Unsqueeze(0) on the rank-3 data, then a single
+        // Transpose {0,2,1,3}, maps both data and the caches to canonical layout (data ->
+        // [B,H,L,S]; caches -> [B,1,L,head/2]) because the head axis (or its size-1
+        // placeholder) sits at rank-2 in the ggml layout.
+        auto to_bhls = [](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
+            if (x.get_partial_shape().rank().get_length() == 3) {
+                x = std::make_shared<ov::op::v0::Unsqueeze>(
+                    x,
+                    ov::op::v0::Constant::create(ov::element::i64, {1}, {0}));
+            }
+            auto perm = ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3});
+            return std::make_shared<ov::op::v1::Transpose>(x, perm);
+        };
 
-        auto first_half_node = std::make_shared<ov::op::v1::Subtract>(
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_0, cos_theta_node),
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_1, sin_theta_node));
+        auto x_bhls = to_bhls(data_node);          // [B, H, L, S]
+        auto cos_bhls = to_bhls(cos_theta_node);   // [B, 1, L, head/2]
+        auto sin_bhls = to_bhls(sin_theta_node);   // [B, 1, L, head/2]
 
-        auto second_half_node = std::make_shared<ov::op::v1::Add>(
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_0, sin_theta_node),
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_1, cos_theta_node));
+        ov::pass::NodeRegistry reg;
+        const int64_t half = static_cast<int64_t>(output_shape[3]) / 2;
+        auto roped = ov::decomposition::rope(reg, x_bhls, cos_bhls, sin_bhls, half);  // [B, H, L, S]
 
-        res = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{first_half_node, second_half_node}, -1);
+        // Back to the ggml layout the rest of the graph expects. The original NEOX branch
+        // always produced a rank-4 [B, L, H, S] tensor (the rank-3 stateful data was lifted
+        // to rank-4 by the NUMPY broadcast against the rank-4 cos/sin), and the downstream
+        // PERMUTE consumes rank-4, so we emit rank-4 here too.
+        res = std::make_shared<ov::op::v1::Transpose>(
+            roped,
+            ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3}));  // [B, L, H, S]
     } else if (mode == TYPE_IMROPE) {
         int64_t n_dims = data_node->get_shape()[3];
         auto cos_sin_shape = std::make_shared<ov::op::v0::Constant>(ov::element::i64,
