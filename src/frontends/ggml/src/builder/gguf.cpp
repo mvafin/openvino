@@ -408,6 +408,15 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
                                          ? metadata_to_int(metadata, arch + ".rope.dimension_count")
                                          : std::get<int>(config["head_size"]);
 
+    // Mixture-of-experts config (0 when dense).
+    config["expert_count"] =
+        metadata.count(arch + ".expert_count") ? metadata_to_int(metadata, arch + ".expert_count") : 0;
+    config["expert_used_count"] =
+        metadata.count(arch + ".expert_used_count") ? metadata_to_int(metadata, arch + ".expert_used_count") : 0;
+    config["expert_feed_forward_length"] = metadata.count(arch + ".expert_feed_forward_length")
+                                               ? metadata_to_int(metadata, arch + ".expert_feed_forward_length")
+                                               : 0;
+
     // Per-architecture scalars (MiniCPM family). MiniCPM bakes these into hparams with
     // backward-compatible defaults when the GGUF lacks the keys (older exports); newer
     // exports carry the keys and override. Other archs default to 1.0 (no-op).

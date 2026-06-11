@@ -3,6 +3,7 @@
 #include <openvino/op/constant.hpp>
 #include <openvino/op/convert.hpp>
 #include <openvino/op/gather.hpp>
+#include <openvino/op/gather_elements.hpp>
 #include <openvino/op/squeeze.hpp>
 #include <openvino/op/unsqueeze.hpp>
 
@@ -23,6 +24,20 @@ OutputVector translate_get_rows(const NodeContext& context) {
     Output<Node> res;
     auto data = context.get_input(0);
     auto indices = context.get_input(1);
+
+    // MoE gating-weight gather: data = probs [1,1,T,E], indices = selected experts
+    // [1,1,T,K]; pick, per token, the probs of its K selected experts -> [1,1,T,K].
+    // This is a per-row (GatherElements) gather over the expert axis, distinct from the
+    // embedding-style row gather below.
+    if (op_case == 10) {
+        auto sq = ov::op::v0::Constant::create(ov::element::i64, {2}, {0, 1});
+        auto d2 = std::make_shared<ov::op::v0::Squeeze>(data, sq);     // [T, E]
+        auto i2 = std::make_shared<ov::op::v0::Squeeze>(indices, sq);  // [T, K]
+        auto i2c = std::make_shared<ov::op::v0::Convert>(i2, ov::element::i32);
+        auto ge = std::make_shared<ov::op::v6::GatherElements>(d2, i2c, 1);  // [T, K]
+        auto unsq = std::make_shared<ov::op::v0::Unsqueeze>(ge, ov::op::v0::Constant::create(ov::element::i64, {2}, {0, 1}));
+        return rename_outputs_with_suffix({unsq}, context.get_name());
+    }
 
     if (op_case == 2) {
         // The input comes from a VIEW

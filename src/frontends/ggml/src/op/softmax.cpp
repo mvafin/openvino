@@ -29,8 +29,12 @@ OutputVector translate_soft_max(const NodeContext& context) {
     auto input_node = context.get_input(0).get_node_shared_ptr();
     ov::Output<Node> res;
 
-    float scale = context.get_attribute<float>("scale");
-    float max_bias = context.get_attribute<float>("max_bias");
+    // scale/max_bias default to a plain softmax (used by MoE gating); attention sets them.
+    float scale = context.get_attribute<float>("scale", 1.0f);
+    float max_bias = context.get_attribute<float>("max_bias", 0.0f);
+    // Softmax axis: attention reduces axis 2 (the key axis); MoE gating reduces the last
+    // axis (experts). Default keeps the historical attention behavior.
+    int64_t softmax_axis = context.get_attribute<int64_t>("softmax_axis", 2);
     auto src0_shape = context.get_input_shape(0).get_shape();
     const uint32_t h = src0_shape[2];
     const uint32_t n_head = src0_shape[0];
@@ -45,7 +49,7 @@ OutputVector translate_soft_max(const NodeContext& context) {
     auto scaled_input = std::make_shared<ov::op::v1::Multiply>(input_node, scale_node);
 
     if (context.get_input_size() < 2) {
-        res = std::make_shared<ov::op::v8::Softmax>(scaled_input, 2);
+        res = std::make_shared<ov::op::v8::Softmax>(scaled_input, softmax_axis);
         return rename_outputs_with_suffix({res}, context.get_name());
     }
 

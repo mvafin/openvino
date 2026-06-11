@@ -84,6 +84,22 @@ public:
 
         // Per-architecture structure, auto-detected from the GGUF tensor table (layer 0).
         m_has_qk_norm = m_weights.count("blk.0.attn_q_norm.weight") > 0;
+        // q/k norm width: per-head (head_size, applied after reshape -> qwen3/hunyuan) vs
+        // full projection width (n_head*head_size, applied before reshape -> OLMoE).
+        if (m_has_qk_norm) {
+            const size_t qn = m_weights.at("blk.0.attn_q_norm.weight").get_shape()[0];
+            m_qk_norm_full = (qn != static_cast<size_t>(m_head_size));
+        }
+        m_is_moe = m_weights.count("blk.0.ffn_gate_exps.weight") > 0;
+        m_n_expert = cfg_int("expert_count");
+        m_n_expert_used = cfg_int("expert_used_count");
+        m_has_moe_gate_bias = m_weights.count("blk.0.ffn_gate_inp.bias") > 0;  // gpt-oss
+        // gpt-oss uses "softmax-after-topk" gating + the OAI gated activation; OLMoE uses
+        // softmax-before-topk + plain SwiGLU. Detect gpt-oss by its OAI swiglu marker
+        // (gate_inp bias is gpt-oss-specific here).
+        const std::string arch0 = std::get<std::string>(config.at("architecture"));
+        m_moe_swiglu_oai = (arch0 == "gpt-oss");
+        m_moe_softmax_weight = (arch0 == "gpt-oss");
         m_has_fused_qkv = m_weights.count("blk.0.attn_qkv.weight") > 0;  // phi-3, minicpm
         m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0 || m_weights.count("blk.0.attn_qkv.bias") > 0;
         m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
@@ -214,6 +230,98 @@ private:
         return add_op("GGML_OP_MUL", out_prefix, {norm, weight}, m_tensor_shapes.at(in), ov::element::f32);
     }
 
+    // Dense SwiGLU FFN (llama/qwen/phi3/minicpm). `ffn_norm` is the post-norm hidden.
+    // Returns the down-projection output tensor name. T is the static token length.
+    std::string build_dense_ffn(const std::string& p, const std::string& ffn_norm, int64_t T) {
+        using ov::element::f32;
+        add_weight(p + "ffn_up.weight");
+        add_weight(p + "ffn_down.weight");
+        const bool fused_ffn = m_weights.count(p + "ffn_gate.weight") == 0;  // phi-3: fused gate+up
+        std::string glu;
+        if (fused_ffn) {
+            const int up2 = static_cast<int>(m_weights.at(p + "ffn_up.weight").get_shape()[0]);  // 2*n_ff
+            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
+                             ps({1, 1, T, up2}), f32);
+            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {up}, ps({1, 1, T, up2 / 2}), f32, 0,
+                         {{"swapped", false}});
+        } else {
+            add_weight(p + "ffn_gate.weight");
+            const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate.weight").get_shape()[0]);
+            auto gate = add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm},
+                               ps({1, 1, T, n_ff}), f32);
+            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
+                             ps({1, 1, T, n_ff}), f32);
+            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {gate, up}, ps({1, 1, T, n_ff}), f32, 0,
+                         {{"swapped", false}});
+        }
+        return add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu}, ps({1, 1, T, m_n_embd}), f32);
+    }
+
+    // Mixture-of-experts FFN (OLMoE / gpt-oss), mirroring llm_graph_context::build_moe_ffn.
+    // Routing: logits = gate_inp·x; probs = softmax/identity; pick top-k experts; per-token
+    // expert matmuls via MUL_MAT_ID; gated activation; weighted sum over the used experts.
+    std::string build_moe_ffn(const std::string& p, const std::string& ffn_norm, int64_t T) {
+        using ov::element::f32;
+        const int E = m_n_expert, K = m_n_expert_used;
+        const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate_exps.weight").get_shape()[1]);
+
+        // --- router: logits [1,1,T,E] = gate_inp · x ---
+        add_weight(p + "ffn_gate_inp.weight");
+        auto logits = add_op("GGML_OP_MUL_MAT", p + "moe_logits", {p + "ffn_gate_inp.weight", ffn_norm},
+                             ps({1, 1, T, E}), f32);
+        if (m_has_moe_gate_bias) {
+            logits = add_bias(logits, p + "ffn_gate_inp.bias", p + "moe_logits_b");
+        }
+
+        // gating: softmax (OLMoE) or softmax-after-topk (gpt-oss "softmax_weight").
+        std::string probs = logits;
+        if (!m_moe_softmax_weight) {
+            probs = add_op("GGML_OP_SOFT_MAX", p + "moe_probs", {logits}, ps({1, 1, T, E}), f32, 0,
+                           {{"softmax_axis", int64_t(-1)}});
+        }
+
+        // top-k expert selection -> indices [1,1,T,K] (i32).
+        auto selected = add_op("GGML_OP_TOP_K", p + "moe_topk", {probs}, ps({1, 1, T, K}), ov::element::i32);
+
+        // weights = gather probs by selected -> [1,1,T,K]; gpt-oss softmaxes these.
+        // op_case 10: per-token GatherElements over the expert axis.
+        auto weights = add_op("GGML_OP_GET_ROWS", p + "moe_w", {probs, selected}, ps({1, 1, T, K}), f32, 10);
+        if (m_moe_softmax_weight) {
+            weights = add_op("GGML_OP_SOFT_MAX", p + "moe_w_sm", {weights}, ps({1, 1, T, K}), f32, 0,
+                             {{"softmax_axis", int64_t(-1)}});
+        }
+
+        // expert FFN via MUL_MAT_ID. The routed input x is broadcast to K slots; the
+        // translator gathers each token's selected expert matrices.
+        add_weight(p + "ffn_gate_exps.weight");
+        add_weight(p + "ffn_up_exps.weight");
+        add_weight(p + "ffn_down_exps.weight");
+        auto up = add_op("GGML_OP_MUL_MAT_ID", p + "moe_up", {p + "ffn_up_exps.weight", ffn_norm, selected},
+                         ps({1, T, K, n_ff}), f32);
+        auto gate = add_op("GGML_OP_MUL_MAT_ID", p + "moe_gate", {p + "ffn_gate_exps.weight", ffn_norm, selected},
+                           ps({1, T, K, n_ff}), f32);
+        std::string act;
+        if (m_moe_swiglu_oai) {
+            act = add_op("GGML_GLU_OP_SWIGLU_OAI", p + "moe_act", {gate, up}, ps({1, T, K, n_ff}), f32, 0,
+                         {{"swapped", false}, {"alpha", 1.702f}, {"limit", 7.0f}});
+        } else {
+            act = add_op("GGML_GLU_OP_SWIGLU", p + "moe_act", {gate, up}, ps({1, T, K, n_ff}), f32, 0,
+                         {{"swapped", false}});
+        }
+        auto experts = add_op("GGML_OP_MUL_MAT_ID", p + "moe_down", {p + "ffn_down_exps.weight", act, selected},
+                              ps({1, T, K, m_n_embd}), f32);
+
+        // Weighted sum over the K selected experts:
+        //   weights [1,1,T,K] -> [1,T,K,1]; experts [1,T,K,n_embd] * weights -> [1,T,K,n_embd]
+        //   TRANSPOSE last two axes -> [1,T,n_embd,K]; SUM_ROWS over K -> [1,T,n_embd,1]
+        //   RESHAPE -> [1,1,T,n_embd].
+        auto w_col = add_op("GGML_OP_RESHAPE", p + "moe_w_col", {weights}, ps({1, T, K, 1}), f32, 6);
+        auto weighted = add_op("GGML_OP_MUL", p + "moe_weighted", {experts, w_col}, ps({1, T, K, m_n_embd}), f32);
+        auto tr = add_op("GGML_OP_TRANSPOSE", p + "moe_tr", {weighted}, ps({1, T, m_n_embd, K}), f32);
+        auto summed = add_op("GGML_OP_SUM_ROWS", p + "moe_sum", {tr}, ps({1, T, m_n_embd, 1}), f32);
+        return add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 6);
+    }
+
     // Split a fused blk.<il>.attn_qkv weight into separate q/k/v weight nodes registered
     // under blk.<il>.attn_{q,k,v}.weight, so the rest of the builder is identical to the
     // separate-projection case. Rows split as [n_head*head_size | n_head_kv*head_size x2].
@@ -275,7 +383,9 @@ private:
 
     // auto-detected per-architecture structure
     bool m_has_qk_norm = false, m_has_qkv_bias = false, m_has_attn_out_bias = false, m_has_rope_freqs = false;
-    bool m_has_fused_qkv = false;
+    bool m_has_fused_qkv = false, m_qk_norm_full = false, m_is_moe = false;
+    bool m_has_moe_gate_bias = false, m_moe_softmax_weight = false, m_moe_swiglu_oai = false;
+    int m_n_expert = 0, m_n_expert_used = 0;
     float m_embedding_scale = 1.0f, m_residual_scale = 1.0f, m_logit_scale = 1.0f, m_attention_scale = 0.0f;
     int m_rope_op_case = ROPE_OP_CASE_NEOX;
 
@@ -367,13 +477,19 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
             v = add_bias(v, p + "attn_v.bias", p + "Vcur_b");
         }
 
+        // Full-width q/k norm (OLMoE): normalize the whole projection before splitting heads.
+        if (m_has_qk_norm && m_qk_norm_full) {
+            q = rms_norm(q, p + "attn_q_norm.weight", p + "Qcur_normed");
+            k = rms_norm(k, p + "attn_k_norm.weight", p + "Kcur_normed");
+        }
+
         // reshape Q/K/V to [1, n_tokens, n_head(_kv), head_size]
         q = add_op("GGML_OP_RESHAPE", p + "Qcur_r", {q}, ps({1, T, m_n_head, m_head_size}), f32, 1);
         k = add_op("GGML_OP_RESHAPE", p + "Kcur_r", {k}, ps({1, T, m_n_head_kv, m_head_size}), f32, 1);
         v = add_op("GGML_OP_RESHAPE", p + "Vcur_r", {v}, ps({1, T, m_n_head_kv, m_head_size}), f32, 1);
 
         // per-head q_norm / k_norm (qwen3, hunyuan)
-        if (m_has_qk_norm) {
+        if (m_has_qk_norm && !m_qk_norm_full) {
             q = rms_norm(q, p + "attn_q_norm.weight", p + "Qcur_normed");
             k = rms_norm(k, p + "attn_k_norm.weight", p + "Kcur_normed");
         }
@@ -459,31 +575,7 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         // ffn_norm
         auto ffn_norm = rms_norm(ffn_inp, p + "ffn_norm.weight", p + "ffn_norm");
 
-        // SwiGLU FFN. Two layouts:
-        //  - separate gate+up (llama/qwen/minicpm): SWIGLU(gate, up) [2-input split].
-        //  - fused ffn_up of width 2*n_ff (phi-3): SWIGLU(up) [1-input, splits internally].
-        add_weight(p + "ffn_up.weight");
-        add_weight(p + "ffn_down.weight");
-        const bool fused_ffn = m_weights.count(p + "ffn_gate.weight") == 0;
-        std::string glu;
-        if (fused_ffn) {
-            const int up2 = static_cast<int>(m_weights.at(p + "ffn_up.weight").get_shape()[0]);  // 2*n_ff
-            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
-                             ps({1, 1, T, up2}), f32);
-            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {up}, ps({1, 1, T, up2 / 2}), f32, 0,
-                         {{"swapped", false}});
-        } else {
-            add_weight(p + "ffn_gate.weight");
-            const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate.weight").get_shape()[0]);
-            auto gate = add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm},
-                               ps({1, 1, T, n_ff}), f32);
-            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
-                             ps({1, 1, T, n_ff}), f32);
-            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {gate, up}, ps({1, 1, T, n_ff}), f32, 0,
-                         {{"swapped", false}});
-        }
-        auto down = add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu},
-                           ps({1, 1, T, m_n_embd}), f32);
+        std::string down = m_is_moe ? build_moe_ffn(p, ffn_norm, T) : build_dense_ffn(p, ffn_norm, T);
         // MiniCPM scales the FFN sublayer output before the residual add.
         if (m_residual_scale != 1.0f) {
             down = scale(down, m_residual_scale, p + "ffn_out_scaled");
@@ -523,6 +615,8 @@ const std::set<std::string>& supported_archs() {
         "phi3",     // phi-3
         "minicpm",
         "hunyuan-dense",
+        "olmoe",    // MoE
+        "gpt-oss",  // MoE + sinks + SWA
     };
     return archs;
 }
