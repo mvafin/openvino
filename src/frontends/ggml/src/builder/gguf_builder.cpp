@@ -198,11 +198,26 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
     // Parameters carry the real dynamic-ness. T affects only the per-node shape metadata.
     const int64_t T = 1;
 
+    using ov::element::i32;
     // ---- Model inputs (names match the cgraph decoder's get_graph_input_ov_name) ----
-    add_input("inp_tokens", i64, ps({1, 1, 1, D}));
-    add_input("inp_pos", i64, ps({1, 1, 1, D}));
-    add_input("inp_out_ids", i64, ps({1, 1, 1, D}));
+    // ggml uses i32 for token/position/index inputs.
+    add_input("inp_tokens", i32, ps({1, 1, 1, D}));
+    add_input("inp_pos", i32, ps({1, 1, 1, D}));
+    add_input("inp_out_ids", i32, ps({1, 1, 1, D}));
     add_input("self_kq_mask", ov::element::f32, ps({1, 1, D, D}));
+    // KV-cache update index (consumed by SET_ROWS; unused in the stateful Concat branch).
+    add_input("inp_kv_idx", i32, ps({1, 1, 1, D}));
+    m_tensor_shapes["inp_kv_idx"] = ps({1, 1, 1, T});
+    m_tensor_types["inp_kv_idx"] = i32;
+
+    // token_len_per_seq: number of new tokens per sequence; used by TranslateSession's mask
+    // slicing (add_sliced_mask) to build KQ_mask_sliced. An extra (Parameter) input.
+    {
+        auto p = std::make_shared<ov::op::v0::Parameter>(i64, ps({1}));
+        p->set_friendly_name("token_len_per_seq");
+        p->output(0).set_names({"token_len_per_seq"});
+        m_graph->model_extra_inputs["token_len_per_seq"] = p;
+    }
 
     // ---- Embedding: GET_ROWS(token_embd.weight, inp_tokens) -> "embd" ----
     add_weight("token_embd.weight");
@@ -247,6 +262,41 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
                    ROPE_OP_CASE_NEOX, {{"rope_config", m_graph->rope_config}});
         k = add_op("GGML_OP_ROPE", p + "Kcur_rope", {k, "inp_pos"}, ps({1, T, m_n_head_kv, m_head_size}), f32,
                    ROPE_OP_CASE_NEOX, {{"rope_config", m_graph->rope_config}});
+
+        // ---- KV cache store (stateful) ----
+        // Per-layer f16 KV caches, converted to ReadValue/Assign by MakeStateful. The
+        // SET_ROWS translator's stateful branch concatenates the new K/V onto the cache, so
+        // the FLASH_ATTN inputs are f16 (matching Q after its f16 convert in the translator).
+        const std::string kc = "cache_k_l" + std::to_string(il);
+        const std::string vc = "cache_v_l" + std::to_string(il);
+        const ov::PartialShape cache_shape = ps({1, D, m_n_head_kv, m_head_size});
+        add_input(kc, ov::element::f16, cache_shape);
+        add_input(vc, ov::element::f16, cache_shape);
+        m_tensor_shapes[kc] = ps({1, T, m_n_head_kv, m_head_size});
+        m_tensor_shapes[vc] = ps({1, T, m_n_head_kv, m_head_size});
+        m_tensor_types[kc] = ov::element::f16;
+        m_tensor_types[vc] = ov::element::f16;
+        m_graph->kv_param_res_names[kc] = kc;
+        m_graph->kv_param_res_names[vc] = vc;
+
+        // SET_ROWS(cur, idx, cache) -> combined f16 K/V. The translator (stateful branch)
+        // concatenates the new K/V onto the cache. The node's OUTPUT is named after the
+        // cache tensor (cache_k_l<il>) -- matching the cgraph, where SET_ROWS updates the
+        // view_src in place -- so MakeStateful can pair the cache Parameter with this Result.
+        k = add_op("GGML_OP_SET_ROWS", kc, {k, "inp_kv_idx", kc},
+                   ps({1, T, m_n_head_kv, m_head_size}), ov::element::f16);
+        v = add_op("GGML_OP_SET_ROWS", vc, {v, "inp_kv_idx", vc},
+                   ps({1, T, m_n_head_kv, m_head_size}), ov::element::f16);
+        // These combined caches are model outputs so they become Results that MakeStateful
+        // converts into Assign sinks paired with the cache ReadValues.
+        m_graph->model_output_names.push_back(kc);
+        m_graph->model_output_names.push_back(vc);
+
+        // PERMUTE q/k/v 0,2,1,3 -> [1, n_head(_kv), n_tokens, head_size] (Transpose in
+        // stateful mode).
+        q = add_op("GGML_OP_PERMUTE", p + "q_perm", {q}, ps({1, m_n_head, T, m_head_size}), f32, 1);
+        k = add_op("GGML_OP_PERMUTE", p + "k_perm", {k}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
+        v = add_op("GGML_OP_PERMUTE", p + "v_perm", {v}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
 
         // FLASH_ATTN_EXT(q, k, v, mask, scale) -> [1, n_tokens, n_head, head_size]
         auto attn = add_op("GGML_OP_FLASH_ATTN_EXT", p + "kqv", {q, k, v, "self_kq_mask"},
@@ -302,7 +352,9 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
     auto logits = add_op("GGML_OP_MUL_MAT", "result_output", {lm_head_w, cur},
                          ps({1, 1, T, n_vocab}), f32);
 
-    m_graph->model_output_names = {logits};
+    // logits is the primary output; the cache_k/v_l* outputs (appended per layer above)
+    // become Assign sinks via MakeStateful.
+    m_graph->model_output_names.insert(m_graph->model_output_names.begin(), logits);
     return m_graph;
 }
 
