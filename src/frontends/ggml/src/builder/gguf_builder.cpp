@@ -93,7 +93,9 @@ public:
         m_is_moe = m_weights.count("blk.0.ffn_gate_exps.weight") > 0;
         m_n_expert = cfg_int("expert_count");
         m_n_expert_used = cfg_int("expert_used_count");
-        m_has_moe_gate_bias = m_weights.count("blk.0.ffn_gate_inp.bias") > 0;  // gpt-oss
+        m_has_moe_gate_bias = m_weights.count("blk.0.ffn_gate_inp.bias") > 0;       // gpt-oss
+        m_has_moe_expert_bias = m_weights.count("blk.0.ffn_gate_exps.bias") > 0;    // gpt-oss
+        m_has_sinks = m_weights.count("blk.0.attn_sinks.weight") > 0;               // gpt-oss
         // gpt-oss uses "softmax-after-topk" gating + the OAI gated activation; OLMoE uses
         // softmax-before-topk + plain SwiGLU. Detect gpt-oss by its OAI swiglu marker
         // (gate_inp bias is gpt-oss-specific here).
@@ -292,14 +294,25 @@ private:
         }
 
         // expert FFN via MUL_MAT_ID. The routed input x is broadcast to K slots; the
-        // translator gathers each token's selected expert matrices.
+        // translator gathers each token's selected expert matrices. gpt-oss adds per-expert
+        // biases (ADD_ID gathers the selected experts' bias rows).
         add_weight(p + "ffn_gate_exps.weight");
         add_weight(p + "ffn_up_exps.weight");
         add_weight(p + "ffn_down_exps.weight");
+        const bool eb = m_has_moe_expert_bias;
         auto up = add_op("GGML_OP_MUL_MAT_ID", p + "moe_up", {p + "ffn_up_exps.weight", ffn_norm, selected},
                          ps({1, T, K, n_ff}), f32);
+        if (eb) {
+            add_named_weight(p + "ffn_up_exps.bias");
+            up = add_op("GGML_OP_ADD_ID", p + "moe_up_b", {up, p + "ffn_up_exps.bias", selected}, ps({1, T, K, n_ff}), f32);
+        }
         auto gate = add_op("GGML_OP_MUL_MAT_ID", p + "moe_gate", {p + "ffn_gate_exps.weight", ffn_norm, selected},
                            ps({1, T, K, n_ff}), f32);
+        if (eb) {
+            add_named_weight(p + "ffn_gate_exps.bias");
+            gate = add_op("GGML_OP_ADD_ID", p + "moe_gate_b", {gate, p + "ffn_gate_exps.bias", selected},
+                          ps({1, T, K, n_ff}), f32);
+        }
         std::string act;
         if (m_moe_swiglu_oai) {
             act = add_op("GGML_GLU_OP_SWIGLU_OAI", p + "moe_act", {gate, up}, ps({1, T, K, n_ff}), f32, 0,
@@ -310,6 +323,11 @@ private:
         }
         auto experts = add_op("GGML_OP_MUL_MAT_ID", p + "moe_down", {p + "ffn_down_exps.weight", act, selected},
                               ps({1, T, K, m_n_embd}), f32);
+        if (eb) {
+            add_named_weight(p + "ffn_down_exps.bias");
+            experts = add_op("GGML_OP_ADD_ID", p + "moe_down_b", {experts, p + "ffn_down_exps.bias", selected},
+                             ps({1, T, K, m_n_embd}), f32);
+        }
 
         // Weighted sum over the K selected experts. weights is [1,T,K,1] (per-expert col).
         //   experts [1,T,K,n_embd] * weights -> [1,T,K,n_embd]
@@ -384,6 +402,7 @@ private:
     bool m_has_qk_norm = false, m_has_qkv_bias = false, m_has_attn_out_bias = false, m_has_rope_freqs = false;
     bool m_has_fused_qkv = false, m_qk_norm_full = false, m_is_moe = false;
     bool m_has_moe_gate_bias = false, m_moe_softmax_weight = false, m_moe_swiglu_oai = false;
+    bool m_has_moe_expert_bias = false, m_has_sinks = false;
     int m_n_expert = 0, m_n_expert_used = 0;
     float m_embedding_scale = 1.0f, m_residual_scale = 1.0f, m_logit_scale = 1.0f, m_attention_scale = 0.0f;
     int m_rope_op_case = ROPE_OP_CASE_NEOX;
@@ -540,8 +559,14 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         k = add_op("GGML_OP_PERMUTE", p + "k_perm", {k}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
         v = add_op("GGML_OP_PERMUTE", p + "v_perm", {v}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
 
-        // FLASH_ATTN_EXT(q, k, v, mask, scale) -> [1, n_tokens, n_head, head_size]
-        auto attn = add_op("GGML_OP_FLASH_ATTN_EXT", p + "kqv", {q, k, v, "self_kq_mask"},
+        // FLASH_ATTN_EXT(q, k, v, mask[, sinks]) -> [1, n_tokens, n_head, head_size].
+        // gpt-oss adds a per-head attention sink logit as a 5th input.
+        std::vector<std::string> attn_in = {q, k, v, "self_kq_mask"};
+        if (m_has_sinks) {
+            add_named_weight(p + "attn_sinks.weight");
+            attn_in.push_back(p + "attn_sinks.weight");
+        }
+        auto attn = add_op("GGML_OP_FLASH_ATTN_EXT", p + "kqv", attn_in,
                            ps({1, T, m_n_head, m_head_size}), f32, 0, {{"scale", kq_scale}});
 
         // reshape back to [1, 1, n_tokens, n_head*head_size]
@@ -572,7 +597,10 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         auto ffn_inp = add_op("GGML_OP_ADD", p + "ffn_inp", {ao, sa}, ps({1, 1, T, m_n_embd}), f32);
 
         // ffn_norm
-        auto ffn_norm = rms_norm(ffn_inp, p + "ffn_norm.weight", p + "ffn_norm");
+        // Pre-FFN/MoE norm. gpt-oss names it post_attention_norm; others use ffn_norm.
+        const std::string ffn_norm_w =
+            m_weights.count(p + "post_attention_norm.weight") ? p + "post_attention_norm.weight" : p + "ffn_norm.weight";
+        auto ffn_norm = rms_norm(ffn_inp, ffn_norm_w, p + "ffn_norm");
 
         std::string down = m_is_moe ? build_moe_ffn(p, ffn_norm, T) : build_dense_ffn(p, ffn_norm, T);
         // MiniCPM scales the FFN sublayer output before the residual add.
