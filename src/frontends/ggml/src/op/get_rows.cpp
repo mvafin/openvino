@@ -30,13 +30,11 @@ OutputVector translate_get_rows(const NodeContext& context) {
     // This is a per-row (GatherElements) gather over the expert axis, distinct from the
     // embedding-style row gather below.
     if (op_case == 10) {
-        auto sq = ov::op::v0::Constant::create(ov::element::i64, {2}, {0, 1});
-        auto d2 = std::make_shared<ov::op::v0::Squeeze>(data, sq);     // [T, E]
-        auto i2 = std::make_shared<ov::op::v0::Squeeze>(indices, sq);  // [T, K]
-        auto i2c = std::make_shared<ov::op::v0::Convert>(i2, ov::element::i32);
-        auto ge = std::make_shared<ov::op::v6::GatherElements>(d2, i2c, 1);  // [T, K]
-        auto unsq = std::make_shared<ov::op::v0::Unsqueeze>(ge, ov::op::v0::Constant::create(ov::element::i64, {2}, {0, 1}));
-        return rename_outputs_with_suffix({unsq}, context.get_name());
+        // probs [1,1,T,E], selected [1,1,T,K] -> per-row gather over the last (expert)
+        // axis -> [1,1,T,K]. Stays 4D so it is robust to a dynamic token axis.
+        auto idx = std::make_shared<ov::op::v0::Convert>(indices, ov::element::i32);
+        auto ge = std::make_shared<ov::op::v6::GatherElements>(data, idx, -1);
+        return rename_outputs_with_suffix({ge}, context.get_name());
     }
 
     if (op_case == 2) {
