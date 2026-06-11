@@ -2,22 +2,35 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-// Native GGUF -> GgmlGraph builders. Each architecture builder emits nodes in the GGML op
-// vocabulary that reproduce llama.cpp's cgraph topology, so the resulting GgmlGraph drives
-// the same op translators as the llama.cpp cgraph path. No llama.cpp / ggml dependency.
+// Native GGUF -> GgmlGraph builder. Emits nodes in the GGML op vocabulary that reproduce
+// llama.cpp's cgraph topology, so the resulting GgmlGraph drives the same op translators as
+// the llama.cpp cgraph path. No llama.cpp / ggml dependency.
 //
-// Ground truth for the qwen3 topology: llama.cpp src/models/qwen3.cpp and the
-// build_norm / build_qkv / build_attn / build_attn_mha / build_ffn expansions in
-// src/llama-graph.cpp, plus the KV-cache cpy_k/get_k (SET_ROWS + VIEW) in
+// One generic dense-transformer builder covers the whole "llama-family" of architectures
+// (llama-3, qwen2/2.5, qwen3, phi-3, minicpm, hunyuan-dense, ...). Per-architecture
+// differences are derived almost entirely from the GGUF itself:
+//   - presence of per-head q/k norm weights  (blk.N.attn_{q,k}_norm.weight)  -> qwen3, hunyuan
+//   - presence of q/k/v projection biases     (blk.N.attn_{q,k,v}.bias)       -> qwen2/2.5
+//   - presence of an output-projection bias   (blk.N.attn_output.bias)
+//   - presence of rope frequency factors      (rope_freqs.weight)            -> llama-3, phi-3
+//   - scalar scales from metadata             (embedding/residual/logit/attention scale)
+//                                                                            -> minicpm
+// so adding a new architecture of this family is just adding its name to kSupportedArchs.
+// Structurally novel families (MoE routing, SSM, fused-QKV-only, etc.) still need new code.
+//
+// Ground truth for the topology: llama.cpp src/models/{llama,qwen2,qwen3,phi3,minicpm,
+// hunyuan-*}.cpp and the build_norm / build_qkv / build_attn / build_attn_mha / build_ffn
+// expansions in src/llama-graph.cpp, plus the KV-cache cpy_k/get_k (SET_ROWS + VIEW) in
 // src/llama-kv-cache.cpp. Op-case values follow ggml-decoder.cpp::compute_op_case.
 //
-// This first bring-up targets the dynamic (non-NPU) stateful graph for a non-SWA model
-// (qwen3-0.6B/8B): is_static=false, is_stateful=true.
+// Targets the dynamic (non-NPU) stateful graph for non-SWA models: is_static=false,
+// is_stateful=true.
 
 #include "gguf_builder.hpp"
 
 #include <cmath>
 #include <memory>
+#include <set>
 
 #include "gguf.hpp"
 #include "ggml_graph.hpp"
@@ -32,19 +45,27 @@ namespace ggml {
 
 namespace {
 
-// ggml ROPE op-case bit for NEOX mode (see ggml-decoder.cpp::compute_op_case). qwen3 uses
-// NEOX rope; the input is not a VIEW here so the low bits stay 0.
+// ggml ROPE op-case (see ggml-decoder.cpp::compute_op_case). The high 16 bits encode the
+// mode: NORMAL=0 (llama/minicpm: rotate consecutive pairs), NEOX=1 (qwen/phi/hunyuan:
+// rotate halves). The input is not a VIEW here so the low bits stay 0.
+constexpr int ROPE_OP_CASE_NORMAL = 0x00000000;
 constexpr int ROPE_OP_CASE_NEOX = 0x00010000;
+
+// Architectures whose rope is NEOX (rotate-halves); everything else in the supported set
+// uses NORMAL (rotate consecutive pairs). Mirrors llama_model_rope_type.
+bool arch_uses_neox_rope(const std::string& arch) {
+    return arch == "qwen2" || arch == "qwen3" || arch == "phi3" || arch == "hunyuan-dense";
+}
 
 // Shapes are kept in the OpenVINO/GGML logical order [ne3, ne2, ne1, ne0] (reverse of GGUF
 // on-disk order), matching the decoder's get_shape(). The translators consume them as-is.
 // Token length is dynamic (-1) in dim ne1.
 
-class Qwen3Builder {
+class TransformerBuilder {
 public:
-    Qwen3Builder(const std::map<std::string, GGUFMetaData>& config,
-                 std::unordered_map<std::string, ov::Tensor>& weights,
-                 std::unordered_map<std::string, gguf_tensor_type>& qtypes) :
+    TransformerBuilder(const std::map<std::string, GGUFMetaData>& config,
+                       std::unordered_map<std::string, ov::Tensor>& weights,
+                       std::unordered_map<std::string, gguf_tensor_type>& qtypes) :
         m_config(config),
         m_weights(weights),
         m_qtypes(qtypes) {
@@ -59,8 +80,23 @@ public:
         m_n_embd = cfg_int("hidden_size");
         m_rms_eps = cfg_float("rms_norm_eps");
 
+        // Per-architecture structure, auto-detected from the GGUF tensor table (layer 0).
+        m_has_qk_norm = m_weights.count("blk.0.attn_q_norm.weight") > 0;
+        m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0;
+        m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
+        m_has_rope_freqs = m_weights.count("rope_freqs.weight") > 0;
+
+        // Per-architecture scalars from metadata (1.0 / 0.0 when absent -> no-op).
+        m_embedding_scale = cfg_float("embedding_scale");
+        m_residual_scale = cfg_float("residual_scale");
+        m_logit_scale = cfg_float("logit_scale");
+        m_attention_scale = cfg_float("attention_scale");  // 0 -> 1/sqrt(head_size)
+
+        const std::string arch = std::get<std::string>(config.at("architecture"));
+        m_rope_op_case = arch_uses_neox_rope(arch) ? ROPE_OP_CASE_NEOX : ROPE_OP_CASE_NORMAL;
+
         m_graph->has_rope = true;
-        m_graph->rope_config.n_dims = m_head_size;
+        m_graph->rope_config.n_dims = cfg_int("rope_dimension_count");
         m_graph->rope_config.n_ctx_orig = cfg_int("max_position_embeddings");
         m_graph->rope_config.freq_base = cfg_float("rope_freq_base");
         m_graph->rope_config.freq_scale = 1.0f;
@@ -175,6 +211,18 @@ private:
         return add_op("GGML_OP_MUL", out_prefix, {norm, weight}, m_tensor_shapes.at(in), ov::element::f32);
     }
 
+    // Elementwise add of a (broadcast) bias weight: GGML_OP_ADD(x, bias_weight).
+    std::string add_bias(const std::string& x, const std::string& bias_weight, const std::string& name) {
+        add_weight(bias_weight);
+        return add_op("GGML_OP_ADD", name, {x, bias_weight}, m_tensor_shapes.at(x), ov::element::f32);
+    }
+
+    // Scale a tensor by a constant: GGML_OP_SCALE with attr "scale" (and bias 0).
+    std::string scale(const std::string& x, float factor, const std::string& name) {
+        return add_op("GGML_OP_SCALE", name, {x}, m_tensor_shapes.at(x), ov::element::f32, 0,
+                      {{"scale", factor}, {"bias", 0.0f}});
+    }
+
     const std::map<std::string, GGUFMetaData>& m_config;
     std::unordered_map<std::string, ov::Tensor>& m_weights;
     std::unordered_map<std::string, gguf_tensor_type>& m_qtypes;
@@ -183,11 +231,16 @@ private:
     int m_n_layer = 0, m_n_head = 0, m_n_head_kv = 0, m_head_size = 0, m_n_embd = 0;
     float m_rms_eps = 0.0f;
 
+    // auto-detected per-architecture structure
+    bool m_has_qk_norm = false, m_has_qkv_bias = false, m_has_attn_out_bias = false, m_has_rope_freqs = false;
+    float m_embedding_scale = 1.0f, m_residual_scale = 1.0f, m_logit_scale = 1.0f, m_attention_scale = 0.0f;
+    int m_rope_op_case = ROPE_OP_CASE_NEOX;
+
     std::map<std::string, ov::PartialShape> m_tensor_shapes;
     std::map<std::string, ov::element::Type> m_tensor_types;
 };
 
-std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
+std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
     using ov::element::f32;
     using ov::element::i64;
     const int64_t D = -1;  // dynamic token length, used for model-input Parameters only
@@ -227,8 +280,18 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
                              {"token_embd.weight", "inp_tokens"},
                              ps({1, 1, T, m_n_embd}),
                              f32);
+    // MiniCPM scales the embeddings by a constant.
+    if (m_embedding_scale != 1.0f) {
+        cur = scale(cur, m_embedding_scale, "embd_scaled");
+    }
 
-    const float kq_scale = 1.0f / std::sqrt(static_cast<float>(m_head_size));
+    // rope freq factors (llama-3 long context, phi-3): an optional 3rd ROPE input.
+    if (m_has_rope_freqs) {
+        add_weight("rope_freqs.weight");
+    }
+
+    const float kq_scale =
+        m_attention_scale != 0.0f ? m_attention_scale : 1.0f / std::sqrt(static_cast<float>(m_head_size));
 
     for (int il = 0; il < m_n_layer; ++il) {
         const std::string p = "blk." + std::to_string(il) + ".";
@@ -248,20 +311,35 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
         auto v = add_op("GGML_OP_MUL_MAT", p + "Vcur", {p + "attn_v.weight", attn_norm},
                         ps({1, 1, T, m_head_size * m_n_head_kv}), f32);
 
+        // Q/K/V projection biases (qwen2 / qwen2.5).
+        if (m_has_qkv_bias) {
+            q = add_bias(q, p + "attn_q.bias", p + "Qcur_b");
+            k = add_bias(k, p + "attn_k.bias", p + "Kcur_b");
+            v = add_bias(v, p + "attn_v.bias", p + "Vcur_b");
+        }
+
         // reshape Q/K/V to [1, n_tokens, n_head(_kv), head_size]
         q = add_op("GGML_OP_RESHAPE", p + "Qcur_r", {q}, ps({1, T, m_n_head, m_head_size}), f32, 1);
         k = add_op("GGML_OP_RESHAPE", p + "Kcur_r", {k}, ps({1, T, m_n_head_kv, m_head_size}), f32, 1);
         v = add_op("GGML_OP_RESHAPE", p + "Vcur_r", {v}, ps({1, T, m_n_head_kv, m_head_size}), f32, 1);
 
-        // per-head q_norm / k_norm (qwen3)
-        q = rms_norm(q, p + "attn_q_norm.weight", p + "Qcur_normed");
-        k = rms_norm(k, p + "attn_k_norm.weight", p + "Kcur_normed");
+        // per-head q_norm / k_norm (qwen3, hunyuan)
+        if (m_has_qk_norm) {
+            q = rms_norm(q, p + "attn_q_norm.weight", p + "Qcur_normed");
+            k = rms_norm(k, p + "attn_k_norm.weight", p + "Kcur_normed");
+        }
 
-        // RoPE (NEOX)
-        q = add_op("GGML_OP_ROPE", p + "Qcur_rope", {q, "inp_pos"}, ps({1, T, m_n_head, m_head_size}), f32,
-                   ROPE_OP_CASE_NEOX, {{"rope_config", m_graph->rope_config}});
-        k = add_op("GGML_OP_ROPE", p + "Kcur_rope", {k, "inp_pos"}, ps({1, T, m_n_head_kv, m_head_size}), f32,
-                   ROPE_OP_CASE_NEOX, {{"rope_config", m_graph->rope_config}});
+        // RoPE (NEOX). rope_freqs.weight is passed as the optional 3rd input when present.
+        const std::vector<std::string> q_rope_in =
+            m_has_rope_freqs ? std::vector<std::string>{q, "inp_pos", "rope_freqs.weight"}
+                             : std::vector<std::string>{q, "inp_pos"};
+        const std::vector<std::string> k_rope_in =
+            m_has_rope_freqs ? std::vector<std::string>{k, "inp_pos", "rope_freqs.weight"}
+                             : std::vector<std::string>{k, "inp_pos"};
+        q = add_op("GGML_OP_ROPE", p + "Qcur_rope", q_rope_in, ps({1, T, m_n_head, m_head_size}), f32,
+                   m_rope_op_case, {{"rope_config", m_graph->rope_config}});
+        k = add_op("GGML_OP_ROPE", p + "Kcur_rope", k_rope_in, ps({1, T, m_n_head_kv, m_head_size}), f32,
+                   m_rope_op_case, {{"rope_config", m_graph->rope_config}});
 
         // ---- KV cache store (stateful) ----
         // Per-layer f16 KV caches, converted to ReadValue/Assign by MakeStateful. The
@@ -306,10 +384,17 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
         auto attn_2d = add_op("GGML_OP_RESHAPE", p + "kqv_merged", {attn},
                               ps({1, 1, T, m_n_head * m_head_size}), f32, 2);
 
-        // output projection
+        // output projection (+ optional bias)
         add_weight(p + "attn_output.weight");
         auto attn_out = add_op("GGML_OP_MUL_MAT", p + "attn_out", {p + "attn_output.weight", attn_2d},
                                ps({1, 1, T, m_n_embd}), f32);
+        if (m_has_attn_out_bias) {
+            attn_out = add_bias(attn_out, p + "attn_output.bias", p + "attn_out_b");
+        }
+        // MiniCPM scales the attention sublayer output before the residual add.
+        if (m_residual_scale != 1.0f) {
+            attn_out = scale(attn_out, m_residual_scale, p + "attn_out_scaled");
+        }
 
         std::string sa = inpSA;
         std::string ao = attn_out;
@@ -338,6 +423,10 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
                           {{"swapped", false}});
         auto down = add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu},
                            ps({1, 1, T, m_n_embd}), f32);
+        // MiniCPM scales the FFN sublayer output before the residual add.
+        if (m_residual_scale != 1.0f) {
+            down = scale(down, m_residual_scale, p + "ffn_out_scaled");
+        }
 
         cur = add_op("GGML_OP_ADD", p + "l_out", {down, ffn_inp}, ps({1, 1, T, m_n_embd}), f32);
     }
@@ -347,10 +436,13 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
 
     const std::string lm_head_w = m_weights.count("output.weight") ? "output.weight" : "token_embd.weight";
     add_weight(lm_head_w);
-    const int n_vocab = static_cast<int>(m_weights.at(lm_head_w).get_shape()[0]) *
-                        (lm_head_w == "output.weight" ? 1 : 1);  // rows = vocab
+    const int n_vocab = static_cast<int>(m_weights.at(lm_head_w).get_shape()[0]);  // rows = vocab
     auto logits = add_op("GGML_OP_MUL_MAT", "result_output", {lm_head_w, cur},
                          ps({1, 1, T, n_vocab}), f32);
+    // MiniCPM scales the logits (1/(n_embd/dim_model_base)).
+    if (m_logit_scale != 1.0f) {
+        logits = scale(logits, m_logit_scale, "result_output_scaled");
+    }
 
     // logits is the primary output; the cache_k/v_l* outputs (appended per layer above)
     // become Assign sinks via MakeStateful.
@@ -360,17 +452,31 @@ std::shared_ptr<GgmlGraph> Qwen3Builder::build() {
 
 }  // namespace
 
+// Dense-transformer architectures of the llama family handled by the generic builder.
+// Adding a same-family architecture is just adding its GGUF architecture name here.
+const std::set<std::string>& supported_archs() {
+    static const std::set<std::string> archs = {
+        "llama",    // llama-2 / llama-3
+        "qwen2",    // qwen2 / qwen2.5
+        "qwen3",
+        "phi3",     // phi-3
+        "minicpm",
+        "hunyuan-dense",
+    };
+    return archs;
+}
+
 std::shared_ptr<GgmlGraph> build_ggml_graph_from_gguf(const std::string& file) {
     auto [metadata, weights, qtypes] = get_gguf_data(file);
     auto config = config_from_meta(metadata);
 
     const std::string arch = std::get<std::string>(config.at("architecture"));
-    OPENVINO_ASSERT(arch == "qwen3",
-                    "[ggml] native GGUF builder currently supports only 'qwen3', got '",
+    OPENVINO_ASSERT(supported_archs().count(arch),
+                    "[ggml] native GGUF builder does not support architecture '",
                     arch,
-                    "'");
+                    "'. Supported: llama, qwen2, qwen3, phi3, minicpm, hunyuan-dense.");
 
-    Qwen3Builder builder(config, weights, qtypes);
+    TransformerBuilder builder(config, weights, qtypes);
     return builder.build();
 }
 

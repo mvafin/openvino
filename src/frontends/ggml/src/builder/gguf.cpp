@@ -400,6 +400,23 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     config["rope_freq_base"] =
         metadata.count(arch + ".rope.freq_base") ? metadata_to_float(metadata, arch + ".rope.freq_base") : 10000.0f;
     config["file_type"] = metadata_to_int(metadata, "general.file_type");
+
+    // Number of rope dimensions (n_rot); defaults to head_size. Some archs (e.g. partial-
+    // rotary models) set it smaller.
+    config["rope_dimension_count"] = metadata.count(arch + ".rope.dimension_count")
+                                         ? metadata_to_int(metadata, arch + ".rope.dimension_count")
+                                         : std::get<int>(config["head_size"]);
+
+    // Optional per-architecture scalars (MiniCPM family); absent -> 1.0 (no-op).
+    config["embedding_scale"] =
+        metadata.count(arch + ".embedding_scale") ? metadata_to_float(metadata, arch + ".embedding_scale") : 1.0f;
+    config["residual_scale"] =
+        metadata.count(arch + ".residual_scale") ? metadata_to_float(metadata, arch + ".residual_scale") : 1.0f;
+    config["logit_scale"] =
+        metadata.count(arch + ".logit_scale") ? metadata_to_float(metadata, arch + ".logit_scale") : 1.0f;
+    // Optional explicit attention (softmax) scale; 0 -> use 1/sqrt(head_size).
+    config["attention_scale"] =
+        metadata.count(arch + ".attention.scale") ? metadata_to_float(metadata, arch + ".attention.scale") : 0.0f;
     return config;
 }
 

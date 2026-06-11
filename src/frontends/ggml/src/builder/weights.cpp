@@ -25,9 +25,6 @@ namespace ggml {
 
 namespace {
 
-// GGUF quantization group size for the K-quants / legacy quants handled here.
-constexpr size_t GROUP_SIZE = 32;
-
 const ov::Tensor& get(const std::unordered_map<std::string, ov::Tensor>& weights, const std::string& key) {
     auto it = weights.find(key);
     OPENVINO_ASSERT(it != weights.end(), "[ggml] missing weight tensor: ", key);
@@ -43,7 +40,11 @@ std::shared_ptr<ov::Node> make_int8(const std::string& name,
 
     ov::Shape orig_shape = weight.get_shape();
     orig_shape[1] *= sizeof(uint32_t) / sizeof(uint8_t);  // u32 packs 4 x u8
-    const size_t num_groups = orig_shape[1] / GROUP_SIZE;
+    // Derive the group layout from the scales tensor (number of groups per row) rather than
+    // assuming a fixed group size: K-quants (Q6_K) and legacy quants (Q8_0) group
+    // differently, and the parser already produced one scale/bias per group.
+    const size_t num_groups = scales.get_shape().back();
+    const size_t group_size = orig_shape[1] / num_groups;
 
     ov::Shape scale_shape = scales.get_shape();
     scale_shape.push_back(1);
@@ -51,7 +52,7 @@ std::shared_ptr<ov::Node> make_int8(const std::string& name,
     biases.set_shape(scale_shape);
 
     auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u8,
-                                                              ov::Shape{orig_shape[0], num_groups, GROUP_SIZE},
+                                                              ov::Shape{orig_shape[0], num_groups, group_size},
                                                               static_cast<uint8_t*>(weight.data()),
                                                               nullptr);
     weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;
@@ -88,7 +89,9 @@ std::shared_ptr<ov::Node> make_int4(const std::string& name,
 
     ov::Shape orig_shape = weight.get_shape();
     orig_shape[1] *= sizeof(uint32_t) / sizeof(uint8_t) * 2;  // u32 packs 8 x u4
-    const size_t num_groups = orig_shape[1] / GROUP_SIZE;
+    // Group layout derived from the scales tensor (see make_int8).
+    const size_t num_groups = scales.get_shape().back();
+    const size_t group_size = orig_shape[1] / num_groups;
 
     ov::Shape scale_shape = scales.get_shape();
     scale_shape.push_back(1);
@@ -96,7 +99,7 @@ std::shared_ptr<ov::Node> make_int4(const std::string& name,
     biases.set_shape(scale_shape);
 
     auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u4,
-                                                              ov::Shape{orig_shape[0], num_groups, GROUP_SIZE},
+                                                              ov::Shape{orig_shape[0], num_groups, group_size},
                                                               static_cast<uint8_t*>(weight.data()),
                                                               nullptr);
     weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;
