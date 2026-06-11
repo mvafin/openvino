@@ -31,10 +31,14 @@ OutputVector translate_get_rows(const NodeContext& context) {
     // embedding-style row gather below.
     if (op_case == 10) {
         // probs [1,1,T,E], selected [1,1,T,K] -> per-row gather over the last (expert)
-        // axis -> [1,1,T,K]. Stays 4D so it is robust to a dynamic token axis.
+        // axis -> [1,1,T,K], then reshape to [1,T,K,1] (a column per expert) for the
+        // downstream broadcast-multiply with the experts [1,T,K,n_embd]. Squeeze/Unsqueeze
+        // keep the dynamic token axis intact (no static reshape pattern).
         auto idx = std::make_shared<ov::op::v0::Convert>(indices, ov::element::i32);
-        auto ge = std::make_shared<ov::op::v6::GatherElements>(data, idx, -1);
-        return rename_outputs_with_suffix({ge}, context.get_name());
+        auto ge = std::make_shared<ov::op::v6::GatherElements>(data, idx, -1);  // [1,1,T,K]
+        auto sq = std::make_shared<ov::op::v0::Squeeze>(ge, ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));  // [1,T,K]
+        auto col = std::make_shared<ov::op::v0::Unsqueeze>(sq, ov::op::v0::Constant::create(ov::element::i64, {1}, {-1}));  // [1,T,K,1]
+        return rename_outputs_with_suffix({col}, context.get_name());
     }
 
     if (op_case == 2) {

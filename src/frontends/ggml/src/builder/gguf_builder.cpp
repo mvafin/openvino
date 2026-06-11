@@ -283,12 +283,12 @@ private:
         // top-k expert selection -> indices [1,1,T,K] (i32).
         auto selected = add_op("GGML_OP_TOP_K", p + "moe_topk", {probs}, ps({1, 1, T, K}), ov::element::i32);
 
-        // weights = gather probs by selected -> [1,1,T,K]; gpt-oss softmaxes these.
-        // op_case 10: per-token GatherElements over the expert axis.
-        auto weights = add_op("GGML_OP_GET_ROWS", p + "moe_w", {probs, selected}, ps({1, 1, T, K}), f32, 10);
+        // weights = gather probs by selected; op_case 10 returns a per-expert column
+        // [1,T,K,1] (robust to dynamic T). gpt-oss softmaxes over the K (expert) axis.
+        auto weights = add_op("GGML_OP_GET_ROWS", p + "moe_w", {probs, selected}, ps({1, T, K, 1}), f32, 10);
         if (m_moe_softmax_weight) {
-            weights = add_op("GGML_OP_SOFT_MAX", p + "moe_w_sm", {weights}, ps({1, 1, T, K}), f32, 0,
-                             {{"softmax_axis", int64_t(-1)}});
+            weights = add_op("GGML_OP_SOFT_MAX", p + "moe_w_sm", {weights}, ps({1, T, K, 1}), f32, 0,
+                             {{"softmax_axis", int64_t(2)}});
         }
 
         // expert FFN via MUL_MAT_ID. The routed input x is broadcast to K slots; the
@@ -311,15 +311,14 @@ private:
         auto experts = add_op("GGML_OP_MUL_MAT_ID", p + "moe_down", {p + "ffn_down_exps.weight", act, selected},
                               ps({1, T, K, m_n_embd}), f32);
 
-        // Weighted sum over the K selected experts:
-        //   weights [1,1,T,K] -> [1,T,K,1]; experts [1,T,K,n_embd] * weights -> [1,T,K,n_embd]
+        // Weighted sum over the K selected experts. weights is [1,T,K,1] (per-expert col).
+        //   experts [1,T,K,n_embd] * weights -> [1,T,K,n_embd]
         //   TRANSPOSE last two axes -> [1,T,n_embd,K]; SUM_ROWS over K -> [1,T,n_embd,1]
-        //   RESHAPE -> [1,1,T,n_embd].
-        auto w_col = add_op("GGML_OP_RESHAPE", p + "moe_w_col", {weights}, ps({1, T, K, 1}), f32, 6);
-        auto weighted = add_op("GGML_OP_MUL", p + "moe_weighted", {experts, w_col}, ps({1, T, K, m_n_embd}), f32);
+        //   RESHAPE (dynamic) -> [1,1,T,n_embd].
+        auto weighted = add_op("GGML_OP_MUL", p + "moe_weighted", {experts, weights}, ps({1, T, K, m_n_embd}), f32);
         auto tr = add_op("GGML_OP_TRANSPOSE", p + "moe_tr", {weighted}, ps({1, T, m_n_embd, K}), f32);
         auto summed = add_op("GGML_OP_SUM_ROWS", p + "moe_sum", {tr}, ps({1, T, m_n_embd, 1}), f32);
-        return add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 6);
+        return add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 7);
     }
 
     // Split a fused blk.<il>.attn_qkv weight into separate q/k/v weight nodes registered

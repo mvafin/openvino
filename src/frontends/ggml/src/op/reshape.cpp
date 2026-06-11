@@ -26,7 +26,7 @@ OutputVector translate_reshape(const NodeContext& context) {
 
     int op_case = context.get_op_case();
     FRONT_END_CHECK_IMPLEMENTED(
-        op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 || op_case == 6,
+        op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 || op_case == 6 || op_case == 7,
         "Unsupported RESHAPE case");
 
     auto output_shape = context.get_output_shape().to_shape();
@@ -78,6 +78,11 @@ OutputVector translate_reshape(const NodeContext& context) {
 
     } else if (op_case == 6) {
         new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, context.get_output_shape().to_shape());
+    } else if (op_case == 7) {
+        // Dynamic-safe collapse to [1, 1, -1, last_dim] (MoE aggregation output): the token
+        // axis stays dynamic via -1; only the last dim (n_embd) is static.
+        int64_t last = (int64_t)output_shape[3];
+        new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, 1, -1, last});
     }
     auto res = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
     return rename_outputs_with_suffix({res}, context.get_name());
