@@ -102,6 +102,7 @@ public:
         const std::string arch0 = std::get<std::string>(config.at("architecture"));
         m_moe_swiglu_oai = (arch0 == "gpt-oss");
         m_moe_softmax_weight = (arch0 == "gpt-oss");
+        m_has_swa = (arch0 == "gpt-oss");  // even layers use sliding-window attention
         m_has_fused_qkv = m_weights.count("blk.0.attn_qkv.weight") > 0;  // phi-3, minicpm
         m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0 || m_weights.count("blk.0.attn_qkv.bias") > 0;
         m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
@@ -402,7 +403,7 @@ private:
     bool m_has_qk_norm = false, m_has_qkv_bias = false, m_has_attn_out_bias = false, m_has_rope_freqs = false;
     bool m_has_fused_qkv = false, m_qk_norm_full = false, m_is_moe = false;
     bool m_has_moe_gate_bias = false, m_moe_softmax_weight = false, m_moe_swiglu_oai = false;
-    bool m_has_moe_expert_bias = false, m_has_sinks = false;
+    bool m_has_moe_expert_bias = false, m_has_sinks = false, m_has_swa = false;
     int m_n_expert = 0, m_n_expert_used = 0;
     float m_embedding_scale = 1.0f, m_residual_scale = 1.0f, m_logit_scale = 1.0f, m_attention_scale = 0.0f;
     int m_rope_op_case = ROPE_OP_CASE_NEOX;
@@ -429,6 +430,11 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
     add_input("inp_pos", i32, ps({1, 1, 1, D}));
     add_input("inp_out_ids", i32, ps({1, 1, 1, D}));
     add_input("self_kq_mask", ov::element::f32, ps({1, 1, D, D}));
+    // gpt-oss alternates sliding-window / full attention; the windowed mask is a separate
+    // input. Only added when the model uses SWA.
+    if (m_has_swa) {
+        add_input("self_kq_mask_swa", ov::element::f32, ps({1, 1, D, D}));
+    }
     // KV-cache update index (consumed by SET_ROWS; unused in the stateful Concat branch).
     add_input("inp_kv_idx", i32, ps({1, 1, 1, D}));
     m_tensor_shapes["inp_kv_idx"] = ps({1, 1, 1, T});
@@ -560,8 +566,9 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         v = add_op("GGML_OP_PERMUTE", p + "v_perm", {v}, ps({1, m_n_head_kv, T, m_head_size}), ov::element::f16, 1);
 
         // FLASH_ATTN_EXT(q, k, v, mask[, sinks]) -> [1, n_tokens, n_head, head_size].
-        // gpt-oss adds a per-head attention sink logit as a 5th input.
-        std::vector<std::string> attn_in = {q, k, v, "self_kq_mask"};
+        // gpt-oss: even layers use the sliding-window mask; plus a per-head sink logit.
+        const std::string mask_name = (m_has_swa && (il % 2 == 0)) ? "self_kq_mask_swa" : "self_kq_mask";
+        std::vector<std::string> attn_in = {q, k, v, mask_name};
         if (m_has_sinks) {
             add_named_weight(p + "attn_sinks.weight");
             attn_in.push_back(p + "attn_sinks.weight");

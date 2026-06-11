@@ -51,6 +51,9 @@ def build_inputs(tokens, past_len):
         "inp_pos": ov.Tensor(inp_pos),
         "inp_out_ids": ov.Tensor(inp_out_ids),
         "self_kq_mask": ov.Tensor(mask),
+        # gpt-oss sliding-window mask: for prompts shorter than the window it equals the
+        # full causal mask, so the same tensor is correct here.
+        "self_kq_mask_swa": ov.Tensor(mask.copy()),
         "token_len_per_seq": ov.Tensor(token_len),
     }
 
@@ -75,19 +78,22 @@ def main():
     model = core.read_model(args.gguf)
     compiled = core.compile_model(model, args.device)
     req = compiled.create_infer_request()
+    # only feed the inputs the (pruned) model actually exposes
+    model_inputs = {n for p in compiled.inputs for n in p.get_names()}
+
+    def run(tokens, past):
+        feed = {k: v for k, v in build_inputs(tokens, past).items() if k in model_inputs}
+        out = req.infer(feed)
+        return list(out.values())[0]
 
     # ---- prefill ----
-    out = req.infer(build_inputs(prompt_ids, past_len=0))
-    logits = list(out.values())[0]  # [1,1,1,vocab]
-    next_id = int(logits.reshape(-1).argmax())
+    next_id = int(run(prompt_ids, 0).reshape(-1).argmax())
     generated = [next_id]
     past = len(prompt_ids)
 
     # ---- decode ----
     for _ in range(args.n - 1):
-        out = req.infer(build_inputs([next_id], past_len=past))
-        logits = list(out.values())[0]
-        next_id = int(logits.reshape(-1).argmax())
+        next_id = int(run([next_id], past).reshape(-1).argmax())
         generated.append(next_id)
         past += 1
 
