@@ -42,6 +42,7 @@ enum gguf_tensor_type {
     GGUF_TYPE_I64 = 27,
     GGUF_TYPE_F64 = 28,
     GGUF_TYPE_BF16 = 30,
+    GGUF_TYPE_MXFP4 = 39,  // 4-bit microscaling (gpt-oss): 1-byte E8M0 scale + 32x E2M1
     GGUF_TYPE_COUNT,
 };
 
@@ -95,11 +96,16 @@ std::string format(std::string fmt, Args... args);
 // Reverse of the GGML dimension order (GGUF stores dims fastest-first).
 ov::Shape get_shape(const gguf_tensor& tensor);
 
-// Dequantize a quantized tensor (Q4_0/Q4_1/Q8_0/Q4_K/Q6_K) into OpenVINO layout
+// Dequantize a quantized tensor (Q4_0/Q4_1/Q8_0/Q4_K/Q5_K/Q6_K) into OpenVINO layout
 // (u32-packed weights + f16 scales + f16 biases) and insert into `a`/`qtype_map`.
 void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,
                          std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
                          const gguf_tensor& tensor);
+
+// Fully dequantize an MXFP4 tensor to a plain f16 ov::Tensor. MXFP4 uses a non-uniform
+// E2M1 value LUT per element with a shared per-32 E8M0 scale, so it does not fit the
+// uniform (weight*scale + bias) compressed layout; we materialize f16 weights directly.
+ov::Tensor gguf_dequantize_mxfp4(const gguf_tensor& tensor);
 
 // Parse a GGUF file: returns (metadata, tensors-by-ggml-name, per-tensor qtype). Tensor
 // names are the raw GGUF names (e.g. "blk.0.attn_q.weight", "token_embd.weight").

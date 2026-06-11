@@ -287,6 +287,39 @@ void extract_q6_k_data(const gguf_tensor& tensor,
     }
 }
 
+// MXFP4 (gpt-oss): per-32 block = 1-byte E8M0 scale + 16 bytes of 4-bit E2M1 indices.
+// element = kvalues_mxfp4[idx] * 2^(e-128). Low nibble -> first 16, high nibble -> last 16.
+// Fully dequantized to f16 (the LUT is non-uniform, so no compressed subgraph).
+ov::Tensor gguf_dequantize_mxfp4(const gguf_tensor& tensor) {
+    static const float kvalues[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+    const uint64_t bytes_per_block = 17;
+    const uint64_t weights_per_block = 32;
+    auto shape = get_shape(tensor);
+    ov::Tensor out(ov::element::f16, shape);
+    auto* dst = out.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    auto data = static_cast<const uint8_t*>(tensor.weights_data);
+    const uint64_t n_blocks = tensor.num_weights / weights_per_block;
+    ov::parallel_for(n_blocks, [&](size_t i) {
+        const uint8_t* block = data + i * bytes_per_block;
+        const uint8_t e = block[0];
+        // d = 2^(e-128); for e<2 use the tiny denormal patterns (negligible for weights).
+        float d;
+        if (e >= 2) {
+            uint32_t bits = static_cast<uint32_t>(e - 1) << 23;
+            std::memcpy(&d, &bits, sizeof(d));
+        } else {
+            uint32_t bits = 0x00200000u << e;
+            std::memcpy(&d, &bits, sizeof(d));
+        }
+        const uint8_t* qs = block + 1;
+        for (uint64_t j = 0; j < weights_per_block / 2; ++j) {
+            dst[i * weights_per_block + j] = ov::float16(kvalues[qs[j] & 0x0F] * d);
+            dst[i * weights_per_block + j + weights_per_block / 2] = ov::float16(kvalues[qs[j] >> 4] * d);
+        }
+    });
+    return out;
+}
+
 void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,
                          std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
                          const gguf_tensor& tensor) {
