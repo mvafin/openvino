@@ -39,6 +39,12 @@ std::unordered_map<std::string, CreatorFunction> get_supported_ops() {
         {"GGML_OP_SET_ROWS", op::translate_set_rows},
         {"GGML_OP_CPY", op::translate_cpy},
         {"GGML_OP_FLASH_ATTN_EXT", op::translate_flash_attn_ext},
+        {"GGML_GLU_OP_SWIGLU_OAI", op::translate_glu_swiglu_oai},
+        {"GGML_OP_MUL_MAT_ID", op::translate_mul_mat_id},
+        {"GGML_OP_ADD_ID", op::translate_add_id},
+        {"GGML_OP_ARGSORT", op::translate_argsort},
+        {"GGML_OP_TOP_K", op::translate_top_k},
+        {"GGML_OP_SUM_ROWS", op::translate_sum_rows},
     };
 }
 

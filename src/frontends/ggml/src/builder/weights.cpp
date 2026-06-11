@@ -53,21 +53,29 @@ std::shared_ptr<ov::Node> make_int8(const std::string& name,
     ov::Tensor scales = get(weights, name + ".scales");
     ov::Tensor biases = get(weights, name + ".biases");
 
+    // Flatten any leading dims into "rows" (MoE expert weights are 3D
+    // [n_expert, n_ff, packed_cols]); decompress as 2D-by-group then reshape back to the
+    // full logical shape. Quant blocks tile along the last (in-feature) axis, and rows/
+    // experts are independent, so this is exact.
     ov::Shape orig_shape = weight.get_shape();
-    orig_shape[1] *= sizeof(uint32_t) / sizeof(uint8_t);  // u32 packs 4 x u8
+    orig_shape.back() *= sizeof(uint32_t) / sizeof(uint8_t);  // u32 packs 4 x u8
+    size_t rows = 1;
+    for (size_t i = 0; i + 1 < orig_shape.size(); ++i) {
+        rows *= orig_shape[i];
+    }
     // Derive the group layout from the scales tensor (number of groups per row) rather than
     // assuming a fixed group size: K-quants (Q6_K) and legacy quants (Q8_0) group
     // differently, and the parser already produced one scale/bias per group.
     const size_t num_groups = scales.get_shape().back();
-    const size_t group_size = orig_shape[1] / num_groups;
+    const size_t group_size = orig_shape.back() / num_groups;
 
-    ov::Shape scale_shape = scales.get_shape();
-    scale_shape.push_back(1);
+    // Flatten scales/biases to [rows, num_groups, 1] to broadcast against the 3D weights.
+    const ov::Shape scale_shape{rows, num_groups, 1};
     scales.set_shape(scale_shape);
     biases.set_shape(scale_shape);
 
     auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u8,
-                                                              ov::Shape{orig_shape[0], num_groups, group_size},
+                                                              ov::Shape{rows, num_groups, group_size},
                                                               static_cast<uint8_t*>(weight.data()),
                                                               nullptr);
     weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;
@@ -102,19 +110,23 @@ std::shared_ptr<ov::Node> make_int4(const std::string& name,
     ov::Tensor scales = get(weights, name + ".scales");
     ov::Tensor biases = get(weights, name + ".biases");
 
+    // Rank-agnostic: flatten leading dims into "rows" (MoE expert weights are 3D).
     ov::Shape orig_shape = weight.get_shape();
-    orig_shape[1] *= sizeof(uint32_t) / sizeof(uint8_t) * 2;  // u32 packs 8 x u4
+    orig_shape.back() *= sizeof(uint32_t) / sizeof(uint8_t) * 2;  // u32 packs 8 x u4
+    size_t rows = 1;
+    for (size_t i = 0; i + 1 < orig_shape.size(); ++i) {
+        rows *= orig_shape[i];
+    }
     // Group layout derived from the scales tensor (see make_int8).
     const size_t num_groups = scales.get_shape().back();
-    const size_t group_size = orig_shape[1] / num_groups;
+    const size_t group_size = orig_shape.back() / num_groups;
 
-    ov::Shape scale_shape = scales.get_shape();
-    scale_shape.push_back(1);
+    const ov::Shape scale_shape{rows, num_groups, 1};
     scales.set_shape(scale_shape);
     biases.set_shape(scale_shape);
 
     auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u4,
-                                                              ov::Shape{orig_shape[0], num_groups, group_size},
+                                                              ov::Shape{rows, num_groups, group_size},
                                                               static_cast<uint8_t*>(weight.data()),
                                                               nullptr);
     weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;

@@ -30,6 +30,13 @@ GGML_OP_CONVERTER(translate_glu_geglu);
 GGML_OP_CONVERTER(translate_set_rows);
 GGML_OP_CONVERTER(translate_cpy);
 GGML_OP_CONVERTER(translate_flash_attn_ext);
+GGML_OP_CONVERTER(translate_glu_swiglu_oai);
+// MoE (mixture-of-experts) routing ops.
+GGML_OP_CONVERTER(translate_mul_mat_id);
+GGML_OP_CONVERTER(translate_add_id);
+GGML_OP_CONVERTER(translate_argsort);
+GGML_OP_CONVERTER(translate_top_k);
+GGML_OP_CONVERTER(translate_sum_rows);
 
 }  // namespace op
 
