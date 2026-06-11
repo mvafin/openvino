@@ -254,6 +254,30 @@ producing a graph that matches the cgraph path's model.
 **M2 exit:** `core.read_model("qwen3-8b.gguf")` yields a self-contained, IR-serializable
 `ov::Model` with no llama.cpp dependency, matching the cgraph path's graph.
 
+### M2.6 Multi-architecture support (DONE) — one generic builder, minimal per-arch code
+
+The qwen3 builder was generalized into a single `TransformerBuilder` for the whole
+llama-family of dense transformers. Per-architecture structure is **auto-detected from the
+GGUF** (no per-arch C++ for these deltas):
+- per-head q/k norm (`blk.N.attn_{q,k}_norm.weight`) — qwen3, hunyuan
+- q/k/v projection bias (`blk.N.attn_{q,k,v}.bias`) — qwen2/2.5
+- fused QKV (`blk.N.attn_qkv.weight`, row-split into q/k/v) — phi-3, minicpm
+- fused FFN (no `ffn_gate`; `ffn_up` width 2·n_ff, single-input SWIGLU) — phi-3
+- rope frequency factors (`rope_freqs.weight`, ROPE 3rd input) — llama-3, phi-3
+- rope mode: NORMAL (llama, minicpm) vs NEOX (qwen2/3, phi3, hunyuan), per
+  `llama_model_rope_type`
+- scalar scales from metadata, with MiniCPM's hparams defaults (embedding=12,
+  residual=1.4/√n_layer, logit=256/n_embd)
+
+Quant coverage: F16/F32/BF16 (direct), Q4_0/Q4_1/Q4_K (u4 subgraph), Q5_0/Q5_K/Q8_0/Q6_K
+(u8 subgraph), group layout derived from the scales tensor (handles mixed K-quants).
+
+Adding a same-family architecture = adding its name to `supported_archs()`. **Verified
+end-to-end vs native llama.cpp (release b9479, `llama-simple`):** qwen3-0.6B (token-exact),
+Qwen2.5-0.5B (token-exact), TinyLlama-1.1B/llama (first-token), Phi-3-mini (correct),
+MiniCPM-2B (correct), Hunyuan-0.5B/hunyuan-dense (token-exact). hunyuan-dense required
+**zero** new code — it reuses qwen3's building blocks (q/k norm + NEOX).
+
 ---
 
 ## Phase M3 — Stateful / KV-cache parity & GenAI compatibility shaping
