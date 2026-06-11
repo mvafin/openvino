@@ -369,17 +369,16 @@ GGUFLoad get_gguf_data(const std::string& file) {
         if (ti.type == GGUF_TYPE_Q4_0 || ti.type == GGUF_TYPE_Q4_1 || ti.type == GGUF_TYPE_Q5_0 || ti.type == GGUF_TYPE_Q8_0 ||
             ti.type == GGUF_TYPE_Q4_K || ti.type == GGUF_TYPE_Q5_K || ti.type == GGUF_TYPE_Q6_K) {
             gguf_load_quantized(arrays, qtype, tensor);
+        } else if (ti.type == GGUF_TYPE_MXFP4) {
+            // Native compressed: f4e2m1 weights + f8e8m0 scales (no host dequant).
+            gguf_load_mxfp4(arrays, qtype, tensor);
         } else {
-            // MXFP4 is fully dequantized to f16; everything else (F32/F16/BF16/int) is a
-            // direct copy. Both become a plain weight (F16 qtype) handled by make_weight_node.
-            ov::Tensor loaded = (ti.type == GGUF_TYPE_MXFP4) ? gguf_dequantize_mxfp4(tensor) : extract_tensor_data(tensor);
+            ov::Tensor loaded = extract_tensor_data(tensor);  // F32/F16/BF16/int direct copy
             OPENVINO_ASSERT(arrays.emplace(name, loaded).second, "[load_gguf] duplicate tensor name '", name, "'");
             constexpr std::string_view weight_suffix = ".weight";
             if (name.size() >= weight_suffix.size()) {
                 const std::string name_prefix = name.substr(0, name.length() - weight_suffix.length());
-                // MXFP4 -> treat as plain F16 weight downstream.
-                qtype.emplace(name_prefix + ".qtype",
-                              ti.type == GGUF_TYPE_MXFP4 ? GGUF_TYPE_F16 : static_cast<gguf_tensor_type>(ti.type));
+                qtype.emplace(name_prefix + ".qtype", static_cast<gguf_tensor_type>(ti.type));
             }
         }
     }

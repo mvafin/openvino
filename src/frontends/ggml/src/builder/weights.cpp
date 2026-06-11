@@ -158,6 +158,40 @@ std::shared_ptr<ov::Node> make_int4(const std::string& name,
     return std::make_shared<ov::op::v0::Convert>(reshaped, ov::element::f32);
 }
 
+// MXFP4 (gpt-oss): native compressed weights = f4e2m1 weight * f8e8m0 per-32 scale, both
+// kept compressed so the CPU plugin decompresses on the fly (no host f16 expansion). The
+// parser already deinterleaved into natural order; here we just build the subgraph.
+std::shared_ptr<ov::Node> make_mxfp4(const std::string& base,
+                                     const std::unordered_map<std::string, ov::Tensor>& weights) {
+    ov::Tensor weight = get(weights, base + ".weight");  // f4e2m1 [.., cols]
+    ov::Tensor scales = get(weights, base + ".scales");  // f8e8m0 [.., groups]
+
+    ov::Shape orig_shape = weight.get_shape();
+    size_t rows = 1;
+    for (size_t i = 0; i + 1 < orig_shape.size(); ++i) {
+        rows *= orig_shape[i];
+    }
+    const size_t num_groups = scales.get_shape().back();
+    const size_t group_size = orig_shape.back() / num_groups;
+
+    auto w_node = std::make_shared<ov::op::v0::Constant>(weight);
+    auto w_grp = std::make_shared<ov::op::v1::Reshape>(
+        w_node,
+        ov::op::v0::Constant::create(ov::element::i64, {3}, std::vector<int64_t>{(int64_t)rows, (int64_t)num_groups, (int64_t)group_size}),
+        false);
+    auto w_f16 = std::make_shared<ov::op::v0::Convert>(w_grp, ov::element::f16);
+
+    scales.set_shape(ov::Shape{rows, num_groups, 1});
+    auto s_node = std::make_shared<ov::op::v0::Constant>(scales);
+    auto s_f16 = std::make_shared<ov::op::v0::Convert>(s_node, ov::element::f16);
+
+    auto scaled = std::make_shared<ov::op::v1::Multiply>(w_f16, s_f16, ov::op::AutoBroadcastType::NUMPY);
+    auto final_shape =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{orig_shape.size()}, orig_shape);
+    auto reshaped = std::make_shared<ov::op::v1::Reshape>(scaled, final_shape, false);
+    return std::make_shared<ov::op::v0::Convert>(reshaped, ov::element::f32);
+}
+
 }  // namespace
 
 std::shared_ptr<ov::Node> make_weight_node(const std::string& base,
@@ -170,6 +204,9 @@ std::shared_ptr<ov::Node> make_weight_node(const std::string& base,
 
     std::shared_ptr<ov::Node> node;
     switch (qtype) {
+    case GGUF_TYPE_MXFP4:
+        node = make_mxfp4(base, weights);
+        break;
     case GGUF_TYPE_Q4_0:
     case GGUF_TYPE_Q4_1:
     case GGUF_TYPE_Q4_K:

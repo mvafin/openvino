@@ -105,16 +105,23 @@ OutputVector translate_mul_mat_id(const NodeContext& context) {
 // ids [n_tokens, n_expert_used] -> gather b by ids -> [n_tokens, n_expert_used, n], add.
 OutputVector translate_add_id(const NodeContext& context) {
     num_inputs_check(context, 3, 3);
-    auto a = context.get_input(0);
-    auto b = context.get_input(1);
-    auto ids = context.get_input(2);
-    auto gather_axis = v0::Constant::create(element::i32, Shape{}, {0});
+    auto a = context.get_input(0);    // [1, T, K, n]
+    auto b = context.get_input(1);    // per-expert bias [n_expert, n]
+    auto ids = context.get_input(2);  // selected experts [.., T, K]
+
+    // Canonicalize ids to 2D [T, K] so the gather adds exactly a [T, K, n] tensor (matching
+    // a's [1, T, K, n] after a leading unsqueeze), not an extra ids-rank dim.
+    const int64_t K = ids.get_partial_shape()[ids.get_partial_shape().size() - 1].get_length();
+    auto ids_2d = std::make_shared<v1::Reshape>(
+        ids, v0::Constant::create(element::i64, Shape{2}, std::vector<int64_t>{-1, K}), false);  // [T, K]
     ov::Output<ov::Node> b_gathered =
-        std::make_shared<v8::Gather>(b, ids, gather_axis);  // [n_tokens, n_expert_used, n]
+        std::make_shared<v8::Gather>(b, ids_2d, v0::Constant::create(element::i32, Shape{}, {0}));  // [T, K, n]
     if (b_gathered.get_element_type() != a.get_element_type()) {
         b_gathered = std::make_shared<v0::Convert>(b_gathered, a.get_element_type());
     }
-    auto res = std::make_shared<v1::Add>(a, b_gathered);
+    // [T,K,n] -> [1,T,K,n] to match a.
+    auto b4 = std::make_shared<v0::Unsqueeze>(b_gathered, v0::Constant::create(element::i64, Shape{1}, {0}));
+    auto res = std::make_shared<v1::Add>(a, b4);
     return rename_outputs_with_suffix({res}, context.get_name());
 }
 

@@ -288,36 +288,67 @@ void extract_q6_k_data(const gguf_tensor& tensor,
 }
 
 // MXFP4 (gpt-oss): per-32 block = 1-byte E8M0 scale + 16 bytes of 4-bit E2M1 indices.
-// element = kvalues_mxfp4[idx] * 2^(e-128). Low nibble -> first 16, high nibble -> last 16.
-// Fully dequantized to f16 (the LUT is non-uniform, so no compressed subgraph).
-ov::Tensor gguf_dequantize_mxfp4(const gguf_tensor& tensor) {
-    static const float kvalues[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+// On disk, within a block the low nibble of qs[j] is element j and the high nibble is
+// element j+16. We deinterleave into NATURAL element order and store as two compressed
+// OpenVINO Constants the CPU plugin handles natively: a f4e2m1 weight tensor [rows, cols]
+// and an f8e8m0 scale tensor [rows, cols/32]. (No host dequant.)
+//
+// Value equivalence: ggml MXFP4 value = kvalues_mxfp4[idx] * 2^(e-128); OpenVINO's
+// f4e2m1 LUT equals kvalues_mxfp4/2 and f8e8m0->f32 = 2^(e-127), so
+//   f4e2m1[idx] * f8e8m0(e) = (kvalues/2) * 2^(e-127) = kvalues * 2^(e-128)  -- exact.
+void gguf_load_mxfp4(std::unordered_map<std::string, ov::Tensor>& a,
+                     std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
+                     const gguf_tensor& tensor) {
     const uint64_t bytes_per_block = 17;
-    const uint64_t weights_per_block = 32;
-    auto shape = get_shape(tensor);
-    ov::Tensor out(ov::element::f16, shape);
-    auto* dst = out.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto data = static_cast<const uint8_t*>(tensor.weights_data);
-    const uint64_t n_blocks = tensor.num_weights / weights_per_block;
-    ov::parallel_for(n_blocks, [&](size_t i) {
-        const uint8_t* block = data + i * bytes_per_block;
-        const uint8_t e = block[0];
-        // d = 2^(e-128); for e<2 use the tiny denormal patterns (negligible for weights).
-        float d;
-        if (e >= 2) {
-            uint32_t bits = static_cast<uint32_t>(e - 1) << 23;
-            std::memcpy(&d, &bits, sizeof(d));
-        } else {
-            uint32_t bits = 0x00200000u << e;
-            std::memcpy(&d, &bits, sizeof(d));
-        }
-        const uint8_t* qs = block + 1;
-        for (uint64_t j = 0; j < weights_per_block / 2; ++j) {
-            dst[i * weights_per_block + j] = ov::float16(kvalues[qs[j] & 0x0F] * d);
-            dst[i * weights_per_block + j + weights_per_block / 2] = ov::float16(kvalues[qs[j] >> 4] * d);
+    const uint64_t qk = 32;
+    auto shape = get_shape(tensor);  // [.., cols]
+    const uint64_t cols = shape.back();
+    uint64_t rows = 1;
+    for (size_t i = 0; i + 1 < shape.size(); ++i) {
+        rows *= shape[i];
+    }
+    const uint64_t groups = cols / qk;
+
+    ov::Tensor weights(ov::element::f4e2m1, shape);             // natural-order 4-bit nibbles
+    ov::Shape scale_shape = shape;
+    scale_shape.back() = groups;
+    ov::Tensor scales(ov::element::f8e8m0, scale_shape);
+
+    auto* wdst = static_cast<uint8_t*>(weights.data());   // 2 nibbles per byte
+    auto* sdst = static_cast<uint8_t*>(scales.data());    // 1 byte per group (E8M0)
+    const auto* data = static_cast<const uint8_t*>(tensor.weights_data);
+
+    ov::parallel_for(rows, [&](size_t r) {
+        for (uint64_t g = 0; g < groups; ++g) {
+            const uint8_t* block = data + (r * groups + g) * bytes_per_block;
+            sdst[r * groups + g] = block[0];  // E8M0 scale byte, stored verbatim
+            const uint8_t* qs = block + 1;
+            // element index within the row of the natural-order value
+            const uint64_t base = r * cols + g * qk;
+            for (uint64_t j = 0; j < qk / 2; ++j) {
+                const uint8_t lo = qs[j] & 0x0F;  // -> element j
+                const uint8_t hi = qs[j] >> 4;    // -> element j+16
+                auto put = [&](uint64_t elem, uint8_t nib) {
+                    uint64_t idx = base + elem;
+                    uint8_t& byte = wdst[idx / 2];
+                    if (idx & 1) {
+                        byte = (byte & 0x0F) | (nib << 4);
+                    } else {
+                        byte = (byte & 0xF0) | nib;
+                    }
+                };
+                put(j, lo);
+                put(j + qk / 2, hi);
+            }
         }
     });
-    return out;
+
+    std::string name(tensor.name, tensor.namelen);
+    a.emplace(name, std::move(weights));
+    constexpr std::string_view weight_suffix = ".weight";
+    const std::string prefix = name.substr(0, name.length() - weight_suffix.length());
+    a.emplace(prefix + ".scales", std::move(scales));
+    qtype_map.emplace(prefix + ".qtype", GGUF_TYPE_MXFP4);
 }
 
 void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,

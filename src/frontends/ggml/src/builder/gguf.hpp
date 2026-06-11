@@ -102,10 +102,13 @@ void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,
                          std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
                          const gguf_tensor& tensor);
 
-// Fully dequantize an MXFP4 tensor to a plain f16 ov::Tensor. MXFP4 uses a non-uniform
-// E2M1 value LUT per element with a shared per-32 E8M0 scale, so it does not fit the
-// uniform (weight*scale + bias) compressed layout; we materialize f16 weights directly.
-ov::Tensor gguf_dequantize_mxfp4(const gguf_tensor& tensor);
+// Load an MXFP4 tensor into the native OpenVINO compressed layout (NOT dequantized): a
+// f4e2m1 weight tensor + an f8e8m0 per-32-group scale tensor, inserted into `a` as
+// "<base>.weight" and "<base>.scales". The CPU plugin executes the f4e2m1*f8e8m0
+// decompression natively. Deinterleaves the on-disk block layout into natural order.
+void gguf_load_mxfp4(std::unordered_map<std::string, ov::Tensor>& a,
+                     std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
+                     const gguf_tensor& tensor);
 
 // Parse a GGUF file: returns (metadata, tensors-by-ggml-name, per-tensor qtype). Tensor
 // names are the raw GGUF names (e.g. "blk.0.attn_q.weight", "token_embd.weight").
