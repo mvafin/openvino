@@ -36,6 +36,7 @@
 #include "ggml_graph.hpp"
 #include "openvino/core/except.hpp"
 #include "openvino/op/constant.hpp"
+#include "openvino/op/convert.hpp"
 #include "openvino/op/parameter.hpp"
 #include "weights.hpp"
 
@@ -211,9 +212,30 @@ private:
         return add_op("GGML_OP_MUL", out_prefix, {norm, weight}, m_tensor_shapes.at(in), ov::element::f32);
     }
 
+    // Register a plain (non-quantized, f32) weight stored under its full GGUF name, e.g. a
+    // bias tensor "blk.N.attn_q.bias" (no ".weight" suffix). Records its 4D shape.
+    void add_named_weight(const std::string& ggml_name) {
+        if (m_graph->model_weights.count(ggml_name)) {
+            return;
+        }
+        auto it = m_weights.find(ggml_name);
+        OPENVINO_ASSERT(it != m_weights.end(), "[ggml] weight not found in gguf: ", ggml_name);
+        const ov::Tensor& w = it->second;
+        std::shared_ptr<ov::Node> node = std::make_shared<ov::op::v0::Constant>(w);
+        if (w.get_element_type() != ov::element::f32) {
+            node = std::make_shared<ov::op::v0::Convert>(node, ov::element::f32);
+        }
+        node->set_friendly_name(ggml_name);
+        m_graph->model_weights[ggml_name] = node;
+        const auto& s = w.get_shape();
+        int64_t n = s.empty() ? 1 : static_cast<int64_t>(s[0]);
+        m_tensor_shapes[ggml_name] = ps({1, 1, 1, n});
+        m_tensor_types[ggml_name] = ov::element::f32;
+    }
+
     // Elementwise add of a (broadcast) bias weight: GGML_OP_ADD(x, bias_weight).
     std::string add_bias(const std::string& x, const std::string& bias_weight, const std::string& name) {
-        add_weight(bias_weight);
+        add_named_weight(bias_weight);
         return add_op("GGML_OP_ADD", name, {x, bias_weight}, m_tensor_shapes.at(x), ov::element::f32);
     }
 
