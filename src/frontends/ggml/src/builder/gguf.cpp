@@ -364,7 +364,7 @@ GGUFLoad get_gguf_data(const std::string& file) {
 
         const std::string& name = ti.name;
         if (ti.type == GGUF_TYPE_Q4_0 || ti.type == GGUF_TYPE_Q4_1 || ti.type == GGUF_TYPE_Q8_0 ||
-            ti.type == GGUF_TYPE_Q4_K || ti.type == GGUF_TYPE_Q6_K) {
+            ti.type == GGUF_TYPE_Q4_K || ti.type == GGUF_TYPE_Q5_K || ti.type == GGUF_TYPE_Q6_K) {
             gguf_load_quantized(arrays, qtype, tensor);
         } else {
             ov::Tensor loaded = extract_tensor_data(tensor);

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -27,6 +28,18 @@ namespace ggml {
 std::shared_ptr<ov::Node> make_weight_node(const std::string& base,
                                            const std::unordered_map<std::string, ov::Tensor>& weights,
                                            const std::unordered_map<std::string, gguf_tensor_type>& qtypes);
+
+// Split a fused attention weight `<base>` (rows = n_q + n_k + n_v output features, i.e.
+// the GGUF attn_qkv tensor) into three decompressed weight nodes for q/k/v by slicing the
+// row dimension (rows are block-independent in the quant layout). `base` is e.g.
+// "blk.0.attn_qkv". n_q/n_k/n_v are the output-feature counts. Returns {q, k, v} nodes.
+std::array<std::shared_ptr<ov::Node>, 3> make_fused_qkv_weights(
+    const std::string& base,
+    const std::unordered_map<std::string, ov::Tensor>& weights,
+    const std::unordered_map<std::string, gguf_tensor_type>& qtypes,
+    size_t n_q,
+    size_t n_k,
+    size_t n_v);
 
 }  // namespace ggml
 }  // namespace frontend

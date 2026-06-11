@@ -28,6 +28,7 @@
 
 #include "gguf_builder.hpp"
 
+#include <array>
 #include <cmath>
 #include <memory>
 #include <set>
@@ -83,7 +84,8 @@ public:
 
         // Per-architecture structure, auto-detected from the GGUF tensor table (layer 0).
         m_has_qk_norm = m_weights.count("blk.0.attn_q_norm.weight") > 0;
-        m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0;
+        m_has_fused_qkv = m_weights.count("blk.0.attn_qkv.weight") > 0;  // phi-3, minicpm
+        m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0 || m_weights.count("blk.0.attn_qkv.bias") > 0;
         m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
         m_has_rope_freqs = m_weights.count("rope_freqs.weight") > 0;
 
@@ -212,6 +214,24 @@ private:
         return add_op("GGML_OP_MUL", out_prefix, {norm, weight}, m_tensor_shapes.at(in), ov::element::f32);
     }
 
+    // Split a fused blk.<il>.attn_qkv weight into separate q/k/v weight nodes registered
+    // under blk.<il>.attn_{q,k,v}.weight, so the rest of the builder is identical to the
+    // separate-projection case. Rows split as [n_head*head_size | n_head_kv*head_size x2].
+    void register_fused_qkv(int il) {
+        const std::string p = "blk." + std::to_string(il) + ".";
+        const size_t n_q = static_cast<size_t>(m_n_head) * m_head_size;
+        const size_t n_kv = static_cast<size_t>(m_n_head_kv) * m_head_size;
+        auto qkv = make_fused_qkv_weights(p + "attn_qkv", m_weights, m_qtypes, n_q, n_kv, n_kv);
+        const std::array<std::string, 3> names = {p + "attn_q.weight", p + "attn_k.weight", p + "attn_v.weight"};
+        const std::array<int64_t, 3> rows = {(int64_t)n_q, (int64_t)n_kv, (int64_t)n_kv};
+        for (size_t i = 0; i < 3; ++i) {
+            qkv[i]->set_friendly_name(names[i]);
+            m_graph->model_weights[names[i]] = qkv[i];
+            m_tensor_shapes[names[i]] = ps({1, 1, rows[i], m_n_embd});
+            m_tensor_types[names[i]] = ov::element::f32;
+        }
+    }
+
     // Register a plain (non-quantized, f32) weight stored under its full GGUF name, e.g. a
     // bias tensor "blk.N.attn_q.bias" (no ".weight" suffix). Records its 4D shape.
     void add_named_weight(const std::string& ggml_name) {
@@ -255,6 +275,7 @@ private:
 
     // auto-detected per-architecture structure
     bool m_has_qk_norm = false, m_has_qkv_bias = false, m_has_attn_out_bias = false, m_has_rope_freqs = false;
+    bool m_has_fused_qkv = false;
     float m_embedding_scale = 1.0f, m_residual_scale = 1.0f, m_logit_scale = 1.0f, m_attention_scale = 0.0f;
     int m_rope_op_case = ROPE_OP_CASE_NEOX;
 
@@ -323,9 +344,15 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         std::string attn_norm = rms_norm(cur, p + "attn_norm.weight", p + "attn_norm");
 
         // Q/K/V projections: MUL_MAT(w, attn_norm), then conceptual reshape to heads.
-        add_weight(p + "attn_q.weight");
-        add_weight(p + "attn_k.weight");
-        add_weight(p + "attn_v.weight");
+        // Fused-QKV archs (phi-3, minicpm) carry a single attn_qkv weight; split it into
+        // separate q/k/v weights so the rest of the layer is architecture-agnostic.
+        if (m_has_fused_qkv) {
+            register_fused_qkv(il);
+        } else {
+            add_weight(p + "attn_q.weight");
+            add_weight(p + "attn_k.weight");
+            add_weight(p + "attn_v.weight");
+        }
         auto q = add_op("GGML_OP_MUL_MAT", p + "Qcur", {p + "attn_q.weight", attn_norm},
                         ps({1, 1, T, m_head_size * m_n_head}), f32);
         auto k = add_op("GGML_OP_MUL_MAT", p + "Kcur", {p + "attn_k.weight", attn_norm},
@@ -333,8 +360,8 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         auto v = add_op("GGML_OP_MUL_MAT", p + "Vcur", {p + "attn_v.weight", attn_norm},
                         ps({1, 1, T, m_head_size * m_n_head_kv}), f32);
 
-        // Q/K/V projection biases (qwen2 / qwen2.5).
-        if (m_has_qkv_bias) {
+        // Q/K/V projection biases (qwen2 / qwen2.5: separate attn_{q,k,v}.bias).
+        if (m_has_qkv_bias && !m_has_fused_qkv) {
             q = add_bias(q, p + "attn_q.bias", p + "Qcur_b");
             k = add_bias(k, p + "attn_k.bias", p + "Kcur_b");
             v = add_bias(v, p + "attn_v.bias", p + "Vcur_b");
@@ -432,17 +459,29 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         // ffn_norm
         auto ffn_norm = rms_norm(ffn_inp, p + "ffn_norm.weight", p + "ffn_norm");
 
-        // SwiGLU FFN: swiglu(gate, up) then down. ggml uses ggml_swiglu_split(gate, up).
-        add_weight(p + "ffn_gate.weight");
+        // SwiGLU FFN. Two layouts:
+        //  - separate gate+up (llama/qwen/minicpm): SWIGLU(gate, up) [2-input split].
+        //  - fused ffn_up of width 2*n_ff (phi-3): SWIGLU(up) [1-input, splits internally].
         add_weight(p + "ffn_up.weight");
         add_weight(p + "ffn_down.weight");
-        const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate.weight").get_shape()[0]);
-        auto gate = add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm},
-                           ps({1, 1, T, n_ff}), f32);
-        auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
-                         ps({1, 1, T, n_ff}), f32);
-        auto glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {gate, up}, ps({1, 1, T, n_ff}), f32, 0,
-                          {{"swapped", false}});
+        const bool fused_ffn = m_weights.count(p + "ffn_gate.weight") == 0;
+        std::string glu;
+        if (fused_ffn) {
+            const int up2 = static_cast<int>(m_weights.at(p + "ffn_up.weight").get_shape()[0]);  // 2*n_ff
+            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
+                             ps({1, 1, T, up2}), f32);
+            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {up}, ps({1, 1, T, up2 / 2}), f32, 0,
+                         {{"swapped", false}});
+        } else {
+            add_weight(p + "ffn_gate.weight");
+            const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate.weight").get_shape()[0]);
+            auto gate = add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm},
+                               ps({1, 1, T, n_ff}), f32);
+            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
+                             ps({1, 1, T, n_ff}), f32);
+            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {gate, up}, ps({1, 1, T, n_ff}), f32, 0,
+                         {{"swapped", false}});
+        }
         auto down = add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu},
                            ps({1, 1, T, m_n_embd}), f32);
         // MiniCPM scales the FFN sublayer output before the residual add.
