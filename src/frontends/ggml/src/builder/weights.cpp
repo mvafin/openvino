@@ -10,10 +10,10 @@
 
 #include "weights.hpp"
 
-#include <cmath>
 #include <cstring>
 
 #include "openvino/core/except.hpp"
+#include "openvino/decompositions/low_precision_dequantize.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/multiply.hpp"
@@ -46,116 +46,160 @@ ov::Tensor slice_rows(const ov::Tensor& t, size_t r0, size_t r1) {
     return out;
 }
 
-// 8-bit (Q8_0): u8 weights + per-group f16 scale and f16 bias -> zero-point u8.
-std::shared_ptr<ov::Node> make_int8(const std::string& name,
-                                    const std::unordered_map<std::string, ov::Tensor>& weights) {
-    ov::Tensor weight = get(weights, name + ".weight");  // u32-packed
-    ov::Tensor scales = get(weights, name + ".scales");
-    ov::Tensor biases = get(weights, name + ".biases");
-
-    // Flatten any leading dims into "rows" (MoE expert weights are 3D
-    // [n_expert, n_ff, packed_cols]); decompress as 2D-by-group then reshape back to the
-    // full logical shape. Quant blocks tile along the last (in-feature) axis, and rows/
-    // experts are independent, so this is exact.
-    ov::Shape orig_shape = weight.get_shape();
-    orig_shape.back() *= sizeof(uint32_t) / sizeof(uint8_t);  // u32 packs 4 x u8
-    size_t rows = 1;
-    for (size_t i = 0; i + 1 < orig_shape.size(); ++i) {
-        rows *= orig_shape[i];
-    }
-    // Derive the group layout from the scales tensor (number of groups per row) rather than
-    // assuming a fixed group size: K-quants (Q6_K) and legacy quants (Q8_0) group
-    // differently, and the parser already produced one scale/bias per group.
-    const size_t num_groups = scales.get_shape().back();
-    const size_t group_size = orig_shape.back() / num_groups;
-
-    // Flatten scales/biases to [rows, num_groups, 1] to broadcast against the 3D weights.
-    const ov::Shape scale_shape{rows, num_groups, 1};
-    scales.set_shape(scale_shape);
-    biases.set_shape(scale_shape);
-
-    auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u8,
-                                                              ov::Shape{rows, num_groups, group_size},
-                                                              static_cast<uint8_t*>(weight.data()),
-                                                              nullptr);
-    weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;
-
-    auto scales_f16 = std::make_shared<ov::op::v0::Constant>(scales);
-
-    // zero-point = round(-bias / scale), stored u8.
-    ov::Tensor zp(ov::element::u8, scale_shape);
-    const auto* bias_data = biases.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    const auto* scale_data = scales.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto* zp_data = zp.data<uint8_t>();
-    for (size_t i = 0; i < zp.get_size(); ++i) {
-        zp_data[i] = static_cast<uint8_t>(std::round(-1.f * static_cast<float>(bias_data[i]) / static_cast<float>(scale_data[i])));
-    }
-    auto zp_node = std::make_shared<ov::op::v0::Constant>(zp);
-
-    auto w_f16 = std::make_shared<ov::op::v0::Convert>(weights_node, ov::element::f16);
-    auto zp_f16 = std::make_shared<ov::op::v0::Convert>(zp_node, ov::element::f16);
-    auto w_zp = std::make_shared<ov::op::v1::Subtract>(w_f16, zp_f16, ov::op::AutoBroadcastType::NUMPY);
-    auto w_zp_s = std::make_shared<ov::op::v1::Multiply>(w_zp, scales_f16, ov::op::AutoBroadcastType::NUMPY);
-
-    auto final_shape =
-        std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{orig_shape.size()}, orig_shape);
-    auto reshaped = std::make_shared<ov::op::v1::Reshape>(w_zp_s, final_shape, false);
-    return std::make_shared<ov::op::v0::Convert>(reshaped, ov::element::f32);
+// Shared shape helpers for grouped weight layouts. See make_int8 comment for why we keep
+// all leading dims separate rather than flattening: the trailing Reshape must be
+// (orig_rank+1)D -> orig_rank for the CompressedWeightsBlock matcher to fire.
+ov::Shape grouped_weight_shape(const ov::Shape& orig, size_t num_groups, size_t group_size) {
+    ov::Shape s(orig.begin(), orig.end() - 1);
+    s.push_back(num_groups);
+    s.push_back(group_size);
+    return s;
+}
+ov::Shape per_group_shape(const ov::Shape& orig, size_t num_groups) {
+    ov::Shape s(orig.begin(), orig.end() - 1);
+    s.push_back(num_groups);
+    s.push_back(1);
+    return s;
 }
 
-// 4-bit (Q4_0/Q4_1/Q4_K): u4 weights + per-group f16 scale and f16 bias -> u4 zero-point.
-std::shared_ptr<ov::Node> make_int4(const std::string& name,
+// Q4_0 symmetric: i4 weights (XOR-converted from u4) + f16 scale, no zero-point.
+// Emits: Multiply(Convert(i4_const, f16), scale) [-> Reshape] via low_precision_dequantize.
+std::shared_ptr<ov::Node> make_q4_0(const std::string& name,
                                     const std::unordered_map<std::string, ov::Tensor>& weights) {
-    ov::Tensor weight = get(weights, name + ".weight");  // u32-packed
+    ov::Tensor weight = get(weights, name + ".weight");  // u32-packed i4 nibbles
     ov::Tensor scales = get(weights, name + ".scales");
-    ov::Tensor biases = get(weights, name + ".biases");
 
-    // Rank-agnostic: flatten leading dims into "rows" (MoE expert weights are 3D).
     ov::Shape orig_shape = weight.get_shape();
-    orig_shape.back() *= sizeof(uint32_t) / sizeof(uint8_t) * 2;  // u32 packs 8 x u4
-    size_t rows = 1;
-    for (size_t i = 0; i + 1 < orig_shape.size(); ++i) {
-        rows *= orig_shape[i];
-    }
-    // Group layout derived from the scales tensor (see make_int8).
+    orig_shape.back() *= sizeof(uint32_t) / sizeof(uint8_t) * 2;  // u32 packs 8 i4
     const size_t num_groups = scales.get_shape().back();
     const size_t group_size = orig_shape.back() / num_groups;
 
-    const ov::Shape scale_shape{rows, num_groups, 1};
+    auto grouped_shape = grouped_weight_shape(orig_shape, num_groups, group_size);
+    auto scale_shape = per_group_shape(orig_shape, num_groups);
     scales.set_shape(scale_shape);
-    biases.set_shape(scale_shape);
 
-    auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u4,
-                                                              ov::Shape{rows, num_groups, group_size},
-                                                              static_cast<uint8_t*>(weight.data()),
-                                                              nullptr);
-    weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;
-    auto w_f16 = std::make_shared<ov::op::v0::Convert>(weights_node, ov::element::f16);
-
-    // zero-point packed two u4 per byte.
-    const auto* bias_data = biases.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    const auto* scale_data = scales.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    ov::Tensor zp(ov::element::u4, scale_shape);
-    auto* zp_data = static_cast<uint8_t*>(zp.data());
-    for (size_t i = 0; i < zp.get_byte_size(); ++i) {
-        uint8_t b1 = static_cast<uint8_t>(
-            std::round(-1.f * static_cast<float>(bias_data[i * 2]) / static_cast<float>(scale_data[i * 2])));
-        uint8_t b2 = static_cast<uint8_t>(
-            std::round(-1.f * static_cast<float>(bias_data[i * 2 + 1]) / static_cast<float>(scale_data[i * 2 + 1])));
-        zp_data[i] = (b2 << 4) | (b1 & 0x0F);
-    }
-    auto zp_node = std::make_shared<ov::op::v0::Constant>(zp);
-    auto zp_f16 = std::make_shared<ov::op::v0::Convert>(zp_node, ov::element::f16);
-
-    auto scales_f16 = std::make_shared<ov::op::v0::Constant>(scales);
-
-    auto w_zp = std::make_shared<ov::op::v1::Subtract>(w_f16, zp_f16, ov::op::AutoBroadcastType::NUMPY);
-    auto w_zp_s = std::make_shared<ov::op::v1::Multiply>(w_zp, scales_f16, ov::op::AutoBroadcastType::NUMPY);
-
-    auto final_shape =
+    auto weights_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i4,
+                                               grouped_shape,
+                                               static_cast<const void*>(weight.data()),
+                                               std::shared_ptr<void>(new ov::Tensor(weight), [](ov::Tensor* p) {
+                                                   delete p;
+                                               }));
+    auto scales_node = std::make_shared<ov::op::v0::Constant>(scales);
+    auto final_shape_node =
         std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{orig_shape.size()}, orig_shape);
-    auto reshaped = std::make_shared<ov::op::v1::Reshape>(w_zp_s, final_shape, false);
-    return std::make_shared<ov::op::v0::Convert>(reshaped, ov::element::f32);
+
+    auto result = ov::decomposition::low_precision_dequantize(weights_node->output(0),
+                                                              scales_node->output(0),
+                                                              {},
+                                                              final_shape_node->output(0));
+    return std::make_shared<ov::op::v0::Convert>(result, ov::element::f32);
+}
+
+// Symmetric 8-bit (Q8_0, Q5_0, Q6_K): i8 weights (pre-centered) + per-group f16 scale.
+// No zero-point. Emits: Multiply(Convert(i8_const, f16), scale) [-> Reshape].
+std::shared_ptr<ov::Node> make_sym_int8(const std::string& name,
+                                        const std::unordered_map<std::string, ov::Tensor>& weights) {
+    ov::Tensor weight = get(weights, name + ".weight");  // i8 byte per element
+    ov::Tensor scales = get(weights, name + ".scales");
+
+    const ov::Shape& orig_shape = weight.get_shape();
+    const size_t num_groups = scales.get_shape().back();
+    const size_t group_size = orig_shape.back() / num_groups;
+
+    auto grouped_shape = grouped_weight_shape(orig_shape, num_groups, group_size);
+    auto scale_shape = per_group_shape(orig_shape, num_groups);
+    scales.set_shape(scale_shape);
+
+    auto weights_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i8,
+                                               grouped_shape,
+                                               static_cast<const void*>(weight.data()),
+                                               std::shared_ptr<void>(new ov::Tensor(weight), [](ov::Tensor* p) {
+                                                   delete p;
+                                               }));
+    auto scales_node = std::make_shared<ov::op::v0::Constant>(scales);
+    auto final_shape_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{orig_shape.size()}, orig_shape);
+
+    auto result = ov::decomposition::low_precision_dequantize(weights_node->output(0),
+                                                              scales_node->output(0),
+                                                              {},
+                                                              final_shape_node->output(0));
+    return std::make_shared<ov::op::v0::Convert>(result, ov::element::f32);
+}
+
+// 4-bit asymmetric (Q4_1/Q4_K): u4 weights + per-group f16 scale + u4 integer zero-points.
+// Emits: Multiply(Subtract(Convert(u4_const, f16), zp_u4), scale) [-> Reshape].
+std::shared_ptr<ov::Node> make_int4(const std::string& name,
+                                    const std::unordered_map<std::string, ov::Tensor>& weights) {
+    ov::Tensor weight = get(weights, name + ".weight");  // u32-packed u4
+    ov::Tensor scales = get(weights, name + ".scales");
+    ov::Tensor zp_t = get(weights, name + ".zp");  // u4 packed integer zero-points
+
+    ov::Shape orig_shape = weight.get_shape();
+    orig_shape.back() *= sizeof(uint32_t) / sizeof(uint8_t) * 2;  // u32 packs 8 u4
+    const size_t num_groups = scales.get_shape().back();
+    const size_t group_size = orig_shape.back() / num_groups;
+
+    auto grouped_shape = grouped_weight_shape(orig_shape, num_groups, group_size);
+    auto scale_shape = per_group_shape(orig_shape, num_groups);
+    scales.set_shape(scale_shape);
+    zp_t.set_shape(scale_shape);
+
+    auto weights_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::u4,
+                                               grouped_shape,
+                                               static_cast<const void*>(weight.data()),
+                                               std::shared_ptr<void>(new ov::Tensor(weight), [](ov::Tensor* p) {
+                                                   delete p;
+                                               }));
+    auto scales_node = std::make_shared<ov::op::v0::Constant>(scales);
+    auto zp_node = std::make_shared<ov::op::v0::Constant>(zp_t);
+    auto final_shape_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{orig_shape.size()}, orig_shape);
+
+    auto result = ov::decomposition::low_precision_dequantize(weights_node->output(0),
+                                                              scales_node->output(0),
+                                                              zp_node->output(0),
+                                                              final_shape_node->output(0));
+    return std::make_shared<ov::op::v0::Convert>(result, ov::element::f32);
+}
+
+// Asymmetric 8-bit (Q5_K): i8 weights (raw 5-bit value, not centered) + f16 scales + u8 zp.
+// Emits: Multiply(Subtract(Convert(i8_const, f16), zp_u8), scale) [-> Reshape].
+std::shared_ptr<ov::Node> make_asym_int8(const std::string& name,
+                                         const std::unordered_map<std::string, ov::Tensor>& weights) {
+    ov::Tensor weight = get(weights, name + ".weight");  // i8 byte per element
+    ov::Tensor scales = get(weights, name + ".scales");
+    ov::Tensor zp_t = get(weights, name + ".zp");  // u8 integer zero-points
+
+    const ov::Shape& orig_shape = weight.get_shape();
+    const size_t num_groups = scales.get_shape().back();
+    const size_t group_size = orig_shape.back() / num_groups;
+
+    auto grouped_shape = grouped_weight_shape(orig_shape, num_groups, group_size);
+    auto scale_shape = per_group_shape(orig_shape, num_groups);
+    scales.set_shape(scale_shape);
+    zp_t.set_shape(scale_shape);
+
+    auto weights_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i8,
+                                               grouped_shape,
+                                               static_cast<const void*>(weight.data()),
+                                               std::shared_ptr<void>(new ov::Tensor(weight), [](ov::Tensor* p) {
+                                                   delete p;
+                                               }));
+    auto scales_node = std::make_shared<ov::op::v0::Constant>(scales);
+    auto zp_node = std::make_shared<ov::op::v0::Constant>(zp_t);
+    auto final_shape_node =
+        std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{orig_shape.size()}, orig_shape);
+
+    auto result = ov::decomposition::low_precision_dequantize(weights_node->output(0),
+                                                              scales_node->output(0),
+                                                              zp_node->output(0),
+                                                              final_shape_node->output(0));
+    return std::make_shared<ov::op::v0::Convert>(result, ov::element::f32);
 }
 
 // MXFP4 (gpt-oss): native compressed weights = f4e2m1 weight * f8e8m0 per-32 scale, both
@@ -177,7 +221,9 @@ std::shared_ptr<ov::Node> make_mxfp4(const std::string& base,
     auto w_node = std::make_shared<ov::op::v0::Constant>(weight);
     auto w_grp = std::make_shared<ov::op::v1::Reshape>(
         w_node,
-        ov::op::v0::Constant::create(ov::element::i64, {3}, std::vector<int64_t>{(int64_t)rows, (int64_t)num_groups, (int64_t)group_size}),
+        ov::op::v0::Constant::create(ov::element::i64,
+                                     {3},
+                                     std::vector<int64_t>{(int64_t)rows, (int64_t)num_groups, (int64_t)group_size}),
         false);
     auto w_f16 = std::make_shared<ov::op::v0::Convert>(w_grp, ov::element::f16);
 
@@ -208,15 +254,19 @@ std::shared_ptr<ov::Node> make_weight_node(const std::string& base,
         node = make_mxfp4(base, weights);
         break;
     case GGUF_TYPE_Q4_0:
+        node = make_q4_0(base, weights);
+        break;
     case GGUF_TYPE_Q4_1:
     case GGUF_TYPE_Q4_K:
         node = make_int4(base, weights);
         break;
-    case GGUF_TYPE_Q5_0:  // 5-bit values stored in u8 by gguf_quants
+    case GGUF_TYPE_Q5_K:
+        node = make_asym_int8(base, weights);
+        break;
+    case GGUF_TYPE_Q5_0:
     case GGUF_TYPE_Q8_0:
-    case GGUF_TYPE_Q5_K:  // 5-bit values stored in u8 by gguf_quants
-    case GGUF_TYPE_Q6_K:  // dequantized to (u8 weight + scale + bias) by gguf_quants
-        node = make_int8(base, weights);
+    case GGUF_TYPE_Q6_K:
+        node = make_sym_int8(base, weights);
         break;
     case GGUF_TYPE_F16:
     case GGUF_TYPE_F32:
@@ -246,17 +296,19 @@ std::array<std::shared_ptr<ov::Node>, 3> make_fused_qkv_weights(
     if (auto it = qtypes.find(base + ".qtype"); it != qtypes.end()) {
         qtype = it->second;
     }
-    const bool quantized = qtype == GGUF_TYPE_Q4_0 || qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K ||
-                           qtype == GGUF_TYPE_Q8_0 || qtype == GGUF_TYPE_Q5_K || qtype == GGUF_TYPE_Q6_K;
+    const bool has_scales = qtype == GGUF_TYPE_Q4_0 || qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K ||
+                            qtype == GGUF_TYPE_Q5_0 || qtype == GGUF_TYPE_Q8_0 || qtype == GGUF_TYPE_Q5_K ||
+                            qtype == GGUF_TYPE_Q6_K;
+    // Asymmetric types have integer zero-points stored in ".zp".
+    const bool has_zp = qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K || qtype == GGUF_TYPE_Q5_K;
 
     const ov::Tensor& w = get(weights, base + ".weight");
     const size_t total_rows = w.get_shape()[0];
     OPENVINO_ASSERT(n_q + n_k + n_v == total_rows, "[ggml] fused qkv row mismatch for ", base);
 
-    // For each of q/k/v, assemble a temporary one-entry weights map holding the sliced
-    // tensors under a fresh base name, then reuse make_weight_node.
-    const std::array<std::pair<size_t, size_t>, 3> ranges = {
-        std::make_pair(size_t(0), n_q), std::make_pair(n_q, n_q + n_k), std::make_pair(n_q + n_k, total_rows)};
+    const std::array<std::pair<size_t, size_t>, 3> ranges = {std::make_pair(size_t(0), n_q),
+                                                             std::make_pair(n_q, n_q + n_k),
+                                                             std::make_pair(n_q + n_k, total_rows)};
     const std::array<std::string, 3> parts = {base + ".q", base + ".k", base + ".v"};
 
     std::array<std::shared_ptr<ov::Node>, 3> out;
@@ -265,10 +317,12 @@ std::array<std::shared_ptr<ov::Node>, 3> make_fused_qkv_weights(
         std::unordered_map<std::string, ov::Tensor> sub;
         std::unordered_map<std::string, gguf_tensor_type> subq;
         sub[parts[i] + ".weight"] = slice_rows(w, r0, r1);
-        if (quantized) {
+        if (has_scales) {
             sub[parts[i] + ".scales"] = slice_rows(get(weights, base + ".scales"), r0, r1);
-            sub[parts[i] + ".biases"] = slice_rows(get(weights, base + ".biases"), r0, r1);
             subq[parts[i] + ".qtype"] = qtype;
+        }
+        if (has_zp) {
+            sub[parts[i] + ".zp"] = slice_rows(get(weights, base + ".zp"), r0, r1);
         }
         out[i] = make_weight_node(parts[i], sub, subq);
     }

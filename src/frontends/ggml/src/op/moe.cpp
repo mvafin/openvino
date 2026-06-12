@@ -26,7 +26,9 @@
 #include <openvino/op/reshape.hpp>
 #include <openvino/op/squeeze.hpp>
 #include <openvino/op/topk.hpp>
+#include <openvino/op/transpose.hpp>
 #include <openvino/op/unsqueeze.hpp>
+#include <ov_ops/gather_matmul.hpp>
 
 #include "../node_context.hpp"
 #include "../op_table.hpp"
@@ -44,59 +46,73 @@ using namespace ov::op;
 //   b   -> [cols, n_expert_used, n_tokens]   (OV: [n_tokens, n_expert_used, cols])
 //   ids -> [n_expert_used, n_tokens] i32     (OV: [n_tokens, n_expert_used])
 //   c   -> [rows, n_expert_used, n_tokens]   (OV: [n_tokens, n_expert_used, rows])
-// Lowering: gather the per-(token,slot) expert matrix from `as` by id, then a batched
-// matmul against the corresponding column of `b`.
+//
+// Lowered to the internal ov::op::internal::GatherMatmul, which the CPU/GPU plugins execute
+// as a single optimized batched expert-matmul (and, when the expert weights are a compressed
+// Constant->Convert->[Subtract]->Multiply block, fold into GatherMatmulCompressed so the
+// weights stay compressed -- no host f32 expansion). GatherMatmul's contract:
+//   A       [n_activated, T, cols]   (n_activated == 1 broadcasts the same input to every
+//                                      selected expert; == K gives a per-slot input)
+//   B       [n_expert, rows, cols]   (transpose_b=true -> A . Bᵀ)
+//   indices [T, K] i32               (the selected expert per (token, slot))
+//   out     [K, T, rows]
+// which we reshape back to the builder's [1, T, K, rows] convention.
 OutputVector translate_mul_mat_id(const NodeContext& context) {
     num_inputs_check(context, 3, 3);
     auto as = context.get_input(0);   // expert weights, OV [n_expert, rows, cols]
     auto b = context.get_input(1);    // routed input
     auto ids = context.get_input(2);  // selected experts
 
-    if (as.get_element_type() != b.get_element_type()) {
-        as = std::make_shared<v0::Convert>(as, b.get_element_type());
-    }
-
     // Canonicalize ids to 2D [T, K] (the builder may carry leading 1-dims).
+    const auto ids_rank = static_cast<int>(ids.get_partial_shape().size());
     auto ids_2d = std::make_shared<v1::Reshape>(
         ids,
-        std::make_shared<v0::Concat>(
-            OutputVector{v0::Constant::create(element::i64, Shape{1}, {-1}),
-                         get_dimensions(ids.get_node_shared_ptr(), {static_cast<int>(ids.get_partial_shape().size()) - 1})},
-            0),
+        std::make_shared<v0::Concat>(OutputVector{v0::Constant::create(element::i64, Shape{1}, {-1}),
+                                                  get_dimensions(ids.get_node_shared_ptr(), {ids_rank - 1})},
+                                     0),
         false);  // [T, K]
-    const int64_t K = ids.get_partial_shape()[ids.get_partial_shape().size() - 1].get_length();
+    const int64_t K = ids.get_partial_shape()[ids_rank - 1].get_length();
 
-    // Gather per-(token,slot) expert matrix: [T, K, rows, cols].
-    auto experts = std::make_shared<v8::Gather>(as, ids_2d, v0::Constant::create(element::i32, Shape{}, {0}));
-
-    // Canonicalize b to [T, K, cols]: it is either [.., T, cols] (broadcast across K, e.g.
-    // gate/up from the shared norm) or [.., T, K, cols] (e.g. the down input which already
-    // has a per-expert dim). Detect by the last-but-one dim against K.
+    // Build the GatherMatmul activation A = [n_activated, T, cols].
+    //   gate/up: b is [.., T, cols] (one shared input fanned out to all experts) -> A = [1, T, cols]
+    //   down   : b is [.., T, K, cols] (already per-slot)                         -> A = [K, T, cols]
     const auto& bps = b.get_partial_shape();
     const int64_t cols = bps[bps.size() - 1].get_length();
-    Output<Node> b_ck;
-    bool has_k = K > 1 && bps.size() >= 2 && bps[bps.size() - 2].is_static() &&
-                 bps[bps.size() - 2].get_length() == K;
+    const bool has_k =
+        K > 1 && bps.size() >= 2 && bps[bps.size() - 2].is_static() && bps[bps.size() - 2].get_length() == K;
+    Output<Node> a;
     if (has_k) {
-        // [.., T, K, cols] -> [T, K, cols]
-        b_ck = std::make_shared<v1::Reshape>(
-            b, v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{-1, K, cols}), false);
+        // [.., T, K, cols] -> [T, K, cols] -> transpose to [K, T, cols]
+        auto b_tkc = std::make_shared<v1::Reshape>(
+            b,
+            v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{-1, K, cols}),
+            false);
+        a = std::make_shared<v1::Transpose>(
+            b_tkc,
+            v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{1, 0, 2}));
     } else {
-        // [.., T, cols] -> [T, 1, cols] -> broadcast to [T, K, cols]
-        auto b_t1 = std::make_shared<v1::Reshape>(
-            b, v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{-1, 1, cols}), false);
-        auto tgt = std::make_shared<v0::Concat>(
-            OutputVector{get_dimensions(b_t1, {0}), v0::Constant::create(element::i64, Shape{1}, {K}),
-                         v0::Constant::create(element::i64, Shape{1}, {cols})},
-            0);
-        b_ck = std::make_shared<v3::Broadcast>(b_t1, tgt, ov::op::BroadcastType::BIDIRECTIONAL);
+        // [.., T, cols] -> [1, T, cols]; n_activated == 1 lets GatherMatmul broadcast it to
+        // each selected expert.
+        a = std::make_shared<v1::Reshape>(
+            b,
+            v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{1, -1, cols}),
+            false);
     }
 
-    // [T,K,rows,cols] @ [T,K,cols,1] -> [T,K,rows,1] -> squeeze -> [T,K,rows] -> [1,T,K,rows].
-    auto b_col = std::make_shared<v0::Unsqueeze>(b_ck, v0::Constant::create(element::i64, Shape{1}, {-1}));
-    auto mm = std::make_shared<v0::MatMul>(experts, b_col, false, false);
-    auto sq = std::make_shared<v0::Squeeze>(mm, v0::Constant::create(element::i64, Shape{1}, {-1}));
-    auto res = std::make_shared<v0::Unsqueeze>(sq, v0::Constant::create(element::i64, Shape{1}, {0}));
+    // B must be a 3D [n_expert, rows, cols] tensor. `as` already has this layout; keep it in
+    // its (possibly compressed) precision so ConvertGatherMatmulToGatherMatmulCompressed can
+    // pick up the decompression subgraph and keep the weights compressed.
+    auto gmm = std::make_shared<ov::op::internal::GatherMatmul>(a, as, ids_2d);  // [K, T, rows]
+
+    // [K, T, rows] -> [1, T, K, rows] (builder convention).
+    const int64_t rows = as.get_partial_shape()[as.get_partial_shape().size() - 2].get_length();
+    auto kt2tk = std::make_shared<v1::Transpose>(
+        gmm,
+        v0::Constant::create(element::i64, Shape{3}, std::vector<int64_t>{1, 0, 2}));  // [T, K, rows]
+    auto res = std::make_shared<v1::Reshape>(
+        kt2tk,
+        v0::Constant::create(element::i64, Shape{4}, std::vector<int64_t>{1, -1, K, rows}),
+        false);
     return rename_outputs_with_suffix({res}, context.get_name());
 }
 
@@ -112,8 +128,10 @@ OutputVector translate_add_id(const NodeContext& context) {
     // Canonicalize ids to 2D [T, K] so the gather adds exactly a [T, K, n] tensor (matching
     // a's [1, T, K, n] after a leading unsqueeze), not an extra ids-rank dim.
     const int64_t K = ids.get_partial_shape()[ids.get_partial_shape().size() - 1].get_length();
-    auto ids_2d = std::make_shared<v1::Reshape>(
-        ids, v0::Constant::create(element::i64, Shape{2}, std::vector<int64_t>{-1, K}), false);  // [T, K]
+    auto ids_2d =
+        std::make_shared<v1::Reshape>(ids,
+                                      v0::Constant::create(element::i64, Shape{2}, std::vector<int64_t>{-1, K}),
+                                      false);  // [T, K]
     ov::Output<ov::Node> b_gathered =
         std::make_shared<v8::Gather>(b, ids_2d, v0::Constant::create(element::i32, Shape{}, {0}));  // [T, K, n]
     if (b_gathered.get_element_type() != a.get_element_type()) {

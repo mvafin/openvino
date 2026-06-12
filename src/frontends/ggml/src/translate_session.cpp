@@ -9,16 +9,16 @@
 #include <openvino/core/preprocess/pre_post_process.hpp>
 #include <openvino/core/rt_info.hpp>
 #include <openvino/op/add.hpp>
+#include <openvino/op/assign.hpp>
 #include <openvino/op/broadcast.hpp>
 #include <openvino/op/concat.hpp>
+#include <openvino/op/constant.hpp>
 #include <openvino/op/convert.hpp>
 #include <openvino/op/convert_like.hpp>
 #include <openvino/op/cos.hpp>
 #include <openvino/op/divide.hpp>
 #include <openvino/op/gather.hpp>
 #include <openvino/op/multiply.hpp>
-#include <openvino/op/assign.hpp>
-#include <openvino/op/constant.hpp>
 #include <openvino/op/parameter.hpp>
 #include <openvino/op/range.hpp>
 #include <openvino/op/read_value.hpp>
@@ -315,8 +315,12 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     // optimization patterns and the overhead is negligible.
     size_t offset = 0;
     for (auto& node : resulting_model->get_ordered_ops()) {
+        // Guard against zero-sized element types (e.g. the element::dynamic empty Constant
+        // used as the optional-bias placeholder on GatherMatmul) -- size() is 0 for those and
+        // the division below would be a divide-by-zero.
         if (auto cnst = ov::as_type_ptr<ov::op::v0::Constant>(node);
-            cnst && cnst->get_byte_size() / cnst->get_element_type().size() >= 16) {
+            cnst && cnst->get_element_type().size() > 0 &&
+            cnst->get_byte_size() / cnst->get_element_type().size() >= 16) {
             auto& rt_info = cnst->get_rt_info();
             if (rt_info.find(ov::WeightlessCacheAttribute::get_type_info_static()) == rt_info.end()) {
                 rt_info[ov::WeightlessCacheAttribute::get_type_info_static()] =

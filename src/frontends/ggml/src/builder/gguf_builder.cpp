@@ -33,8 +33,8 @@
 #include <memory>
 #include <set>
 
-#include "gguf.hpp"
 #include "ggml_graph.hpp"
+#include "gguf.hpp"
 #include "openvino/core/except.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
@@ -67,10 +67,10 @@ class TransformerBuilder {
 public:
     TransformerBuilder(const std::map<std::string, GGUFMetaData>& config,
                        std::unordered_map<std::string, ov::Tensor>& weights,
-                       std::unordered_map<std::string, gguf_tensor_type>& qtypes) :
-        m_config(config),
-        m_weights(weights),
-        m_qtypes(qtypes) {
+                       std::unordered_map<std::string, gguf_tensor_type>& qtypes)
+        : m_config(config),
+          m_weights(weights),
+          m_qtypes(qtypes) {
         m_graph = std::make_shared<GgmlGraph>();
         m_graph->is_static = false;
         m_graph->is_stateful = true;
@@ -93,16 +93,16 @@ public:
         m_is_moe = m_weights.count("blk.0.ffn_gate_exps.weight") > 0;
         m_n_expert = cfg_int("expert_count");
         m_n_expert_used = cfg_int("expert_used_count");
-        m_has_moe_gate_bias = m_weights.count("blk.0.ffn_gate_inp.bias") > 0;       // gpt-oss
-        m_has_moe_expert_bias = m_weights.count("blk.0.ffn_gate_exps.bias") > 0;    // gpt-oss
-        m_has_sinks = m_weights.count("blk.0.attn_sinks.weight") > 0;               // gpt-oss
+        m_has_moe_gate_bias = m_weights.count("blk.0.ffn_gate_inp.bias") > 0;     // gpt-oss
+        m_has_moe_expert_bias = m_weights.count("blk.0.ffn_gate_exps.bias") > 0;  // gpt-oss
+        m_has_sinks = m_weights.count("blk.0.attn_sinks.weight") > 0;             // gpt-oss
         // gpt-oss uses "softmax-after-topk" gating + the OAI gated activation; OLMoE uses
         // softmax-before-topk + plain SwiGLU. Detect gpt-oss by its OAI swiglu marker
         // (gate_inp bias is gpt-oss-specific here).
         const std::string arch0 = std::get<std::string>(config.at("architecture"));
         m_moe_swiglu_oai = (arch0 == "gpt-oss");
         m_moe_softmax_weight = (arch0 == "gpt-oss");
-        m_has_swa = (arch0 == "gpt-oss");  // even layers use sliding-window attention
+        m_has_swa = (arch0 == "gpt-oss");                                // even layers use sliding-window attention
         m_has_fused_qkv = m_weights.count("blk.0.attn_qkv.weight") > 0;  // phi-3, minicpm
         m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0 || m_weights.count("blk.0.attn_qkv.bias") > 0;
         m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
@@ -243,18 +243,27 @@ private:
         std::string glu;
         if (fused_ffn) {
             const int up2 = static_cast<int>(m_weights.at(p + "ffn_up.weight").get_shape()[0]);  // 2*n_ff
-            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
-                             ps({1, 1, T, up2}), f32);
-            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {up}, ps({1, 1, T, up2 / 2}), f32, 0,
+            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm}, ps({1, 1, T, up2}), f32);
+            glu = add_op("GGML_GLU_OP_SWIGLU",
+                         p + "ffn_swiglu",
+                         {up},
+                         ps({1, 1, T, up2 / 2}),
+                         f32,
+                         0,
                          {{"swapped", false}});
         } else {
             add_weight(p + "ffn_gate.weight");
             const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate.weight").get_shape()[0]);
-            auto gate = add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm},
-                               ps({1, 1, T, n_ff}), f32);
-            auto up = add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm},
-                             ps({1, 1, T, n_ff}), f32);
-            glu = add_op("GGML_GLU_OP_SWIGLU", p + "ffn_swiglu", {gate, up}, ps({1, 1, T, n_ff}), f32, 0,
+            auto gate =
+                add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm}, ps({1, 1, T, n_ff}), f32);
+            auto up =
+                add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm}, ps({1, 1, T, n_ff}), f32);
+            glu = add_op("GGML_GLU_OP_SWIGLU",
+                         p + "ffn_swiglu",
+                         {gate, up},
+                         ps({1, 1, T, n_ff}),
+                         f32,
+                         0,
                          {{"swapped", false}});
         }
         return add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu}, ps({1, 1, T, m_n_embd}), f32);
@@ -270,8 +279,8 @@ private:
 
         // --- router: logits [1,1,T,E] = gate_inp · x ---
         add_weight(p + "ffn_gate_inp.weight");
-        auto logits = add_op("GGML_OP_MUL_MAT", p + "moe_logits", {p + "ffn_gate_inp.weight", ffn_norm},
-                             ps({1, 1, T, E}), f32);
+        auto logits =
+            add_op("GGML_OP_MUL_MAT", p + "moe_logits", {p + "ffn_gate_inp.weight", ffn_norm}, ps({1, 1, T, E}), f32);
         if (m_has_moe_gate_bias) {
             logits = add_bias(logits, p + "ffn_gate_inp.bias", p + "moe_logits_b");
         }
@@ -279,7 +288,12 @@ private:
         // gating: softmax (OLMoE) or softmax-after-topk (gpt-oss "softmax_weight").
         std::string probs = logits;
         if (!m_moe_softmax_weight) {
-            probs = add_op("GGML_OP_SOFT_MAX", p + "moe_probs", {logits}, ps({1, 1, T, E}), f32, 0,
+            probs = add_op("GGML_OP_SOFT_MAX",
+                           p + "moe_probs",
+                           {logits},
+                           ps({1, 1, T, E}),
+                           f32,
+                           0,
                            {{"softmax_axis", int64_t(-1)}});
         }
 
@@ -290,7 +304,12 @@ private:
         // [1,T,K,1] (robust to dynamic T). gpt-oss softmaxes over the K (expert) axis.
         auto weights = add_op("GGML_OP_GET_ROWS", p + "moe_w", {probs, selected}, ps({1, T, K, 1}), f32, 10);
         if (m_moe_softmax_weight) {
-            weights = add_op("GGML_OP_SOFT_MAX", p + "moe_w_sm", {weights}, ps({1, T, K, 1}), f32, 0,
+            weights = add_op("GGML_OP_SOFT_MAX",
+                             p + "moe_w_sm",
+                             {weights},
+                             ps({1, T, K, 1}),
+                             f32,
+                             0,
                              {{"softmax_axis", int64_t(2)}});
         }
 
@@ -301,33 +320,62 @@ private:
         add_weight(p + "ffn_up_exps.weight");
         add_weight(p + "ffn_down_exps.weight");
         const bool eb = m_has_moe_expert_bias;
-        auto up = add_op("GGML_OP_MUL_MAT_ID", p + "moe_up", {p + "ffn_up_exps.weight", ffn_norm, selected},
-                         ps({1, T, K, n_ff}), f32);
+        auto up = add_op("GGML_OP_MUL_MAT_ID",
+                         p + "moe_up",
+                         {p + "ffn_up_exps.weight", ffn_norm, selected},
+                         ps({1, T, K, n_ff}),
+                         f32);
         if (eb) {
             add_named_weight(p + "ffn_up_exps.bias");
-            up = add_op("GGML_OP_ADD_ID", p + "moe_up_b", {up, p + "ffn_up_exps.bias", selected}, ps({1, T, K, n_ff}), f32);
+            up = add_op("GGML_OP_ADD_ID",
+                        p + "moe_up_b",
+                        {up, p + "ffn_up_exps.bias", selected},
+                        ps({1, T, K, n_ff}),
+                        f32);
         }
-        auto gate = add_op("GGML_OP_MUL_MAT_ID", p + "moe_gate", {p + "ffn_gate_exps.weight", ffn_norm, selected},
-                           ps({1, T, K, n_ff}), f32);
+        auto gate = add_op("GGML_OP_MUL_MAT_ID",
+                           p + "moe_gate",
+                           {p + "ffn_gate_exps.weight", ffn_norm, selected},
+                           ps({1, T, K, n_ff}),
+                           f32);
         if (eb) {
             add_named_weight(p + "ffn_gate_exps.bias");
-            gate = add_op("GGML_OP_ADD_ID", p + "moe_gate_b", {gate, p + "ffn_gate_exps.bias", selected},
-                          ps({1, T, K, n_ff}), f32);
+            gate = add_op("GGML_OP_ADD_ID",
+                          p + "moe_gate_b",
+                          {gate, p + "ffn_gate_exps.bias", selected},
+                          ps({1, T, K, n_ff}),
+                          f32);
         }
         std::string act;
         if (m_moe_swiglu_oai) {
-            act = add_op("GGML_GLU_OP_SWIGLU_OAI", p + "moe_act", {gate, up}, ps({1, T, K, n_ff}), f32, 0,
+            act = add_op("GGML_GLU_OP_SWIGLU_OAI",
+                         p + "moe_act",
+                         {gate, up},
+                         ps({1, T, K, n_ff}),
+                         f32,
+                         0,
                          {{"swapped", false}, {"alpha", 1.702f}, {"limit", 7.0f}});
         } else {
-            act = add_op("GGML_GLU_OP_SWIGLU", p + "moe_act", {gate, up}, ps({1, T, K, n_ff}), f32, 0,
+            act = add_op("GGML_GLU_OP_SWIGLU",
+                         p + "moe_act",
+                         {gate, up},
+                         ps({1, T, K, n_ff}),
+                         f32,
+                         0,
                          {{"swapped", false}});
         }
-        auto experts = add_op("GGML_OP_MUL_MAT_ID", p + "moe_down", {p + "ffn_down_exps.weight", act, selected},
-                              ps({1, T, K, m_n_embd}), f32);
+        auto experts = add_op("GGML_OP_MUL_MAT_ID",
+                              p + "moe_down",
+                              {p + "ffn_down_exps.weight", act, selected},
+                              ps({1, T, K, m_n_embd}),
+                              f32);
         if (eb) {
             add_named_weight(p + "ffn_down_exps.bias");
-            experts = add_op("GGML_OP_ADD_ID", p + "moe_down_b", {experts, p + "ffn_down_exps.bias", selected},
-                             ps({1, T, K, m_n_embd}), f32);
+            experts = add_op("GGML_OP_ADD_ID",
+                             p + "moe_down_b",
+                             {experts, p + "ffn_down_exps.bias", selected},
+                             ps({1, T, K, m_n_embd}),
+                             f32);
         }
 
         // Weighted sum over the K selected experts. weights is [1,T,K,1] (per-expert col).
@@ -387,7 +435,12 @@ private:
 
     // Scale a tensor by a constant: GGML_OP_SCALE with attr "scale" (and bias 0).
     std::string scale(const std::string& x, float factor, const std::string& name) {
-        return add_op("GGML_OP_SCALE", name, {x}, m_tensor_shapes.at(x), ov::element::f32, 0,
+        return add_op("GGML_OP_SCALE",
+                      name,
+                      {x},
+                      m_tensor_shapes.at(x),
+                      ov::element::f32,
+                      0,
                       {{"scale", factor}, {"bias", 0.0f}});
     }
 
@@ -459,11 +512,8 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
     // ---- Embedding: GET_ROWS(token_embd.weight, inp_tokens) -> "embd" ----
     add_weight("token_embd.weight");
     m_tensor_shapes["inp_tokens"] = ps({1, 1, 1, T});
-    std::string cur = add_op("GGML_OP_GET_ROWS",
-                             "embd",
-                             {"token_embd.weight", "inp_tokens"},
-                             ps({1, 1, T, m_n_embd}),
-                             f32);
+    std::string cur =
+        add_op("GGML_OP_GET_ROWS", "embd", {"token_embd.weight", "inp_tokens"}, ps({1, 1, T, m_n_embd}), f32);
     // MiniCPM scales the embeddings by a constant.
     if (m_embedding_scale != 1.0f) {
         cur = scale(cur, m_embedding_scale, "embd_scaled");
@@ -494,12 +544,21 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
             add_weight(p + "attn_k.weight");
             add_weight(p + "attn_v.weight");
         }
-        auto q = add_op("GGML_OP_MUL_MAT", p + "Qcur", {p + "attn_q.weight", attn_norm},
-                        ps({1, 1, T, m_head_size * m_n_head}), f32);
-        auto k = add_op("GGML_OP_MUL_MAT", p + "Kcur", {p + "attn_k.weight", attn_norm},
-                        ps({1, 1, T, m_head_size * m_n_head_kv}), f32);
-        auto v = add_op("GGML_OP_MUL_MAT", p + "Vcur", {p + "attn_v.weight", attn_norm},
-                        ps({1, 1, T, m_head_size * m_n_head_kv}), f32);
+        auto q = add_op("GGML_OP_MUL_MAT",
+                        p + "Qcur",
+                        {p + "attn_q.weight", attn_norm},
+                        ps({1, 1, T, m_head_size * m_n_head}),
+                        f32);
+        auto k = add_op("GGML_OP_MUL_MAT",
+                        p + "Kcur",
+                        {p + "attn_k.weight", attn_norm},
+                        ps({1, 1, T, m_head_size * m_n_head_kv}),
+                        f32);
+        auto v = add_op("GGML_OP_MUL_MAT",
+                        p + "Vcur",
+                        {p + "attn_v.weight", attn_norm},
+                        ps({1, 1, T, m_head_size * m_n_head_kv}),
+                        f32);
 
         // Q/K/V projection biases (qwen2 / qwen2.5: separate attn_{q,k,v}.bias).
         if (m_has_qkv_bias && !m_has_fused_qkv) {
@@ -526,16 +585,26 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         }
 
         // RoPE (NEOX). rope_freqs.weight is passed as the optional 3rd input when present.
-        const std::vector<std::string> q_rope_in =
-            m_has_rope_freqs ? std::vector<std::string>{q, "inp_pos", "rope_freqs.weight"}
-                             : std::vector<std::string>{q, "inp_pos"};
-        const std::vector<std::string> k_rope_in =
-            m_has_rope_freqs ? std::vector<std::string>{k, "inp_pos", "rope_freqs.weight"}
-                             : std::vector<std::string>{k, "inp_pos"};
-        q = add_op("GGML_OP_ROPE", p + "Qcur_rope", q_rope_in, ps({1, T, m_n_head, m_head_size}), f32,
-                   m_rope_op_case, {{"rope_config", m_graph->rope_config}});
-        k = add_op("GGML_OP_ROPE", p + "Kcur_rope", k_rope_in, ps({1, T, m_n_head_kv, m_head_size}), f32,
-                   m_rope_op_case, {{"rope_config", m_graph->rope_config}});
+        const std::vector<std::string> q_rope_in = m_has_rope_freqs
+                                                       ? std::vector<std::string>{q, "inp_pos", "rope_freqs.weight"}
+                                                       : std::vector<std::string>{q, "inp_pos"};
+        const std::vector<std::string> k_rope_in = m_has_rope_freqs
+                                                       ? std::vector<std::string>{k, "inp_pos", "rope_freqs.weight"}
+                                                       : std::vector<std::string>{k, "inp_pos"};
+        q = add_op("GGML_OP_ROPE",
+                   p + "Qcur_rope",
+                   q_rope_in,
+                   ps({1, T, m_n_head, m_head_size}),
+                   f32,
+                   m_rope_op_case,
+                   {{"rope_config", m_graph->rope_config}});
+        k = add_op("GGML_OP_ROPE",
+                   p + "Kcur_rope",
+                   k_rope_in,
+                   ps({1, T, m_n_head_kv, m_head_size}),
+                   f32,
+                   m_rope_op_case,
+                   {{"rope_config", m_graph->rope_config}});
 
         // ---- KV cache store (stateful) ----
         // Per-layer f16 KV caches, converted to ReadValue/Assign by MakeStateful. The
@@ -557,10 +626,16 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         // concatenates the new K/V onto the cache. The node's OUTPUT is named after the
         // cache tensor (cache_k_l<il>) -- matching the cgraph, where SET_ROWS updates the
         // view_src in place -- so MakeStateful can pair the cache Parameter with this Result.
-        k = add_op("GGML_OP_SET_ROWS", kc, {k, "inp_kv_idx", kc},
-                   ps({1, T, m_n_head_kv, m_head_size}), ov::element::f16);
-        v = add_op("GGML_OP_SET_ROWS", vc, {v, "inp_kv_idx", vc},
-                   ps({1, T, m_n_head_kv, m_head_size}), ov::element::f16);
+        k = add_op("GGML_OP_SET_ROWS",
+                   kc,
+                   {k, "inp_kv_idx", kc},
+                   ps({1, T, m_n_head_kv, m_head_size}),
+                   ov::element::f16);
+        v = add_op("GGML_OP_SET_ROWS",
+                   vc,
+                   {v, "inp_kv_idx", vc},
+                   ps({1, T, m_n_head_kv, m_head_size}),
+                   ov::element::f16);
         // These combined caches are model outputs so they become Results that MakeStateful
         // converts into Assign sinks paired with the cache ReadValues.
         m_graph->model_output_names.push_back(kc);
@@ -582,17 +657,25 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
             add_named_weight(p + "attn_sinks.weight");
             attn_in.push_back(p + "attn_sinks.weight");
         }
-        auto attn = add_op("GGML_OP_FLASH_ATTN_EXT", p + "kqv", attn_in,
-                           ps({1, T, m_n_head, m_head_size}), f32, 0, {{"scale", kq_scale}});
+        auto attn = add_op("GGML_OP_FLASH_ATTN_EXT",
+                           p + "kqv",
+                           attn_in,
+                           ps({1, T, m_n_head, m_head_size}),
+                           f32,
+                           0,
+                           {{"scale", kq_scale}});
 
         // reshape back to [1, 1, n_tokens, n_head*head_size]
-        auto attn_2d = add_op("GGML_OP_RESHAPE", p + "kqv_merged", {attn},
-                              ps({1, 1, T, m_n_head * m_head_size}), f32, 2);
+        auto attn_2d =
+            add_op("GGML_OP_RESHAPE", p + "kqv_merged", {attn}, ps({1, 1, T, m_n_head * m_head_size}), f32, 2);
 
         // output projection (+ optional bias)
         add_weight(p + "attn_output.weight");
-        auto attn_out = add_op("GGML_OP_MUL_MAT", p + "attn_out", {p + "attn_output.weight", attn_2d},
-                               ps({1, 1, T, m_n_embd}), f32);
+        auto attn_out = add_op("GGML_OP_MUL_MAT",
+                               p + "attn_out",
+                               {p + "attn_output.weight", attn_2d},
+                               ps({1, 1, T, m_n_embd}),
+                               f32);
         if (m_has_attn_out_bias) {
             attn_out = add_bias(attn_out, p + "attn_output.bias", p + "attn_out_b");
         }
@@ -604,18 +687,17 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
         std::string sa = inpSA;
         std::string ao = attn_out;
         if (il == m_n_layer - 1) {
-            ao = add_op("GGML_OP_GET_ROWS", p + "attn_out_g", {attn_out, "inp_out_ids"},
-                        ps({1, 1, T, m_n_embd}), f32);
-            sa = add_op("GGML_OP_GET_ROWS", p + "inpSA_g", {inpSA, "inp_out_ids"},
-                        ps({1, 1, T, m_n_embd}), f32);
+            ao = add_op("GGML_OP_GET_ROWS", p + "attn_out_g", {attn_out, "inp_out_ids"}, ps({1, 1, T, m_n_embd}), f32);
+            sa = add_op("GGML_OP_GET_ROWS", p + "inpSA_g", {inpSA, "inp_out_ids"}, ps({1, 1, T, m_n_embd}), f32);
         }
 
         auto ffn_inp = add_op("GGML_OP_ADD", p + "ffn_inp", {ao, sa}, ps({1, 1, T, m_n_embd}), f32);
 
         // ffn_norm
         // Pre-FFN/MoE norm. gpt-oss names it post_attention_norm; others use ffn_norm.
-        const std::string ffn_norm_w =
-            m_weights.count(p + "post_attention_norm.weight") ? p + "post_attention_norm.weight" : p + "ffn_norm.weight";
+        const std::string ffn_norm_w = m_weights.count(p + "post_attention_norm.weight")
+                                           ? p + "post_attention_norm.weight"
+                                           : p + "ffn_norm.weight";
         auto ffn_norm = rms_norm(ffn_inp, ffn_norm_w, p + "ffn_norm");
 
         std::string down = m_is_moe ? build_moe_ffn(p, ffn_norm, T) : build_dense_ffn(p, ffn_norm, T);
@@ -633,8 +715,7 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
     const std::string lm_head_w = m_weights.count("output.weight") ? "output.weight" : "token_embd.weight";
     add_weight(lm_head_w);
     const int n_vocab = static_cast<int>(m_weights.at(lm_head_w).get_shape()[0]);  // rows = vocab
-    auto logits = add_op("GGML_OP_MUL_MAT", "result_output", {lm_head_w, cur},
-                         ps({1, 1, T, n_vocab}), f32);
+    auto logits = add_op("GGML_OP_MUL_MAT", "result_output", {lm_head_w, cur}, ps({1, 1, T, n_vocab}), f32);
     // MiniCPM scales the logits (1/(n_embd/dim_model_base)).
     if (m_logit_scale != 1.0f) {
         logits = scale(logits, m_logit_scale, "result_output_scaled");
@@ -652,10 +733,10 @@ std::shared_ptr<GgmlGraph> TransformerBuilder::build() {
 // Adding a same-family architecture is just adding its GGUF architecture name here.
 const std::set<std::string>& supported_archs() {
     static const std::set<std::string> archs = {
-        "llama",    // llama-2 / llama-3
-        "qwen2",    // qwen2 / qwen2.5
+        "llama",  // llama-2 / llama-3
+        "qwen2",  // qwen2 / qwen2.5
         "qwen3",
-        "phi3",     // phi-3
+        "phi3",  // phi-3
         "minicpm",
         "hunyuan-dense",
         "olmoe",    // MoE
@@ -665,7 +746,7 @@ const std::set<std::string>& supported_archs() {
 }
 
 std::shared_ptr<GgmlGraph> build_ggml_graph_from_gguf(const std::string& file) {
-    auto [metadata, weights, qtypes] = get_gguf_data(file);
+    auto [metadata, weights, qtypes, mmap, quant_buf] = get_gguf_data(file);
     auto config = config_from_meta(metadata);
 
     const std::string arch = std::get<std::string>(config.at("architecture"));

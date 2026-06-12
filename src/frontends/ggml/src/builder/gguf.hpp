@@ -12,7 +12,10 @@
 #include <vector>
 
 #include "openvino/core/type/element_type_traits.hpp"
+#include "openvino/runtime/aligned_buffer.hpp"
+#include "openvino/runtime/shared_buffer.hpp"
 #include "openvino/runtime/tensor.hpp"
+#include "openvino/util/mmap_object.hpp"
 
 namespace ov {
 namespace frontend {
@@ -85,9 +88,15 @@ struct gguf_tensor {
 using GGUFMetaData =
     std::variant<std::monostate, float, int, ov::Tensor, std::string, std::vector<std::string>, std::vector<int32_t>>;
 
+// GGUFLoad result: (metadata, tensor arrays, qtype map, mmap, quant_buf).
+// - mmap: must stay alive while arrays tensors are used (non-quantized tensors are mmap views).
+// - quant_buf: single AlignedBuffer holding all repacked quantized weight/scale/bias data;
+//   tensors in `arrays` for quantized weights are SharedBuffer slices into this buffer.
 using GGUFLoad = std::tuple<std::unordered_map<std::string, GGUFMetaData>,
                             std::unordered_map<std::string, ov::Tensor>,
-                            std::unordered_map<std::string, gguf_tensor_type>>;
+                            std::unordered_map<std::string, gguf_tensor_type>,
+                            std::shared_ptr<ov::MappedMemory>,
+                            std::shared_ptr<ov::AlignedBuffer>>;
 
 // printf-style string formatter used for building tensor names.
 template <typename... Args>
@@ -96,23 +105,25 @@ std::string format(std::string fmt, Args... args);
 // Reverse of the GGML dimension order (GGUF stores dims fastest-first).
 ov::Shape get_shape(const gguf_tensor& tensor);
 
-// Dequantize a quantized tensor (Q4_0/Q4_1/Q8_0/Q4_K/Q5_K/Q6_K) into OpenVINO layout
-// (u32-packed weights + f16 scales + f16 biases) and insert into `a`/`qtype_map`.
-void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,
-                         std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
-                         const gguf_tensor& tensor);
+// Fill pre-allocated i4 weights (u32-packed, XORed for i4 sign) and f16 scales from a
+// Q4_0 tensor. No bias: Q4_0 is symmetric (zp = -8*scale is implicit, not stored).
+void gguf_fill_q4_0(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales);
 
-// Load an MXFP4 tensor into the native OpenVINO compressed layout (NOT dequantized): a
-// f4e2m1 weight tensor + an f8e8m0 per-32-group scale tensor, inserted into `a` as
-// "<base>.weight" and "<base>.scales". The CPU plugin executes the f4e2m1*f8e8m0
-// decompression natively. Deinterleaves the on-disk block layout into natural order.
-void gguf_load_mxfp4(std::unordered_map<std::string, ov::Tensor>& a,
-                     std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
-                     const gguf_tensor& tensor);
+// Fill pre-allocated i8 weights and f16 scales from a symmetric GGUF tensor (Q8_0/Q5_0/Q6_K).
+// No zero-point: the center value is subtracted during unpacking so weights are centered at 0.
+void gguf_fill_sym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales);
 
-// Parse a GGUF file: returns (metadata, tensors-by-ggml-name, per-tensor qtype). Tensor
-// names are the raw GGUF names (e.g. "blk.0.attn_q.weight", "token_embd.weight").
-// Quantized tensors are dequantized to (.weight + .scales + .biases) entries.
+// Fill pre-allocated weights, f16 scales, and integer zero-points from an asymmetric GGUF
+// tensor (Q4_1: u4 zp; Q4_K: u4 zp; Q5_K: u8 zp). Tensor shapes must match quant_sizes.
+void gguf_fill_asym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales, ov::Tensor& zp);
+
+// Fill pre-allocated f4e2m1 weights and f8e8m0 scales from an MXFP4 GGUF tensor.
+void gguf_fill_mxfp4(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales);
+
+// Parse a GGUF file: returns (metadata, tensors-by-ggml-name, qtype map, mmap, quant_buf).
+// Non-quantized tensors are zero-copy views into the mmap (mmap must outlive arrays use).
+// Quantized tensors are SharedBuffer slices of a single AlignedBuffer (quant_buf) so all
+// repacked weight/scale/bias data lives in one allocation (IR-frontend pattern).
 GGUFLoad get_gguf_data(const std::string& file);
 
 // Extract the architecture config (architecture, layer_num, head_num, head_size,

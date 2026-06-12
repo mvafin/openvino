@@ -49,6 +49,7 @@
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/util/attr_types.hpp"
 #include "ov_ops/gather_compressed.hpp"
+#include "ov_ops/gather_matmul.hpp"
 
 // Common transformations
 #include "openvino/pass/constant_folding.hpp"
@@ -306,29 +307,34 @@ bool Transformations::is_decompression_multiply(const_node_ptr& node) {
         });
     };
 
+    // A decompression Multiply may feed a MatMul / Convolution directly, or an internal
+    // GatherMatmul (the batched expert-matmul used for MoE blocks, which keeps its weights
+    // compressed via GatherMatmulCompressed) -- treat all three as decompression consumers.
+    auto is_matmul_like = [&](const std::set<ov::Input<ov::Node>>& consumers) {
+        return all_has_type(consumers, ov::op::v0::MatMul::get_type_info_static()) ||
+               all_has_type(consumers, ov::op::v1::Convolution::get_type_info_static()) ||
+               all_has_type(consumers, ov::op::internal::GatherMatmul::get_type_info_static());
+    };
+
     const auto consumers = node->get_output_target_inputs(0);
-    if (all_has_type(consumers, ov::op::v0::MatMul::get_type_info_static()) ||
-        all_has_type(consumers, ov::op::v1::Convolution::get_type_info_static())) {
+    if (is_matmul_like(consumers)) {
         return true;
     }
 
-    auto are_converts_from_decompression = [&all_has_type](const std::set<ov::Input<ov::Node>>& consumers) {
+    auto are_converts_from_decompression = [&](const std::set<ov::Input<ov::Node>>& consumers) {
         if (!all_has_type(consumers, ov::op::v0::Convert::get_type_info_static())) {
             return false;
         }
-        return std::all_of(consumers.begin(), consumers.end(), [&all_has_type](const ov::Input<ov::Node>& consumer) {
+        return std::all_of(consumers.begin(), consumers.end(), [&](const ov::Input<ov::Node>& consumer) {
             const auto child_consumers = consumer.get_node()->get_output_target_inputs(0);
-            return all_has_type(child_consumers, ov::op::v0::MatMul::get_type_info_static()) ||
-                   all_has_type(child_consumers, ov::op::v1::Convolution::get_type_info_static());
+            return is_matmul_like(child_consumers);
         });
     };
 
     if (all_has_type(consumers, ov::op::v1::Reshape::get_type_info_static())) {
         for (const auto& consumer : consumers) {
             const auto child_consumers = consumer.get_node()->get_output_target_inputs(0);
-            if (all_has_type(child_consumers, ov::op::v0::MatMul::get_type_info_static()) ||
-                all_has_type(child_consumers, ov::op::v1::Convolution::get_type_info_static()) ||
-                are_converts_from_decompression(child_consumers)) {
+            if (is_matmul_like(child_consumers) || are_converts_from_decompression(child_consumers)) {
                 return true;
             }
         }

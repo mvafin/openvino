@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -31,95 +33,64 @@ void unpack_32_4(const uint8_t* data, uint8_t* dst) {
     }
 }
 
-// Extracts (weight, scales, biases) from Q4_0 tensors.
-// Data layout is: |16 bit scale|32 x 4bit weights|.
-void extract_q4_0_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
-    const uint64_t bytes_per_block = 18;  // 2 bytes scale, 32x0.5 byte weights
+// Q4_1 asymmetric: block = |f16 scale|f16 min|32x4bit weights|.
+// Weights are u4 [0..15]; min encodes the zero-point as zp = round(-min / scale).
+// Outputs u32-packed u4 weights + f16 scales + u4 zero-points (one per block).
+void fill_q4_1(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
+    const uint64_t bytes_per_block = 20;  // 2 bytes scale, 2 bytes min, 32x0.5 byte weights
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<uint8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-
-    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
-        scales[i] = ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block)));
-        biases[i] = ov::float16(-8.f * static_cast<float>(scales[i]));
-        unpack_32_4(data + i * bytes_per_block + 2, weights + i * 16);
-    });
-}
-
-// Extracts (weight, scales, biases) from Q4_1 tensors.
-// Data layout is: |16 bit scale|16 bit bias|32 x 4bit weights|.
-void extract_q4_1_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
-    const uint64_t bytes_per_block = 20;  // 2 bytes scale, 2 bytes bias, 32x0.5 byte weights
-    auto data = static_cast<const uint8_t*>(tensor.weights_data);
-    auto weights = static_cast<uint8_t*>(weights_arr.data());
-    auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
-        scales[i] = ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block)));
-        biases[i] = ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block + 2)));
+    auto zp_bytes = static_cast<uint8_t*>(zp_arr.data());  // u4 packed: 2 zp per byte
+    const size_t n = scales_arr.get_size();
+    ov::parallel_for(n, [&](size_t i) {
+        const float sc = static_cast<float>(ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block))));
+        const float mn = static_cast<float>(ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block + 2))));
+        scales[i] = ov::float16(sc);
+        const uint8_t zp = (sc != 0.f) ? static_cast<uint8_t>(std::min(15.f, std::max(0.f, std::round(-mn / sc)))) : 0;
+        if (i % 2 == 0)
+            zp_bytes[i / 2] = zp & 0x0F;
+        else
+            zp_bytes[i / 2] |= (zp << 4);
         unpack_32_4(data + i * bytes_per_block + 4, weights + i * 16);
     });
 }
 
-// Extracts (weight, scales, biases) from Q8_0 tensors.
-// Data layout is: |16 bit scale|32 x 8bit weights|.
-void extract_q8_0_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
+// Q8_0 symmetric: block = |f16 scale|32x i8 weights|. Weights are stored as i8 on disk.
+// No zero-point. Output: i8 weights (direct copy) + f16 scales.
+void fill_q8_0(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr) {
     const uint64_t weights_per_block = 32;
-    const uint64_t bytes_per_block = 34;  // 2 bytes scale, 32x1 byte weights
+    const uint64_t bytes_per_block = 34;  // 2 bytes scale, 32x1 byte weights (i8)
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
-    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto weights = static_cast<int8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    for (size_t i = 0; i < scales_arr.get_size(); i++) {
+    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
         const uint8_t* block_data = data + i * bytes_per_block;
         scales[i] = ov::float16::from_bits(*(uint16_t*)block_data);
-        biases[i] = ov::float16(-128.f * static_cast<float>(scales[i]));
-        for (uint64_t j = 0; j < weights_per_block; ++j) {
-            uint8_t x = block_data[j + 2];  // j+2 to skip the scale bytes.
-            // Original data is in int8_t, so we add a bias of -128 and invert the
-            // first bit.
-            x ^= 1 << 7;
-            weights[i * weights_per_block + j] = x;
-        }
-    }
+        std::memcpy(weights + i * weights_per_block, block_data + 2, weights_per_block);
+    });
 }
 
-// Extracts (weight, scales, biases) from Q5_0 tensors (legacy 5-bit, symmetric).
-// Block: |16-bit scale d|32-bit qh high bits|16 bytes ql (32x4bit)|. weight = ql|(qh<<4)
-// in 0..31, dequant = d*(w-16), so scale=d, bias=-16*d. Output u8 weights (0..31).
-void extract_q5_0_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
+// Q5_0 symmetric: block = |f16 scale d|32-bit qh|16 bytes ql (32x4bit low)|.
+// weight = lo|(hi<<4) in [0..31]; dequant = d*(w - 16). Output: i8 weights [-16..15].
+void fill_q5_0(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr) {
     const uint64_t weights_per_block = 32;
     const uint64_t bytes_per_block = 2 + 4 + 16;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
-    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto weights = static_cast<int8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    for (size_t i = 0; i < scales_arr.get_size(); i++) {
+    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
         const uint8_t* block_data = data + i * bytes_per_block;
         scales[i] = ov::float16::from_bits(*(uint16_t*)block_data);
-        biases[i] = ov::float16(-16.f * static_cast<float>(scales[i]));
         uint32_t qh;
         std::memcpy(&qh, block_data + 2, sizeof(qh));
         const uint8_t* ql = block_data + 6;
         for (uint64_t j = 0; j < weights_per_block; ++j) {
             const uint8_t lo = (j < 16) ? (ql[j] & 0x0F) : (ql[j - 16] >> 4);
             const uint8_t hi = (qh >> j) & 1;
-            weights[i * weights_per_block + j] = lo | (hi << 4);
+            weights[i * weights_per_block + j] = static_cast<int8_t>((lo | (hi << 4)) - 16);
         }
-    }
+    });
 }
 
 void unpack_256_4(const uint8_t* data, uint8_t* dst) {
@@ -140,52 +111,45 @@ void unpack_256_4(const uint8_t* data, uint8_t* dst) {
     }
 }
 
-void extract_q4_k_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
+// Q4_K asymmetric: super-block = |f16 d|f16 dmin|12 bytes scales/mins|128 bytes ql|.
+// 8 sub-blocks of 32 with 6-bit scale and 6-bit min each.
+// Outputs: u32-packed u4 weights + f16 scales + u4 zp (one per sub-block).
+void fill_q4_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t bytes_per_block = 2 + 2 + 12 + 128;
     const uint64_t n_super_block = tensor.bsize / bytes_per_block;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<uint8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    auto zp_bytes = static_cast<uint8_t*>(zp_arr.data());  // u4 packed: 2 zp per byte
 
     ov::parallel_for(n_super_block, [&](size_t i) {
         const uint8_t* block_data = data + i * bytes_per_block;
-
-        // Extract scale factors and offsets
-        float scale_scales = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data)));
-        float scale_biases = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data + 1)));
-
-        // Extract qs1 (the scales/mins sub-block)
+        const float d = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data)));
+        const float dmin = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data + 1)));
         const uint8_t* qs1 = block_data + 4;
 
-        scales[i * 8] = ov::float16(scale_scales * static_cast<float>((*(qs1) & 0b111111)));
-        scales[i * 8 + 1] = ov::float16(scale_scales * static_cast<float>((*(qs1 + 1) & 0b111111)));
-        scales[i * 8 + 2] = ov::float16(scale_scales * static_cast<float>((*(qs1 + 2) & 0b111111)));
-        scales[i * 8 + 3] = ov::float16(scale_scales * static_cast<float>((*(qs1 + 3) & 0b111111)));
-        scales[i * 8 + 4] =
-            ov::float16(scale_scales * static_cast<float>((*(qs1 + 8) & 0b00001111) | ((*(qs1) >> 6) << 4)));
-        scales[i * 8 + 5] =
-            ov::float16(scale_scales * static_cast<float>((*(qs1 + 9) & 0b00001111) | ((*(qs1 + 1) >> 6) << 4)));
-        scales[i * 8 + 6] =
-            ov::float16(scale_scales * static_cast<float>((*(qs1 + 10) & 0b00001111) | ((*(qs1 + 2) >> 6) << 4)));
-        scales[i * 8 + 7] =
-            ov::float16(scale_scales * static_cast<float>((*(qs1 + 11) & 0b00001111) | ((*(qs1 + 3) >> 6) << 4)));
+        // 8 sub-blocks: 6-bit scale and 6-bit min packed in 12 bytes.
+        uint8_t sc_raw[8], m_raw[8];
+        for (int j = 0; j < 4; ++j) {
+            sc_raw[j] = qs1[j] & 0x3F;
+            m_raw[j] = qs1[j + 4] & 0x3F;
+            sc_raw[j + 4] = (qs1[j + 8] & 0x0F) | ((qs1[j] >> 6) << 4);
+            m_raw[j + 4] = (qs1[j + 8] >> 4) | ((qs1[j + 4] >> 6) << 4);
+        }
 
-        biases[i * 8] = ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 4) & 0b111111)));
-        biases[i * 8 + 1] = ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 5) & 0b111111)));
-        biases[i * 8 + 2] = ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 6) & 0b111111)));
-        biases[i * 8 + 3] = ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 7) & 0b111111)));
-        biases[i * 8 + 4] =
-            ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 8) >> 4) | ((*(qs1 + 4) >> 6) << 4)));
-        biases[i * 8 + 5] =
-            ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 9) >> 4) | ((*(qs1 + 5) >> 6) << 4)));
-        biases[i * 8 + 6] =
-            ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 10) >> 4) | ((*(qs1 + 6) >> 6) << 4)));
-        biases[i * 8 + 7] =
-            ov::float16(-1.f * scale_biases * static_cast<float>((*(qs1 + 11) >> 4) | ((*(qs1 + 7) >> 6) << 4)));
+        for (int j = 0; j < 8; ++j) {
+            scales[i * 8 + j] = ov::float16(d * sc_raw[j]);
+            // zp = round(dmin * m_raw / scale); scale = d * sc_raw[j]
+            const float sc = d * sc_raw[j];
+            const float mn = dmin * m_raw[j];
+            const uint8_t zp =
+                (sc != 0.f) ? static_cast<uint8_t>(std::min(15.f, std::max(0.f, std::round(mn / sc)))) : 0;
+            const size_t idx = i * 8 + j;
+            if (idx % 2 == 0)
+                zp_bytes[idx / 2] = zp & 0x0F;
+            else
+                zp_bytes[idx / 2] |= (zp << 4);
+        }
         unpack_256_4(block_data + 16, weights + i * 128);
     });
 }
@@ -201,43 +165,41 @@ static inline void get_scale_min_k4(int j, const uint8_t* q, uint8_t* d, uint8_t
     }
 }
 
-// Q5_K: 256-element super-block = 2(d) + 2(min) + 12(scales) + 32(qh high bits) + 128(ql).
-// 8 sub-blocks of 32 with a 6-bit scale and 6-bit min each. Output matches the other
-// extractors: u8 weights (0..31) + per-32 f16 scale + f16 bias.
-void extract_q5_k_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
+// Q5_K asymmetric: super-block = 2(d) + 2(dmin) + 12(scales) + 32(qh) + 128(ql).
+// 8 sub-blocks of 32 with 6-bit scale and 6-bit min. Output: i8 weights + f16 scales + u8 zp.
+void fill_q5_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t bytes_per_block = 2 + 2 + 12 + 32 + 128;
     const uint64_t n_super_block = tensor.bsize / bytes_per_block;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
-    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto weights = static_cast<int8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    auto zp = static_cast<uint8_t*>(zp_arr.data());  // u8 zp (one per sub-block of 32)
 
     ov::parallel_for(n_super_block, [&](size_t i) {
         const uint8_t* block_data = data + i * bytes_per_block;
         const float d = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data)));
-        const float min_factor = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data + 1)));
-        const uint8_t* scales_data = block_data + 4;        // 12 bytes of packed scales/mins
-        const uint8_t* qh = block_data + 4 + 12;            // 32 bytes of high bits
-        const uint8_t* ql = block_data + 4 + 12 + 32;       // 128 bytes of low bits
+        const float dmin = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data + 1)));
+        const uint8_t* scales_data = block_data + 4;
+        const uint8_t* qh = block_data + 16;  // 32 bytes high bits
+        const uint8_t* ql = block_data + 48;  // 128 bytes low bits
 
         int is = 0;
         uint8_t u1 = 1, u2 = 2;
         for (int j = 0; j < 256; j += 64) {
             uint8_t sc, m;
             get_scale_min_k4(is + 0, scales_data, &sc, &m);
-            const float d1 = d * sc, m1 = min_factor * m;
+            const float d1 = d * sc, m1 = dmin * m;
             get_scale_min_k4(is + 1, scales_data, &sc, &m);
-            const float d2 = d * sc, m2 = min_factor * m;
+            const float d2 = d * sc, m2 = dmin * m;
             scales[i * 8 + is] = ov::float16(d1);
             scales[i * 8 + is + 1] = ov::float16(d2);
-            biases[i * 8 + is] = ov::float16(-m1);
-            biases[i * 8 + is + 1] = ov::float16(-m2);
+            // zp = round(min / scale) where min = dmin * m
+            zp[i * 8 + is] = (d1 != 0.f) ? static_cast<uint8_t>(std::min(31.f, std::max(0.f, std::round(m1 / d1)))) : 0;
+            zp[i * 8 + is + 1] =
+                (d2 != 0.f) ? static_cast<uint8_t>(std::min(31.f, std::max(0.f, std::round(m2 / d2)))) : 0;
             for (int l = 0; l < 32; ++l) {
-                weights[i * 256 + j + l] = (ql[l] & 0xF) + ((qh[l] & u1) ? 16 : 0);
-                weights[i * 256 + j + l + 32] = (ql[l] >> 4) + ((qh[l] & u2) ? 16 : 0);
+                weights[i * 256 + j + l] = static_cast<int8_t>((ql[l] & 0xF) + ((qh[l] & u1) ? 16 : 0));
+                weights[i * 256 + j + l + 32] = static_cast<int8_t>((ql[l] >> 4) + ((qh[l] & u2) ? 16 : 0));
             }
             ql += 32;
             is += 2;
@@ -247,42 +209,34 @@ void extract_q5_k_data(const gguf_tensor& tensor,
     });
 }
 
-void extract_q6_k_data(const gguf_tensor& tensor,
-                       ov::Tensor& weights_arr,
-                       ov::Tensor& scales_arr,
-                       ov::Tensor& biases_arr) {
+// Q6_K symmetric: super-block = 128(ql) + 64(qh) + 16(scales i8) + 2(f16 d).
+// 16 sub-blocks of 16 with i8 scale each. Values in [0..63]; center = 32 → i8 [-32..31].
+// Output: i8 weights (value - 32) + f16 scales. No zero-point.
+void fill_q6_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr) {
     const uint64_t bytes_per_block = 128 + 64 + 16 + 2;
     const uint64_t n_super_block = tensor.bsize / bytes_per_block;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
-    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto weights = static_cast<int8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto biases = biases_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
     for (uint64_t i = 0; i < n_super_block; i++) {
         const uint8_t* block_data = data + i * bytes_per_block;
-
-        float scale_factor =
-            static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data + 104)));  // (128+64+16)/2
-
+        const float d = static_cast<float>(ov::float16::from_bits(*((uint16_t*)block_data + 104)));  // (128+64+16)/2
         for (size_t j = 0; j < 16; j++) {
-            scales[j + i * 16] =
-                ov::float16(scale_factor * static_cast<float>(*((int8_t*)(block_data + 128 + 64 + j))));
-            biases[j + i * 16] = ov::float16(-32.f * static_cast<float>(scales[j + i * 16]));
+            scales[j + i * 16] = ov::float16(d * static_cast<float>(*((int8_t*)(block_data + 128 + 64 + j))));
         }
-
-        // Extract ql and qh
         const uint8_t* ql = block_data;
         const uint8_t* qh = block_data + 128;
-
-        // Extract weights
         for (int64_t j = 0; j < 32; ++j) {
-            weights[i * 256 + j] = (ql[j] & 0xF) | (((qh[j] >> 0) & 3) << 4);
-            weights[i * 256 + j + 32] = (ql[32 + j] & 0xF) | (((qh[j] >> 2) & 3) << 4);
-            weights[i * 256 + j + 64] = (ql[j] >> 4) | (((qh[j] >> 4) & 3) << 4);
-            weights[i * 256 + j + 96] = (ql[32 + j] >> 4) | (((qh[j] >> 6) & 3) << 4);
-            weights[i * 256 + j + 128] = (ql[64 + j] & 0xF) | (((qh[32 + j] >> 0) & 3) << 4);
-            weights[i * 256 + j + 160] = (ql[96 + j] & 0xF) | (((qh[32 + j] >> 2) & 3) << 4);
-            weights[i * 256 + j + 192] = (ql[64 + j] >> 4) | (((qh[32 + j] >> 4) & 3) << 4);
-            weights[i * 256 + j + 224] = (ql[96 + j] >> 4) | (((qh[32 + j] >> 6) & 3) << 4);
+            weights[i * 256 + j] = static_cast<int8_t>(((ql[j] & 0xF) | (((qh[j] >> 0) & 3) << 4)) - 32);
+            weights[i * 256 + j + 32] = static_cast<int8_t>(((ql[32 + j] & 0xF) | (((qh[j] >> 2) & 3) << 4)) - 32);
+            weights[i * 256 + j + 64] = static_cast<int8_t>(((ql[j] >> 4) | (((qh[j] >> 4) & 3) << 4)) - 32);
+            weights[i * 256 + j + 96] = static_cast<int8_t>(((ql[32 + j] >> 4) | (((qh[j] >> 6) & 3) << 4)) - 32);
+            weights[i * 256 + j + 128] =
+                static_cast<int8_t>(((ql[64 + j] & 0xF) | (((qh[32 + j] >> 0) & 3) << 4)) - 32);
+            weights[i * 256 + j + 160] =
+                static_cast<int8_t>(((ql[96 + j] & 0xF) | (((qh[32 + j] >> 2) & 3) << 4)) - 32);
+            weights[i * 256 + j + 192] = static_cast<int8_t>(((ql[64 + j] >> 4) | (((qh[32 + j] >> 4) & 3) << 4)) - 32);
+            weights[i * 256 + j + 224] = static_cast<int8_t>(((ql[96 + j] >> 4) | (((qh[32 + j] >> 6) & 3) << 4)) - 32);
         }
     }
 }
@@ -296,9 +250,7 @@ void extract_q6_k_data(const gguf_tensor& tensor,
 // Value equivalence: ggml MXFP4 value = kvalues_mxfp4[idx] * 2^(e-128); OpenVINO's
 // f4e2m1 LUT equals kvalues_mxfp4/2 and f8e8m0->f32 = 2^(e-127), so
 //   f4e2m1[idx] * f8e8m0(e) = (kvalues/2) * 2^(e-127) = kvalues * 2^(e-128)  -- exact.
-void gguf_load_mxfp4(std::unordered_map<std::string, ov::Tensor>& a,
-                     std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
-                     const gguf_tensor& tensor) {
+void gguf_fill_mxfp4(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales) {
     const uint64_t bytes_per_block = 17;
     const uint64_t qk = 32;
     auto shape = get_shape(tensor);  // [.., cols]
@@ -309,25 +261,19 @@ void gguf_load_mxfp4(std::unordered_map<std::string, ov::Tensor>& a,
     }
     const uint64_t groups = cols / qk;
 
-    ov::Tensor weights(ov::element::f4e2m1, shape);             // natural-order 4-bit nibbles
-    ov::Shape scale_shape = shape;
-    scale_shape.back() = groups;
-    ov::Tensor scales(ov::element::f8e8m0, scale_shape);
-
-    auto* wdst = static_cast<uint8_t*>(weights.data());   // 2 nibbles per byte
-    auto* sdst = static_cast<uint8_t*>(scales.data());    // 1 byte per group (E8M0)
+    auto* wdst = static_cast<uint8_t*>(weights.data());
+    auto* sdst = static_cast<uint8_t*>(scales.data());
     const auto* data = static_cast<const uint8_t*>(tensor.weights_data);
 
     ov::parallel_for(rows, [&](size_t r) {
         for (uint64_t g = 0; g < groups; ++g) {
             const uint8_t* block = data + (r * groups + g) * bytes_per_block;
-            sdst[r * groups + g] = block[0];  // E8M0 scale byte, stored verbatim
+            sdst[r * groups + g] = block[0];
             const uint8_t* qs = block + 1;
-            // element index within the row of the natural-order value
             const uint64_t base = r * cols + g * qk;
             for (uint64_t j = 0; j < qk / 2; ++j) {
-                const uint8_t lo = qs[j] & 0x0F;  // -> element j
-                const uint8_t hi = qs[j] >> 4;    // -> element j+16
+                const uint8_t lo = qs[j] & 0x0F;
+                const uint8_t hi = qs[j] >> 4;
                 auto put = [&](uint64_t elem, uint8_t nib) {
                     uint64_t idx = base + elem;
                     uint8_t& byte = wdst[idx / 2];
@@ -342,86 +288,49 @@ void gguf_load_mxfp4(std::unordered_map<std::string, ov::Tensor>& a,
             }
         }
     });
-
-    std::string name(tensor.name, tensor.namelen);
-    a.emplace(name, std::move(weights));
-    constexpr std::string_view weight_suffix = ".weight";
-    const std::string prefix = name.substr(0, name.length() - weight_suffix.length());
-    a.emplace(prefix + ".scales", std::move(scales));
-    qtype_map.emplace(prefix + ".qtype", GGUF_TYPE_MXFP4);
 }
 
-void gguf_load_quantized(std::unordered_map<std::string, ov::Tensor>& a,
-                         std::unordered_map<std::string, gguf_tensor_type>& qtype_map,
-                         const gguf_tensor& tensor) {
-    uint64_t weights_per_byte;
-    if (tensor.type == GGUF_TYPE_Q4_0 || tensor.type == GGUF_TYPE_Q4_1 || tensor.type == GGUF_TYPE_Q4_K) {
-        weights_per_byte = 2;
-    } else {  // tensor.type == GGUF_TYPE_Q8_0 || tensor.type == GGUF_TYPE_Q6_K
-        weights_per_byte = 1;
-    }
+// Q4_0 symmetric: same block layout as Q4_0 but XORs each packed byte with 0x88 to
+// flip the MSB of every nibble, converting u4 [0..15] to i4 [-8..7] in-place. No bias
+// tensor is produced (zp is exactly -8 * scale = a fixed shift, not per-element).
+void gguf_fill_q4_0(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr) {
+    const uint64_t bytes_per_block = 18;
+    auto data = static_cast<const uint8_t*>(tensor.weights_data);
+    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
 
-    std::string name(tensor.name, tensor.namelen);
+    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
+        scales[i] = ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block)));
+        unpack_32_4(data + i * bytes_per_block + 2, weights + i * 16);
+        for (int b = 0; b < 16; ++b)
+            weights[i * 16 + b] ^= 0x88;  // u4→i4: flip MSB of both nibbles per byte
+    });
+}
 
-    auto shape = get_shape(tensor);
-
-    uint64_t weights_per_block;
-    // here we only consider sub block, q6k:16 q4k:32
-    if (tensor.type == GGUF_TYPE_Q6_K) {
-        weights_per_block = 16;
-    } else {
-        weights_per_block = 32;
-    }
-
-    OPENVINO_ASSERT(shape.back() % weights_per_block == 0,
-                    "[load_gguf] tensor ",
-                    name,
-                    " has incompatible last dim shape: ",
-                    shape.back());
-
-    auto weights_shape = shape;
-    weights_shape.back() /= (weights_per_byte * 4);  // means u32 type can store 8 q4 or 4 q8
-
-    ov::Tensor weights(ov::element::u32, std::move(weights_shape));
-    // For scales and bias
-    shape[shape.size() - 1] = shape[shape.size() - 1] / weights_per_block;
-
-    ov::Tensor scales(ov::element::f16, shape);
-    ov::Tensor biases(ov::element::f16, std::move(shape));
-    if (tensor.type == GGUF_TYPE_Q4_0) {
-        extract_q4_0_data(tensor, weights, scales, biases);
-    } else if (tensor.type == GGUF_TYPE_Q4_1) {
-        extract_q4_1_data(tensor, weights, scales, biases);
+// Symmetric types (Q8_0, Q5_0, Q6_K): fill weights (i8) + scales (f16), no zero-point.
+void gguf_fill_sym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales) {
+    if (tensor.type == GGUF_TYPE_Q8_0) {
+        fill_q8_0(tensor, weights, scales);
     } else if (tensor.type == GGUF_TYPE_Q5_0) {
-        extract_q5_0_data(tensor, weights, scales, biases);
-    } else if (tensor.type == GGUF_TYPE_Q8_0) {
-        extract_q8_0_data(tensor, weights, scales, biases);
+        fill_q5_0(tensor, weights, scales);
     } else if (tensor.type == GGUF_TYPE_Q6_K) {
-        // due to WA #2135, this case will not be used, extract_q6_k_data temporarily disabled.
-        extract_q6_k_data(tensor, weights, scales, biases);
-    } else if (tensor.type == GGUF_TYPE_Q4_K) {
-        extract_q4_k_data(tensor, weights, scales, biases);
-    } else if (tensor.type == GGUF_TYPE_Q5_K) {
-        extract_q5_k_data(tensor, weights, scales, biases);
+        fill_q6_k(tensor, weights, scales);
     } else {
-        OPENVINO_ASSERT(false, "Unsupported tensor type in 'gguf_load_quantized'");
+        OPENVINO_ASSERT(false, "Unsupported tensor type in 'gguf_fill_sym'");
     }
+}
 
-    a.emplace(name, std::move(weights));
-
-    auto check_insert = [](const auto& inserted) {
-        OPENVINO_ASSERT(inserted.second,
-                        "[load_gguf] Duplicate parameter name ",
-                        inserted.first->second.data(),
-                        ". This can happen when loading quantized tensors");
-    };
-
-    constexpr std::string_view weight_suffix = ".weight";
-    const std::string name_prefix = name.substr(0, name.length() - weight_suffix.length());
-    check_insert(a.emplace(name_prefix + ".scales", std::move(scales)));
-    check_insert(a.emplace(name_prefix + ".biases", std::move(biases)));
-
-    qtype_map.emplace(name_prefix + ".qtype", static_cast<gguf_tensor_type>(tensor.type));
+// Asymmetric types (Q4_1, Q4_K, Q5_K): fill weights + scales + integer zero-points.
+void gguf_fill_asym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales, ov::Tensor& zp) {
+    if (tensor.type == GGUF_TYPE_Q4_1) {
+        fill_q4_1(tensor, weights, scales, zp);
+    } else if (tensor.type == GGUF_TYPE_Q4_K) {
+        fill_q4_k(tensor, weights, scales, zp);
+    } else if (tensor.type == GGUF_TYPE_Q5_K) {
+        fill_q5_k(tensor, weights, scales, zp);
+    } else {
+        OPENVINO_ASSERT(false, "Unsupported tensor type in 'gguf_fill_asym'");
+    }
 }
 
 }  // namespace ggml
