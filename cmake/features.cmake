@@ -44,7 +44,10 @@ endif()
 # Set default GPU runtime to OCL
 set(OV_GPU_DEFAULT_RT "OCL")
 if (ENABLE_INTEL_GPU)
-    ov_option_enum (GPU_RT_TYPE "Type of GPU runtime. Supported value: OCL and L0" ${OV_GPU_DEFAULT_RT} ALLOWED_VALUES L0 OCL)
+    ov_option_enum (GPU_RT_TYPE "Type of GPU runtime. Supported value: OCL, SYCL and ZE (L0 is accepted as ZE alias)" ${OV_GPU_DEFAULT_RT} ALLOWED_VALUES ZE OCL L0 SYCL)
+    if(GPU_RT_TYPE STREQUAL "L0")
+        set(GPU_RT_TYPE "ZE" CACHE STRING "Type of GPU runtime" FORCE)
+    endif()
 endif()
 
 ov_dependent_option (ENABLE_ONEDNN_FOR_GPU "Enable oneDNN with GPU support" ${ENABLE_ONEDNN_FOR_GPU_DEFAULT} "ENABLE_INTEL_GPU" OFF)
@@ -151,6 +154,7 @@ ov_option(ENABLE_OV_PYTORCH_FRONTEND "Enable PyTorch FrontEnd" ON)
 ov_option(ENABLE_OV_JAX_FRONTEND "Enable JAX FrontEnd" ON)
 ov_option(ENABLE_OV_TF_FRONTEND "Enable TensorFlow FrontEnd" ON)
 ov_option(ENABLE_OV_TF_LITE_FRONTEND "Enable TensorFlow Lite FrontEnd" ON)
+ov_option(ENABLE_OV_GGUF_FRONTEND "Enable GGUF FrontEnd" ON)
 
 if(WIN32 AND AARCH64 AND CMAKE_CL_64)
     # Failed: openvino/src/bindings/js/node/thirdparty/node-lib.def: no such file or directory
@@ -220,7 +224,7 @@ else()
     set(FORCE_FRONTENDS_USE_PROTOBUF OFF)
 endif()
 
-if(ENABLE_INTEL_NPU OR (ENABLE_INTEL_GPU AND GPU_RT_TYPE STREQUAL "L0"))
+if(ENABLE_INTEL_NPU OR (ENABLE_INTEL_GPU AND GPU_RT_TYPE STREQUAL "ZE"))
     set(ENABLE_OV_ZERO_LOADER ON)
 else()
     set(ENABLE_OV_ZERO_LOADER OFF)
@@ -232,6 +236,10 @@ endif()
 
 if(ENABLE_OPENVINO_DEBUG)
     add_definitions(-DENABLE_OPENVINO_DEBUG)
+endif()
+
+if(ENABLE_DEBUG_CAPS)
+    add_definitions(-DENABLE_DEBUG_CAPS)
 endif()
 
 if (ENABLE_SNIPPETS_DEBUG_CAPS)
