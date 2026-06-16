@@ -57,7 +57,7 @@ constexpr int ROPE_OP_CASE_NEOX = 0x00010000;
 // uses NORMAL (rotate consecutive pairs). Mirrors llama_model_rope_type.
 bool arch_uses_neox_rope(const std::string& arch) {
     return arch == "qwen2" || arch == "qwen3" || arch == "phi3" || arch == "hunyuan-dense" || arch == "gpt-oss" ||
-           arch == "gemma" || arch == "gemma2";
+           arch == "gemma" || arch == "gemma2" || arch == "olmoe";
 }
 
 // Shapes are kept in the OpenVINO/GGML logical order [ne3, ne2, ne1, ne0] (reverse of GGUF
