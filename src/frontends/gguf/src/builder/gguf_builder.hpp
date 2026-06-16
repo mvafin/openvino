@@ -7,7 +7,7 @@
 #include <memory>
 #include <string>
 
-#include "ggml_graph.hpp"
+#include "gguf_graph.hpp"
 
 namespace ov {
 namespace frontend {

@@ -53,7 +53,7 @@ FrontEnd::FrontEnd() : m_impl(std::make_unique<Impl>()) {}
 FrontEnd::~FrontEnd() = default;
 
 std::shared_ptr<Model> FrontEnd::convert(const InputModel::Ptr& model) const {
-    auto ggml_model = std::dynamic_pointer_cast<ggml::InputModel>(model);
+    auto ggml_model = std::dynamic_pointer_cast<InputModel>(model);
     FRONT_END_GENERAL_CHECK(ggml_model, "Invalid input model");
     std::shared_ptr<Model> converted_model;
     {
@@ -114,7 +114,7 @@ InputModel::Ptr FrontEnd::load_impl(const std::vector<ov::Any>& variants) const 
     if (variants[0].is<std::shared_ptr<GgufDecoder>>()) {
         auto decoder = variants[0].as<std::shared_ptr<GgufDecoder>>();
         FRONT_END_GENERAL_CHECK(decoder, "Couldn't cast ov::Any to std::shared_ptr<GgufDecoder>");
-        return std::make_shared<ggml::InputModel>(decoder);
+        return std::make_shared<InputModel>(decoder);
     }
 
     // Path 2: a .gguf file path -> native builder -> GgufBuilderDecoder.
@@ -125,7 +125,7 @@ InputModel::Ptr FrontEnd::load_impl(const std::vector<ov::Any>& variants) const 
                                 model_path.string());
         auto graph = build_ggml_graph_from_gguf(model_path.string());
         auto decoder = std::make_shared<GgufBuilderDecoder>(graph);
-        return std::make_shared<ggml::InputModel>(decoder);
+        return std::make_shared<InputModel>(decoder);
     }
 
     FRONT_END_GENERAL_CHECK(false,

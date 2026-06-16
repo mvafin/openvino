@@ -6,7 +6,7 @@
 
 #include <memory>
 
-#include "ggml_graph.hpp"
+#include "gguf_graph.hpp"
 #include "openvino/frontend/gguf/decoder.hpp"
 
 namespace ov {

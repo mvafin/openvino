@@ -33,8 +33,8 @@
 #include <memory>
 #include <set>
 
-#include "ggml_graph.hpp"
 #include "gguf.hpp"
+#include "gguf_graph.hpp"
 #include "openvino/core/except.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
