@@ -51,17 +51,19 @@ GENAI_PYTHON = "/home/vmaxim/openvino/.venv/bin/python3"
 # Tokenizer via subprocess (avoids OV 2025/2026 pybind11 clash)
 # ---------------------------------------------------------------------------
 
-def _tok_cmd(gguf_path, subcommand, extra_args, hf_tokenizer=None):
+def _tok_cmd(gguf_path, subcommand, extra_args, hf_tokenizer=None, chat=False):
     cmd = [GENAI_PYTHON, TOKENIZE_SCRIPT, subcommand, gguf_path] + extra_args
     if hf_tokenizer:
         cmd += ["--hf-tokenizer", hf_tokenizer]
+    if chat:
+        cmd += ["--chat"]
     return cmd
 
 
-def tokenize(gguf_path, text, hf_tokenizer=None):
+def tokenize(gguf_path, text, hf_tokenizer=None, chat=False):
     """Returns (ids: list[int], eos_id: int)."""
     result = subprocess.run(
-        _tok_cmd(gguf_path, "encode", [text], hf_tokenizer),
+        _tok_cmd(gguf_path, "encode", [text], hf_tokenizer, chat=chat),
         capture_output=True, text=True, env=GENAI_ENV, timeout=30,
     )
     if result.returncode != 0:
@@ -70,10 +72,10 @@ def tokenize(gguf_path, text, hf_tokenizer=None):
     return data["ids"], data["eos_id"]
 
 
-def detokenize(gguf_path, ids, hf_tokenizer=None):
+def detokenize(gguf_path, ids, hf_tokenizer=None, chat=False):
     """Returns decoded string."""
     result = subprocess.run(
-        _tok_cmd(gguf_path, "decode", [str(i) for i in ids], hf_tokenizer),
+        _tok_cmd(gguf_path, "decode", [str(i) for i in ids], hf_tokenizer, chat=chat),
         capture_output=True, text=True, env=GENAI_ENV, timeout=30,
     )
     if result.returncode != 0:
@@ -198,7 +200,7 @@ def extract_llamacpp_output(stdout, prompt):
 # Main benchmark for one model
 # ---------------------------------------------------------------------------
 
-def bench_one(gguf_path, prompt, max_tokens, llama_simple, device="CPU", hf_tokenizer=None):
+def bench_one(gguf_path, prompt, max_tokens, llama_simple, device="CPU", hf_tokenizer=None, chat=False):
     import openvino as ov
 
     gguf_mb = os.stat(gguf_path).st_size / (1024 * 1024)
@@ -210,8 +212,9 @@ def bench_one(gguf_path, prompt, max_tokens, llama_simple, device="CPU", hf_toke
     print(sep)
 
     # ---- Tokenizer from GGUF ----
-    prompt_ids, eos_id = tokenize(gguf_path, prompt, hf_tokenizer)
+    prompt_ids, eos_id = tokenize(gguf_path, prompt, hf_tokenizer, chat=chat)
     print(f"EOS token id : {eos_id}")
+    print(f"Chat template: {'yes' if chat else 'no'}")
     print(f"Prompt ({len(prompt_ids)} tokens): {prompt!r}")
 
     # ---- OV read_model ----
@@ -260,7 +263,7 @@ def bench_one(gguf_path, prompt, max_tokens, llama_simple, device="CPU", hf_toke
     ov_tokens, t_prefill, t_decode = greedy_decode_ov(
         req, model_inputs, prompt_ids, max_tokens, eos_id
     )
-    ov_text = detokenize(gguf_path, ov_tokens, hf_tokenizer)
+    ov_text = detokenize(gguf_path, ov_tokens, hf_tokenizer, chat=chat)
 
     n_prefill = len(prompt_ids)
     n_decode = len(ov_tokens) - 1
@@ -276,13 +279,24 @@ def bench_one(gguf_path, prompt, max_tokens, llama_simple, device="CPU", hf_toke
 
     # ---- llama.cpp ----
     lc_result = None
+    lc_prompt = prompt
+    if chat:
+        # Build a minimal chat-formatted string for llama-simple (which takes a raw string).
+        # llama-simple doesn't apply a chat template itself, so we pass the formatted text.
+        try:
+            hf_tok_path = hf_tokenizer
+            _formatted_ids, _ = tokenize(gguf_path, prompt, hf_tok_path, chat=True)
+            lc_prompt = detokenize(gguf_path, _formatted_ids, hf_tok_path)
+        except Exception:
+            lc_prompt = prompt
+
     if llama_simple and os.path.isfile(llama_simple):
         print(f"\n[llama.cpp]")
         try:
-            stdout, stderr, rc = run_llamacpp(llama_simple, gguf_path, prompt, max_tokens)
+            stdout, stderr, rc = run_llamacpp(llama_simple, gguf_path, lc_prompt, max_tokens)
             combined = stdout + stderr
             lc_perf = parse_llamacpp_perf(combined)
-            lc_text = extract_llamacpp_output(stdout, prompt)
+            lc_text = extract_llamacpp_output(stdout, lc_prompt)
             lc_result = {"perf": lc_perf, "text": lc_text, "returncode": rc}
 
             if lc_perf["load_s"]:
@@ -351,6 +365,8 @@ def main():
     ap.add_argument("--skip-llama", action="store_true")
     ap.add_argument("--hf-tokenizer", default=None,
                     help="HF tokenizer dir fallback for all models (overridden by per-model map)")
+    ap.add_argument("--chat", action="store_true",
+                    help="Wrap prompt in chat template via openvino_genai.Tokenizer.apply_chat_template")
     args = ap.parse_args()
 
     # Per-model HF tokenizer fallback map: used when genai can't read the GGUF tokenizer.
@@ -378,7 +394,7 @@ def main():
     for gguf in args.gguf:
         try:
             r = bench_one(gguf, args.prompt, args.gen_tokens, llama_bin, args.device,
-                          hf_tokenizer=_hf_tok_for(gguf))
+                          hf_tokenizer=_hf_tok_for(gguf), chat=args.chat)
             results.append(r)
         except Exception as e:
             print(f"\n[ERROR] {gguf}: {e}")

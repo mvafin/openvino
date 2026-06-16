@@ -41,6 +41,10 @@ def main():
         print("       gguf_tokenize.py decode <gguf> <id1> ... [--hf-tokenizer <dir>]", file=sys.stderr)
         sys.exit(1)
 
+    # Parse --chat flag
+    apply_chat = "--chat" in args
+    args = [a for a in args if a != "--chat"]
+
     mode = args[0]
     gguf_path = args[1]
 
@@ -49,6 +53,11 @@ def main():
         try:
             tok = _genai_tokenizer(gguf_path)
             eos_id = tok.get_eos_token_id()
+            if apply_chat:
+                text = tok.apply_chat_template(
+                    [{"role": "user", "content": text}],
+                    add_generation_prompt=True,
+                )
             ids = tok.encode(text).input_ids.data.flatten().tolist()
             print(json.dumps({"ids": ids, "eos_id": eos_id}))
             return
@@ -58,7 +67,14 @@ def main():
         from transformers import AutoTokenizer
         hf = AutoTokenizer.from_pretrained(hf_tokenizer, trust_remote_code=True)
         eos_id = hf.eos_token_id if hf.eos_token_id is not None else -1
-        ids = hf(text, return_tensors="np")["input_ids"][0].tolist()
+        if apply_chat and hasattr(hf, "apply_chat_template") and hf.chat_template:
+            ids = hf.apply_chat_template(
+                [{"role": "user", "content": text}],
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+        else:
+            ids = hf(text, return_tensors="np")["input_ids"][0].tolist()
         print(json.dumps({"ids": ids, "eos_id": eos_id}))
 
     elif mode == "decode":
