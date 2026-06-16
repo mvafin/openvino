@@ -20,6 +20,55 @@ def _genai_tokenizer(gguf_path):
     return genai.Tokenizer(gguf_path)
 
 
+def _encode_with_special_tokens(tok, text):
+    """
+    Encode `text` respecting special tokens that tok.encode() would fragment.
+
+    tok.encode() uses the BPE/SentencePiece subword model and treats special
+    tokens (e.g. <|hy_begin▁of▁sentence|>) as ordinary character sequences,
+    splitting them into subword pieces.  We detect the special tokens by
+    scanning the vocabulary for entries that contain the fullwidth vertical bar
+    '｜' (U+FF5C) or start with '<|', then split the text on those tokens and
+    encode the non-special pieces normally.
+    """
+    import re
+
+    vocab = tok.get_vocab()  # returns dict[bytes, int] (keys are raw bytes)
+    # Build special-token map: decoded_string -> token_id
+    special = {}
+    for raw_key, tid in vocab.items():
+        if isinstance(raw_key, bytes):
+            try:
+                s = raw_key.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+        else:
+            s = raw_key
+        # Heuristic: contains fullwidth bar (Hunyuan) or looks like <|...|>
+        if "｜" in s or (s.startswith("<|") and s.endswith("|>")):
+            special[s] = tid
+
+    if not special:
+        # No special tokens found — fall back to plain encode
+        return tok.encode(text).input_ids.data.flatten().tolist()
+
+    # Sort longest first so longer tokens shadow shorter prefixes
+    pattern = re.compile(
+        "(" + "|".join(re.escape(k) for k in sorted(special, key=len, reverse=True)) + ")"
+    )
+    parts = pattern.split(text)
+
+    ids = []
+    for part in parts:
+        if not part:
+            continue
+        if part in special:
+            ids.append(special[part])
+        else:
+            ids.extend(tok.encode(part).input_ids.data.flatten().tolist())
+    return ids
+
+
 def main():
     args = sys.argv[1:]
 
@@ -58,7 +107,7 @@ def main():
                     [{"role": "user", "content": text}],
                     add_generation_prompt=True,
                 )
-            ids = tok.encode(text).input_ids.data.flatten().tolist()
+            ids = _encode_with_special_tokens(tok, text)
             print(json.dumps({"ids": ids, "eos_id": eos_id}))
             return
         except Exception as e:
@@ -68,13 +117,12 @@ def main():
         hf = AutoTokenizer.from_pretrained(hf_tokenizer, trust_remote_code=True)
         eos_id = hf.eos_token_id if hf.eos_token_id is not None else -1
         if apply_chat and hasattr(hf, "apply_chat_template") and hf.chat_template:
-            ids = hf.apply_chat_template(
+            text = hf.apply_chat_template(
                 [{"role": "user", "content": text}],
                 add_generation_prompt=True,
-                tokenize=True,
+                tokenize=False,
             )
-        else:
-            ids = hf(text, return_tensors="np")["input_ids"][0].tolist()
+        ids = hf(text, return_tensors="np")["input_ids"][0].tolist()
         print(json.dumps({"ids": ids, "eos_id": eos_id}))
 
     elif mode == "decode":
