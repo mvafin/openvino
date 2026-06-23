@@ -223,6 +223,10 @@ bool GgufBuilderDecoder::has_rope() const {
     return m_graph->has_rope;
 }
 
+bool GgufBuilderDecoder::use_per_op_rope() const {
+    return m_graph->use_per_op_rope;
+}
+
 RopeConfig GgufBuilderDecoder::get_rope_config() const {
     return m_graph->rope_config;
 }
@@ -241,6 +245,10 @@ bool GgufBuilderDecoder::is_stateful() const {
 
 bool GgufBuilderDecoder::is_swa_layer(int) const {
     return false;
+}
+
+const ov::AnyMap& GgufBuilderDecoder::get_tokenizer_config() const {
+    return m_graph->tokenizer_config;
 }
 
 }  // namespace gguf

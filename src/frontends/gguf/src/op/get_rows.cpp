@@ -4,6 +4,7 @@
 #include <openvino/op/convert.hpp>
 #include <openvino/op/gather.hpp>
 #include <openvino/op/gather_elements.hpp>
+#include <openvino/op/reshape.hpp>
 #include <openvino/op/squeeze.hpp>
 #include <openvino/op/unsqueeze.hpp>
 
@@ -31,17 +32,19 @@ OutputVector translate_get_rows(const NodeContext& context) {
     // embedding-style row gather below.
     if (op_case == 10) {
         // probs [1,1,T,E], selected [1,1,T,K] -> per-row gather over the last (expert)
-        // axis -> [1,1,T,K], then reshape to [1,T,K,1] (a column per expert) for the
-        // downstream broadcast-multiply with the experts [1,T,K,n_embd]. Squeeze/Unsqueeze
-        // keep the dynamic token axis intact (no static reshape pattern).
+        // axis -> [1,1,T,K], then reshape to [1,T,K,1] for the broadcast-multiply with
+        // experts [1,T,K,n_embd]. Use an explicit [1,-1,K,1] reshape (K is static; T is
+        // dynamic) instead of Squeeze+Unsqueeze, which the CPU plugin implements as a
+        // Reshape internally and mis-infers the static pattern when T=1 at graph-build time.
+        // K is static (n_expert_used); read from the declared output shape [1,T,K,1].
+        // Use PartialShape index to avoid .to_shape() throwing when T is dynamic.
+        const int64_t K = context.get_output_shape()[2].get_length();
         auto idx = std::make_shared<ov::op::v0::Convert>(indices, ov::element::i32);
         auto ge = std::make_shared<ov::op::v6::GatherElements>(data, idx, -1);  // [1,1,T,K]
-        auto sq =
-            std::make_shared<ov::op::v0::Squeeze>(ge,
-                                                  ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));  // [1,T,K]
-        auto col = std::make_shared<ov::op::v0::Unsqueeze>(
-            sq,
-            ov::op::v0::Constant::create(ov::element::i64, {1}, {-1}));  // [1,T,K,1]
+        auto col = std::make_shared<ov::op::v1::Reshape>(
+            ge,
+            ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, -1, K, 1}),
+            false);  // [1,T,K,1]
         return rename_outputs_with_suffix({col}, context.get_name());
     }
 

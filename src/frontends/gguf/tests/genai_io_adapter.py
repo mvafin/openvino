@@ -98,6 +98,16 @@ def adapt_to_genai(model):
             _const_i64([1, 1, 1, -1]), False)
         params["inp_out_ids"].output(0).replace(out_ids.output(0))
 
+    # self_kq_mask_swa: SWA sliding-window mask (gemma4 / gpt-oss). Use the same causal mask
+    # as self_kq_mask — correct for prompts; GenAI doesn't distinguish SWA vs global masks.
+    if "self_kq_mask_swa" in params:
+        params["self_kq_mask_swa"].output(0).replace(self_kq_mask.output(0))
+
+    # beam_idx: wire up the new beam_idx Parameter to replace the original one
+    # so the stateful KV-cache gather has a valid input.
+    if "beam_idx" in params:
+        params["beam_idx"].output(0).replace(beam_idx.output(0))
+
     # ---- logits: [1,1,seq,vocab] -> [b, seq, vocab] (b=1) ----
     result = model.get_results()[0]
     logits_src = result.input_value(0)
@@ -115,6 +125,20 @@ def adapt_to_genai(model):
     new_params = [input_ids, attention_mask, position_ids, beam_idx]
 
     adapted = ov.Model([new_result], model.get_sinks(), new_params, "qwen3_genai")
+
+    # Pin KV-cache precision to f16 for large-head models (e.g. gemma4 global-attention
+    # head_size=512): the CPU plugin's default u8 cache quantization compounds across decode
+    # into divergence/NaN there, while small-head models (llama/qwen/phi3/gpt-oss, 64-128)
+    # keep the faster u8 default. Mirrors the C++ AdaptToGenAI pass.
+    max_head = 0
+    for o in model.get_ops():
+        if o.get_type_name() == "ReadValue":
+            ps = o.get_output_partial_shape(0)
+            last = ps[len(ps) - 1]
+            if last.is_static:
+                max_head = max(max_head, last.get_length())
+    if max_head > 128:
+        adapted.set_rt_info("f16", ["runtime_options", "KV_CACHE_PRECISION"])
     return adapted
 
 

@@ -15,6 +15,7 @@
 #include <openvino/op/reshape.hpp>
 #include <openvino/op/shape_of.hpp>
 #include <openvino/op/sin.hpp>
+#include <openvino/op/slice.hpp>
 #include <openvino/op/squeeze.hpp>
 #include <openvino/op/subtract.hpp>
 #include <openvino/op/transpose.hpp>
@@ -186,6 +187,19 @@ std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(const RopeConfig& rop
                 std::make_shared<ov::op::v0::Constant>(ov::element::f32, ov::Shape{1, 1, 1, factor.size()}, factor);
         }
         if (rope_freqs_weight) {
+            // rope_freqs_weight has shape [N] for the model's maximum n_dims/2. When this
+            // ROPE op uses a smaller n_dims (e.g. gemma4 SWA layers), slice to n_dims_half.
+            auto rfw_shape = rope_freqs_weight->get_output_partial_shape(0);
+            if (rfw_shape.is_static() && rfw_shape.size() == 1 &&
+                rfw_shape[0].get_length() > static_cast<int64_t>(n_dims_half)) {
+                auto start = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
+                auto stop = ov::op::v0::Constant::create(ov::element::i64, {1}, {static_cast<int64_t>(n_dims_half)});
+                auto step = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
+                auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
+                rope_freqs_weight =
+                    std::make_shared<ov::op::v8::Slice>(rope_freqs_weight, start, stop, step, axes)->output(0)
+                        .get_node_shared_ptr();
+            }
             freq_factors = std::make_shared<ov::op::v1::Divide>(freq_factors, rope_freqs_weight);
         }
 

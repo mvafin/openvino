@@ -703,6 +703,25 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     config["rope_dimension_count"] = metadata.count(arch + ".rope.dimension_count")
                                          ? metadata_to_int(metadata, arch + ".rope.dimension_count")
                                          : std::get<int>(config["head_size"]);
+    // Gemma4: SWA layers use a smaller head size (and fewer rope dims) than global layers.
+    // key_length_swa / value_length_swa / rope.dimension_count_swa default to key_length.
+    config["head_size_swa"] = metadata.count(arch + ".attention.key_length_swa")
+                                  ? metadata_to_int(metadata, arch + ".attention.key_length_swa")
+                                  : std::get<int>(config["head_size"]);
+    config["rope_dimension_count_swa"] = metadata.count(arch + ".rope.dimension_count_swa")
+                                             ? metadata_to_int(metadata, arch + ".rope.dimension_count_swa")
+                                             : std::get<int>(config["rope_dimension_count"]);
+    // Gemma4: per-layer embedding dimension (0 = absent / not used).
+    config["n_embd_per_layer"] =
+        metadata.count(arch + ".embedding_length_per_layer_input")
+            ? metadata_to_int(metadata, arch + ".embedding_length_per_layer_input")
+            : 0;
+    // Gemma4: number of layers that have their own KV cache (from the start).
+    // shared_kv_layers trailing layers reuse KV from the preceding full-KV layer.
+    // 0 = all layers have KV (default for non-Gemma4 architectures).
+    config["shared_kv_layers"] = metadata.count(arch + ".attention.shared_kv_layers")
+                                     ? metadata_to_int(metadata, arch + ".attention.shared_kv_layers")
+                                     : 0;
 
     // Mixture-of-experts config (0 when dense).
     config["expert_count"] =
@@ -717,8 +736,8 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     // backward-compatible defaults when the GGUF lacks the keys (older exports); newer
     // exports carry the keys and override. Other archs default to 1.0 (no-op).
     const bool is_minicpm = arch.rfind("minicpm", 0) == 0;
-    // Gemma/Gemma2 scale embeddings by sqrt(n_embd) before the first layer.
-    const bool is_gemma = arch == "gemma" || arch == "gemma2";
+    // Gemma/Gemma2/Gemma4 scale embeddings by sqrt(n_embd) before the first layer.
+    const bool is_gemma = arch == "gemma" || arch == "gemma2" || arch == "gemma4";
     const float def_embedding_scale =
         is_minicpm ? 12.0f : (is_gemma ? std::sqrt(static_cast<float>(std::get<int>(config["hidden_size"]))) : 1.0f);
     const float def_residual_scale =
@@ -733,8 +752,11 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     config["logit_scale"] =
         metadata.count(arch + ".logit_scale") ? metadata_to_float(metadata, arch + ".logit_scale") : def_logit_scale;
     // Optional explicit attention (softmax) scale; 0 -> use 1/sqrt(head_size).
-    config["attention_scale"] =
-        metadata.count(arch + ".attention.scale") ? metadata_to_float(metadata, arch + ".attention.scale") : 0.0f;
+    // Gemma4 uses scale=1.0 (no pre-attn scaling), per llama.cpp hparams.f_attention_scale=1.0.
+    const float def_attention_scale = (arch == "gemma4") ? 1.0f : 0.0f;
+    config["attention_scale"] = metadata.count(arch + ".attention.scale")
+                                    ? metadata_to_float(metadata, arch + ".attention.scale")
+                                    : def_attention_scale;
 
     // gpt-oss SWA: separate RoPE frequency base for sliding-window attention layers.
     // Defaults to the global rope_freq_base when the key is absent (non-SWA or legacy models).
@@ -744,9 +766,33 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
 
     // gpt-oss SWA: alternation period (default 2: even layers are SWA). Matches llama.cpp's
     // set_swa_pattern(swa_period, dense_first=false): il is SWA if il % period < period - 1.
-    config["swa_layer_pattern"] = metadata.count(arch + ".attention.sliding_window_pattern")
-                                      ? metadata_to_int(metadata, arch + ".attention.sliding_window_pattern")
-                                      : 2;
+    // Gemma4: sliding_window_pattern is a boolean array (one entry per layer); stored as
+    // an ov::Tensor of element::boolean. Detect by checking the variant type.
+    if (metadata.count(arch + ".attention.sliding_window_pattern")) {
+        const auto& v = metadata.at(arch + ".attention.sliding_window_pattern");
+        if (std::holds_alternative<ov::Tensor>(v)) {
+            const auto& t = std::get<ov::Tensor>(v);
+            if (t.get_element_type() == ov::element::boolean) {
+                // Boolean array: convert to vector<int32_t> (1=SWA, 0=global) for the builder.
+                const size_t n = t.get_size();
+                std::vector<int32_t> swa_flags(n);
+                const auto* bdata = t.data<uint8_t>();
+                for (size_t i = 0; i < n; ++i)
+                    swa_flags[i] = bdata[i] ? 1 : 0;
+                config["swa_layer_flags"] = swa_flags;
+                config["swa_layer_pattern"] = 0;  // 0 = use per-layer flags, not period
+            } else {
+                config["swa_layer_pattern"] = metadata_to_int(metadata, arch + ".attention.sliding_window_pattern");
+                config["swa_layer_flags"] = std::vector<int32_t>{};
+            }
+        } else {
+            config["swa_layer_pattern"] = metadata_to_int(metadata, arch + ".attention.sliding_window_pattern");
+            config["swa_layer_flags"] = std::vector<int32_t>{};
+        }
+    } else {
+        config["swa_layer_pattern"] = 2;
+        config["swa_layer_flags"] = std::vector<int32_t>{};
+    }
 
     // gpt-oss MoE: optional per-expert routing weight scale applied after softmax (0 = 1.0 no-op).
     config["expert_weights_scale"] = metadata.count(arch + ".expert_weights_scale")

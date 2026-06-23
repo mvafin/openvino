@@ -64,6 +64,7 @@ public:
     std::vector<std::string> get_model_output_names() const override;
 
     bool has_rope() const override;
+    bool use_per_op_rope() const override;
     RopeConfig get_rope_config() const override;
 
     std::map<std::string, std::string> get_kv_param_res_names() const override;
@@ -71,6 +72,7 @@ public:
     bool is_static() const override;
     bool is_stateful() const override;
     bool is_swa_layer(int layer) const override;
+    const ov::AnyMap& get_tokenizer_config() const override;
 
 private:
     std::shared_ptr<GgufGraph> m_graph;

@@ -8,6 +8,7 @@
 #include <openvino/core/node.hpp>
 #include <openvino/core/preprocess/pre_post_process.hpp>
 #include <openvino/core/rt_info.hpp>
+#include <openvino/frontend/gguf/tokenizer_metadata.hpp>
 #include <openvino/op/add.hpp>
 #include <openvino/op/assign.hpp>
 #include <openvino/op/broadcast.hpp>
@@ -135,6 +136,11 @@ void add_sliced_mask(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
 
 void add_rope_sin_cos(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
     if (tensor_map.find("inp_pos") == tensor_map.end() || !gguf_model_decoder.has_rope()) {
+        return;
+    }
+    // When each ROPE op generates its own sin/cos from its per-op rope_config (e.g. gemma4
+    // where SWA and global layers have different n_dims), skip the shared table entirely.
+    if (gguf_model_decoder.use_per_op_rope()) {
         return;
     }
     auto inp_pos = tensor_map.at("inp_pos").get_node_shared_ptr();
@@ -295,6 +301,15 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     resulting_model = std::make_shared<Model>(results, used_params);
 
     apply_transformations(resulting_model);
+
+    // Attach the GGUF tokenizer metadata as a non-serializable runtime attribute, so a
+    // downstream consumer (OpenVINO GenAI) can build the tokenizer/detokenizer without
+    // re-opening the .gguf. Skipped when the file carries no tokenizer metadata.
+    const auto& tok_cfg = ggml_model_decoder->get_tokenizer_config();
+    if (!tok_cfg.empty()) {
+        resulting_model->get_rt_info()[gguf_tokenizer_metadata_key()] =
+            std::make_shared<GGUFTokenizerMetadata>(tok_cfg);
+    }
 
     // Set WeightlessCacheAttribute on large constants to avoid unnecessary memory copies
     // in the NPUW plugin. Without this attribute, NPUW's LazyTensor constructor

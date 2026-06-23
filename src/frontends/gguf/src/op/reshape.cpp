@@ -6,6 +6,7 @@
 #include <openvino/op/concat.hpp>
 #include <openvino/op/constant.hpp>
 #include <openvino/op/reshape.hpp>
+#include <openvino/op/transpose.hpp>
 #include <stdexcept>
 #include <vector>
 
@@ -26,7 +27,8 @@ OutputVector translate_reshape(const NodeContext& context) {
 
     int op_case = context.get_op_case();
     FRONT_END_CHECK_IMPLEMENTED(
-        op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 || op_case == 6 || op_case == 7,
+        op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 || op_case == 6 || op_case == 7 ||
+            op_case == 8,
         "Unsupported RESHAPE case");
 
     auto output_shape = context.get_output_shape().to_shape();
@@ -83,6 +85,35 @@ OutputVector translate_reshape(const NodeContext& context) {
         // axis stays dynamic via -1; only the last dim (n_embd) is static.
         int64_t last = (int64_t)output_shape[3];
         new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, 1, -1, last});
+    } else if (op_case == 8) {
+        // Per-layer embedding reshape+transpose:
+        //   stateful:     [T, n_layer*pe_dim] -> reshape [T, n_layer, pe_dim] -> transpose [n_layer, T, pe_dim]
+        //   non-stateful: [1, 1, T, n_layer*pe_dim] -> reshape [1, T, n_layer, pe_dim] -> transpose [1, n_layer, T, pe_dim]
+        // output_shape is {1, n_layer, T, pe_dim}; dim[1] (n_layer) and dim[3] (pe_dim) are static.
+        // A naive reshape directly to [n_layer, T, pe_dim] is WRONG for T>1: the data is
+        // contiguous as [T, n_layer, pe_dim] (one row per token), so we must reshape then
+        // transpose the first two non-batch axes.
+        int64_t n_layer = (int64_t)output_shape[1];
+        int64_t pe_dim = (int64_t)output_shape[3];
+        if (context.is_stateful()) {
+            // Step 1: reshape to [T, n_layer, pe_dim] (-1 on T axis for dynamic)
+            new_shape_node =
+                ov::op::v0::Constant::create(ov::element::i64, {3}, std::vector<int64_t>{-1, n_layer, pe_dim});
+            auto reshaped = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
+            // Step 2: transpose [T, n_layer, pe_dim] -> [n_layer, T, pe_dim]
+            auto perm = ov::op::v0::Constant::create(ov::element::i64, {3}, std::vector<int64_t>{1, 0, 2});
+            auto transposed = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
+            return rename_outputs_with_suffix({transposed}, context.get_name());
+        } else {
+            // Step 1: reshape to [1, T, n_layer, pe_dim]
+            new_shape_node =
+                ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_layer, pe_dim});
+            auto reshaped = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
+            // Step 2: transpose [1, T, n_layer, pe_dim] -> [1, n_layer, T, pe_dim]
+            auto perm = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, 2, 1, 3});
+            auto transposed = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
+            return rename_outputs_with_suffix({transposed}, context.get_name());
+        }
     }
     auto res = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
     return rename_outputs_with_suffix({res}, context.get_name());

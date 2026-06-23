@@ -91,6 +91,11 @@ public:
     // the shared rope sin/cos. has_rope() == false means the model uses no RoPE.
     virtual bool has_rope() const = 0;
 
+    // When true, each ROPE op generates its own sin/cos from its per-op rope_config
+    // (e.g. gemma4 where SWA and global layers have different n_dims). The shared
+    // rope_cos/rope_sin tensor is NOT added to the tensor map.
+    virtual bool use_per_op_rope() const = 0;
+
     virtual RopeConfig get_rope_config() const = 0;
 
     virtual std::map<std::string, std::string> get_kv_param_res_names() const = 0;
@@ -100,6 +105,10 @@ public:
     virtual bool is_stateful() const = 0;
 
     virtual bool is_swa_layer(int layer) const = 0;
+
+    // GGUF tokenizer metadata (`tokenizer.*` keys, keyed by the sub-key after the last dot),
+    // for building the tokenizer downstream. Empty if the file carries none.
+    virtual const ov::AnyMap& get_tokenizer_config() const = 0;
 };
 
 }  // namespace gguf

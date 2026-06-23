@@ -66,6 +66,19 @@ struct GgufGraph {
 
     bool has_rope = false;
     RopeConfig rope_config;
+
+    // When true, each ROPE op builds its own sin/cos table from its per-op rope_config
+    // (useful when different layers need different n_dims, e.g. gemma4 SWA vs global).
+    // TranslateSession::add_rope_sin_cos skips the shared table when this is set.
+    bool use_per_op_rope = false;
+
+    // GGUF tokenizer metadata (the `tokenizer.*` keys), keyed by the sub-key after the last
+    // dot (e.g. "model", "tokens", "merges", "scores", "token_type", "pre", "bos_token_id",
+    // "chat_template"). Values are std::string / std::vector<std::string> / ov::Tensor,
+    // mirroring the GGUF metadata variant. Attached to the model's (non-serializable) rt_info
+    // by TranslateSession so a downstream consumer can build the tokenizer without re-reading
+    // the .gguf. Empty if the file carries no tokenizer metadata.
+    ov::AnyMap tokenizer_config;
 };
 
 }  // namespace gguf
