@@ -129,23 +129,36 @@ OutputVector translate_rope(const NodeContext& context) {
         // back to the gguf layout. The math is unchanged; the wrapping Transposes are sunk /
         // cancelled against the adjacent PERMUTE during TransposeSinking.
         //
-        // The ggml-natural shapes here are: data [B,L,H,S] (or [L,H,S] when stateful) and
-        // cos/sin [B,L,1,head/2]. Unsqueeze(0) on the rank-3 data, then a single
-        // Transpose {0,2,1,3}, maps both data and the caches to canonical layout (data ->
-        // [B,H,L,S]; caches -> [B,1,L,head/2]) because the head axis (or its size-1
-        // placeholder) sits at rank-2 in the gguf layout.
-        auto to_bhls = [](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
-            if (x.get_partial_shape().rank().get_length() == 3) {
-                x = std::make_shared<ov::op::v0::Unsqueeze>(x,
-                                                            ov::op::v0::Constant::create(ov::element::i64, {1}, {0}));
-            }
-            auto perm = ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3});
-            return std::make_shared<ov::op::v1::Transpose>(x, perm);
+        // The ggml-natural shapes here are: data [B,L,H,S] (or [B,L,H*S] when the
+        // Kcur_r reshape was eliminated for n_head_kv=1) and cos/sin [B,L,1,head/2].
+        // For rank-4 data [B,L,H,S]: Transpose {0,2,1,3} → [B,H,L,S].
+        // For rank-3 data [B,L,H*S]: first reshape to [B,L,H,S] using output_shape,
+        // then Transpose {0,2,1,3} → [B,H,L,S]. The cos/sin are always rank-4 [B,L,1,S/2].
+        const int64_t n_head_rope = static_cast<int64_t>(output_shape[2]);
+        const int64_t head_size_rope = static_cast<int64_t>(output_shape[3]);
+        const auto perm_bhls = ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3});
+
+        // The DATA reaches this op in inconsistent shapes depending on the layer's upstream rank:
+        // rank-3 [B, L, H*S] (e.g. n_head_kv=1 layers fed by a rank-3 producer), or rank-4 that
+        // may be [B, L, H, S] OR [B, 1, L, S] (when an upstream rank-4 l_out makes OV keep a
+        // leading 1 and the head axis lands at position 1). A single fixed Transpose cannot
+        // normalize all of these. Instead, always Reshape the data to the canonical ggml-natural
+        // [B, L, H, S] using the op's output_shape (element order is preserved, so this correctly
+        // reinterprets every incoming layout), then Transpose {0,2,1,3} -> [B, H, L, S].
+        auto data_to_bhls = [&](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
+            auto shape4d = ov::op::v0::Constant::create(
+                ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_head_rope, head_size_rope});
+            x = std::make_shared<ov::op::v1::Reshape>(x, shape4d, false);  // [B, L, H, S]
+            return std::make_shared<ov::op::v1::Transpose>(x, perm_bhls);  // [B, H, L, S]
+        };
+        // cos/sin always arrive rank-4 [B, L, 1, head/2]; just transpose to [B, 1, L, head/2].
+        auto cossin_to_bhls = [&](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
+            return std::make_shared<ov::op::v1::Transpose>(x, perm_bhls);
         };
 
-        auto x_bhls = to_bhls(data_node);         // [B, H, L, S]
-        auto cos_bhls = to_bhls(cos_theta_node);  // [B, 1, L, head/2]
-        auto sin_bhls = to_bhls(sin_theta_node);  // [B, 1, L, head/2]
+        auto x_bhls = data_to_bhls(data_node);       // [B, H, L, S]
+        auto cos_bhls = cossin_to_bhls(cos_theta_node);  // [B, 1, L, head/2]
+        auto sin_bhls = cossin_to_bhls(sin_theta_node);  // [B, 1, L, head/2]
 
         ov::pass::NodeRegistry reg;
         const int64_t half = static_cast<int64_t>(output_shape[3]) / 2;

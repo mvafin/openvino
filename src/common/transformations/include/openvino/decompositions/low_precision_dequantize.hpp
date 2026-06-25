@@ -52,7 +52,14 @@ namespace decomposition {
 /// \param scale        Dequantization scale; its element type determines the
 ///                     output element type of the sub-graph.
 /// \param zero_point   Optional zero point. When provided a Subtract is
-///                     inserted between the Convert and the Multiply.
+///                     inserted between the Convert and the Multiply. The zero
+///                     point may be either an integer type matching the weights
+///                     (canonical low-bit zp, e.g. u4/u8 — an extra Convert to the
+///                     compute type is inserted) or already in the scale/compute
+///                     type (e.g. a fractional f16 zp, as the GGUF K-quant path
+///                     uses to represent `min/scale` exactly — no extra Convert,
+///                     yielding the Subtract(Convert(x), zp) `sub_no_convert` form
+///                     that the FC-compressed fusion still folds).
 /// \param output_shape Optional shape constant. When provided a Reshape with
 ///                     special_zero=false is appended after the Multiply
 ///                     (skipped if the Multiply output already has that shape).

@@ -267,15 +267,16 @@ TEST(GGUFQuantDequant, Q4_1_asymmetric) {
 
     gguf_tensor tensor = make_tensor(block.data(), block.size(), 1, 32, GGUF_TYPE_Q4_1);
 
-    // Shapes for Q4_1: 1 block → weights u32[1,4], scales f16[1,1], zp u4[1,1]
+    // Shapes for Q4_1: 1 block → weights u32[1,4], scales f16[1,1], zp f16[1,1].
+    // zp is a FRACTIONAL f16 (= -min/scale), not an integer (see fill_q4_1).
     ov::Tensor weights(ov::element::u32, ov::Shape{1, 4});
     ov::Tensor scales(ov::element::f16, ov::Shape{1, 1});
-    ov::Tensor zp(ov::element::u4, ov::Shape{1, 1});
+    ov::Tensor zp(ov::element::f16, ov::Shape{1, 1});
     gguf_fill_asym(tensor, weights, scales, zp);
 
-    // Verify zp = 4
-    const uint8_t* zp_data = static_cast<const uint8_t*>(zp.data());
-    EXPECT_EQ(zp_data[0] & 0x0F, 4u);
+    // zp = -min/scale = -(-4)/1 = 4 (happens to be integer here).
+    const auto* zp_data = zp.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    EXPECT_NEAR(static_cast<float>(zp_data[0]), 4.0f, 1e-3f);
 
     std::unordered_map<std::string, ov::Tensor> w_map;
     std::unordered_map<std::string, gguf_tensor_type> q_map;
@@ -305,11 +306,11 @@ TEST(GGUFQuantDequant, Q4_1_min_zero_is_symmetric) {
     gguf_tensor tensor = make_tensor(block.data(), block.size(), 1, 32, GGUF_TYPE_Q4_1);
     ov::Tensor weights(ov::element::u32, ov::Shape{1, 4});
     ov::Tensor scales(ov::element::f16, ov::Shape{1, 1});
-    ov::Tensor zp(ov::element::u4, ov::Shape{1, 1});
+    ov::Tensor zp(ov::element::f16, ov::Shape{1, 1});
     gguf_fill_asym(tensor, weights, scales, zp);
 
-    const uint8_t* zp_data = static_cast<const uint8_t*>(zp.data());
-    EXPECT_EQ(zp_data[0] & 0x0F, 0u);
+    const auto* zp_data = zp.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    EXPECT_NEAR(static_cast<float>(zp_data[0]), 0.0f, 1e-3f);
 
     std::unordered_map<std::string, ov::Tensor> w_map;
     std::unordered_map<std::string, gguf_tensor_type> q_map;

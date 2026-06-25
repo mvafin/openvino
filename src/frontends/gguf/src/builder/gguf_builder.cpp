@@ -57,7 +57,14 @@ constexpr int ROPE_OP_CASE_NEOX = 0x00010000;
 // uses NORMAL (rotate consecutive pairs). Mirrors llama_model_rope_type.
 bool arch_uses_neox_rope(const std::string& arch) {
     return arch == "qwen2" || arch == "qwen3" || arch == "phi3" || arch == "hunyuan-dense" || arch == "gpt-oss" ||
-           arch == "gemma" || arch == "gemma2" || arch == "gemma4" || arch == "olmoe";
+           arch == "gemma" || arch == "gemma2" || arch == "gemma3" || arch == "gemma4" || arch == "olmoe" ||
+           // H2 2025 dense additions
+           arch == "exaone4" || arch == "plamo3" || arch == "mellum" ||
+           // H2 2025 MoE additions
+           arch == "hunyuan-moe" || arch == "glm4moe" || arch == "bailingmoe2" || arch == "exaone-moe" ||
+           arch == "minimax-m2" ||
+           // H2 2025 VL backbone / other
+           arch == "jais2" || arch == "deepseek2-ocr";
 }
 
 // Shapes are kept in the OpenVINO/GGML logical order [ne3, ne2, ne1, ne0] (reverse of GGUF
@@ -82,6 +89,12 @@ public:
         m_head_size = cfg_int("head_size");
         m_n_embd = cfg_int("hidden_size");
         m_rms_eps = cfg_float("rms_norm_eps");
+        if (config.count("head_num_kv_per_layer")) {
+            if (auto* t = std::get_if<ov::Tensor>(&config.at("head_num_kv_per_layer"))) {
+                const auto* data = t->data<uint32_t>();
+                m_n_head_kv_per_layer.assign(data, data + t->get_size());
+            }
+        }
 
         const std::string arch_str = std::get<std::string>(config.at("architecture"));
 
@@ -96,29 +109,68 @@ public:
             const size_t qn = m_weights.at("blk.0.attn_q_norm.weight").get_shape()[0];
             m_qk_norm_full = (arch_str != "gemma4") && (qn != static_cast<size_t>(m_head_size));
         }
-        m_is_moe = m_weights.count("blk.0.ffn_gate_exps.weight") > 0;
+        m_n_dense_lead = cfg_int("n_layer_dense_lead");
+        // Detect MoE from the first non-dense-lead layer (layer 0 may be dense even in MoE models).
+        {
+            const int probe = std::max(0, m_n_dense_lead);
+            const std::string pp = "blk." + std::to_string(probe) + ".";
+            m_is_moe = m_weights.count(pp + "ffn_gate_exps.weight") > 0;
+        }
         // Gemma/Gemma2 use GeGLU (GELU-gated FFN). Detected by arch name since other archs
         // in the supported set (llama, qwen2, qwen3, phi3) all use SwiGLU.
-        m_is_geglu = arch_str == "gemma" || arch_str == "gemma2" || arch_str == "gemma4";
-        // gemma4: V projection is also RMSNorm'd (no weight, just normalize).
+        m_is_geglu = arch_str == "gemma" || arch_str == "gemma2" || arch_str == "gemma3" || arch_str == "gemma4";
+        // gemma4 only: V projection is also RMSNorm'd (no weight, just normalize). gemma3 has
+        // Q/K norm but NO V norm -- llama.cpp src/models/gemma3.cpp norms Qcur/Kcur only and
+        // sends Vcur straight to the cache (gemma4.cpp:227 adds the extra ggml_rms_norm on V).
         m_has_v_norm = (arch_str == "gemma4");
         m_n_expert = cfg_int("expert_count");
         m_n_expert_used = cfg_int("expert_used_count");
+        m_n_expert_shared = cfg_int("expert_shared_count");
         m_has_moe_gate_bias = m_weights.count("blk.0.ffn_gate_inp.bias") > 0;     // gpt-oss
         m_has_moe_expert_bias = m_weights.count("blk.0.ffn_gate_exps.bias") > 0;  // gpt-oss
         m_has_sinks = m_weights.count("blk.0.attn_sinks.weight") > 0;             // gpt-oss
-        // Gemma2: per-layer post-attention and post-FFN RMSNorm applied after the sublayer
+        // Gemma2/Gemma4: per-layer post-attention and post-FFN RMSNorm applied after the sublayer
         // output and before the residual add. Detected from the tensor table at layer 0.
-        m_has_attn_post_norm = m_weights.count("blk.0.post_attention_norm.weight") > 0;
-        m_has_ffn_post_norm = m_weights.count("blk.0.post_ffw_norm.weight") > 0;
+        //
+        // Key naming ambiguity across architectures:
+        //   Gemma2/Gemma4: attn_norm (pre-attn) + ffn_norm (pre-FFN)
+        //                  + post_attention_norm (post-attn) + post_ffw_norm (post-FFN)
+        //   gpt-oss:       attn_norm (pre-attn) + post_attention_norm (pre-FFN, no ffn_norm!)
+        //   exaone4:       post_attention_norm (pre-attn!) + post_ffw_norm (pre-FFN!) — no attn_norm
+        //
+        // Rule: post_attention_norm is a true POST-attn norm only when both attn_norm.weight
+        // AND ffn_norm.weight also exist.  Same for post_ffw_norm as a true POST-FFN norm.
+        {
+            const bool has_attn_norm_w  = m_weights.count("blk.0.attn_norm.weight") > 0;
+            const bool has_ffn_norm_w   = m_weights.count("blk.0.ffn_norm.weight") > 0;
+            m_has_attn_post_norm = m_weights.count("blk.0.post_attention_norm.weight") > 0
+                                   && has_attn_norm_w && has_ffn_norm_w;
+            m_has_ffn_post_norm  = m_weights.count("blk.0.post_ffw_norm.weight") > 0 && has_ffn_norm_w;
+
+            // Compute effective pre-attn and pre-FFN norm key suffixes.
+            // Standard: "attn_norm.weight" / "ffn_norm.weight".
+            // exaone4:  "post_attention_norm.weight" / "post_ffw_norm.weight".
+            // gpt-oss:  "attn_norm.weight" / "post_attention_norm.weight".
+            if (!has_attn_norm_w && m_weights.count("blk.0.post_attention_norm.weight") > 0) {
+                m_attn_norm_key = "post_attention_norm.weight";  // exaone4
+            }
+            if (!has_ffn_norm_w) {
+                if (m_weights.count("blk.0.post_ffw_norm.weight") > 0) {
+                    m_ffn_norm_key = "post_ffw_norm.weight";        // exaone4
+                } else if (m_weights.count("blk.0.post_attention_norm.weight") > 0) {
+                    m_ffn_norm_key = "post_attention_norm.weight";  // gpt-oss
+                }
+            }
+        }
         // gpt-oss uses "softmax-after-topk" gating + the OAI gated activation; OLMoE uses
         // softmax-before-topk + plain SwiGLU. Detect by weight-tensor presence so the logic
         // extends to future architectures without touching this file.
         m_moe_swiglu_oai = m_has_moe_gate_bias;      // gate_inp bias is OAI-gating-specific
         m_moe_softmax_weight = m_has_moe_gate_bias;  // same tensor signals softmax-after-topk
-        // SWA is present if either sinks (gpt-oss) or per-layer flags (gemma4) indicate it.
-        // For gemma4, m_swa_layer_flags will be populated after this block; detect by head_size_swa.
-        m_has_swa = m_has_sinks || (arch_str == "gemma4");
+        // SWA is present if sinks (gpt-oss), per-layer flags (gemma4), or has_swa was set
+        // from the GGUF metadata (smollm3, exaone-moe, gemma3, and future archs that set
+        // attention.sliding_window_pattern / attention.sliding_window).
+        m_has_swa = m_has_sinks || (arch_str == "gemma3") || (arch_str == "gemma4") || cfg_int("has_swa") != 0;
         m_has_fused_qkv = m_weights.count("blk.0.attn_qkv.weight") > 0;  // phi-3, minicpm
         m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0 || m_weights.count("blk.0.attn_qkv.bias") > 0;
         m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
@@ -160,8 +212,13 @@ public:
         m_rope_config_swa = m_graph->rope_config;
         m_rope_config_swa.freq_base = cfg_float("rope_freq_base_swa");
         m_rope_config_swa.n_dims = cfg_int("rope_dimension_count_swa");
-        // Gemma4 needs per-op sin/cos because SWA and global layers have different n_dims.
-        if (m_rope_dim_swa > 0 && m_rope_dim_swa != m_graph->rope_config.n_dims) {
+        // Per-op sin/cos is required whenever SWA and global layers differ in any rope
+        // parameter that feeds the shared sin/cos table: n_dims (gemma4) OR freq_base (gemma3,
+        // whose SWA layers rope at 10000 vs the global 1000000). Without it every layer would
+        // share the global table and SWA layers would be roped wrong.
+        const bool swa_dims_differ = m_rope_dim_swa > 0 && m_rope_dim_swa != m_graph->rope_config.n_dims;
+        const bool swa_freq_differs = m_rope_config_swa.freq_base != m_graph->rope_config.freq_base;
+        if (m_has_swa && (swa_dims_differ || swa_freq_differs)) {
             m_graph->use_per_op_rope = true;
         }
     }
@@ -289,11 +346,14 @@ private:
 
     // Dense SwiGLU FFN (llama/qwen/phi3/minicpm). `ffn_norm` is the post-norm hidden.
     // Returns the down-projection output tensor name. T is the static token length.
+    // Supports optional per-projection biases (pangu-embedded: ffn_gate.bias, ffn_up.bias,
+    // ffn_down.bias), auto-detected from the weight table at layer 0.
     std::string build_dense_ffn(const std::string& p, const std::string& ffn_norm, int64_t T) {
         using ov::element::f32;
         add_weight(p + "ffn_up.weight");
         add_weight(p + "ffn_down.weight");
         const bool fused_ffn = m_weights.count(p + "ffn_gate.weight") == 0;  // phi-3: fused gate+up
+        const bool has_ffn_bias = m_weights.count(p + "ffn_up.bias") > 0;
         std::string glu;
         if (fused_ffn) {
             const int up2 = static_cast<int>(m_weights.at(p + "ffn_up.weight").get_shape()[0]);  // 2*n_ff
@@ -310,8 +370,14 @@ private:
             const int n_ff = static_cast<int>(m_weights.at(p + "ffn_gate.weight").get_shape()[0]);
             auto gate =
                 add_op("GGML_OP_MUL_MAT", p + "ffn_gate", {p + "ffn_gate.weight", ffn_norm}, ps({1, 1, T, n_ff}), f32);
+            if (has_ffn_bias) {
+                gate = add_bias(gate, p + "ffn_gate.bias", p + "ffn_gate_b");
+            }
             auto up =
                 add_op("GGML_OP_MUL_MAT", p + "ffn_up", {p + "ffn_up.weight", ffn_norm}, ps({1, 1, T, n_ff}), f32);
+            if (has_ffn_bias) {
+                up = add_bias(up, p + "ffn_up.bias", p + "ffn_up_b");
+            }
             glu = add_op("GGML_GLU_OP_SWIGLU",
                          p + "ffn_swiglu",
                          {gate, up},
@@ -320,7 +386,12 @@ private:
                          0,
                          {{"swapped", false}});
         }
-        return add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu}, ps({1, 1, T, m_n_embd}), f32);
+        auto out =
+            add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu}, ps({1, 1, T, m_n_embd}), f32);
+        if (has_ffn_bias) {
+            out = add_bias(out, p + "ffn_down.bias", p + "ffn_out_b");
+        }
+        return out;
     }
 
     // Mixture-of-experts FFN (OLMoE / gpt-oss), mirroring llm_graph_context::build_moe_ffn.
@@ -444,7 +515,42 @@ private:
         auto weighted = add_op("GGML_OP_MUL", p + "moe_weighted", {experts, weights}, ps({1, T, K, m_n_embd}), f32);
         auto tr = add_op("GGML_OP_TRANSPOSE", p + "moe_tr", {weighted}, ps({1, T, m_n_embd, K}), f32);
         auto summed = add_op("GGML_OP_SUM_ROWS", p + "moe_sum", {tr}, ps({1, T, m_n_embd, 1}), f32);
-        return add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 7);
+        auto moe_out = add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 7);
+
+        // Shared experts (deepseek2-ocr, bailingmoe2, exaone-moe): always-active experts whose
+        // output is added to the routed experts' weighted sum. Uses plain SwiGLU dense FFN with
+        // ffn_{gate,up,down}_shexp.weight (n_ff_shared = shexp rows). Output added to moe_out.
+        if (m_n_expert_shared > 0 && m_weights.count(p + "ffn_gate_shexp.weight") > 0) {
+            add_weight(p + "ffn_gate_shexp.weight");
+            add_weight(p + "ffn_up_shexp.weight");
+            add_weight(p + "ffn_down_shexp.weight");
+            const int n_ff_s =
+                static_cast<int>(m_weights.at(p + "ffn_gate_shexp.weight").get_shape()[0]);
+            auto s_gate = add_op("GGML_OP_MUL_MAT",
+                                 p + "shexp_gate",
+                                 {p + "ffn_gate_shexp.weight", ffn_norm},
+                                 ps({1, 1, T, n_ff_s}),
+                                 f32);
+            auto s_up = add_op("GGML_OP_MUL_MAT",
+                               p + "shexp_up",
+                               {p + "ffn_up_shexp.weight", ffn_norm},
+                               ps({1, 1, T, n_ff_s}),
+                               f32);
+            auto s_act = add_op("GGML_GLU_OP_SWIGLU",
+                                p + "shexp_act",
+                                {s_gate, s_up},
+                                ps({1, 1, T, n_ff_s}),
+                                f32,
+                                0,
+                                {{"swapped", false}});
+            auto s_down = add_op("GGML_OP_MUL_MAT",
+                                 p + "shexp_out",
+                                 {p + "ffn_down_shexp.weight", s_act},
+                                 ps({1, 1, T, m_n_embd}),
+                                 f32);
+            moe_out = add_op("GGML_OP_ADD", p + "moe_shared_out", {moe_out, s_down}, ps({1, 1, T, m_n_embd}), f32);
+        }
+        return moe_out;
     }
 
     // Split a fused blk.<il>.attn_qkv weight into separate q/k/v weight nodes registered
@@ -509,6 +615,7 @@ private:
     std::shared_ptr<GgufGraph> m_graph;
 
     int m_n_layer = 0, m_n_head = 0, m_n_head_kv = 0, m_head_size = 0, m_n_embd = 0;
+    std::vector<uint32_t> m_n_head_kv_per_layer;  // non-empty when head_count_kv varies by layer
     float m_rms_eps = 0.0f;
 
     // auto-detected per-architecture structure
@@ -518,7 +625,10 @@ private:
     bool m_has_moe_expert_bias = false, m_has_sinks = false, m_has_swa = false;
     bool m_has_attn_post_norm = false, m_has_ffn_post_norm = false, m_is_geglu = false;
     bool m_has_v_norm = false;  // gemma4: V is also RMSNorm'd like K
-    int m_n_expert = 0, m_n_expert_used = 0;
+    // Norm key suffixes; overridden for archs that use non-standard naming (exaone4, gpt-oss).
+    std::string m_attn_norm_key{"attn_norm.weight"};
+    std::string m_ffn_norm_key{"ffn_norm.weight"};
+    int m_n_expert = 0, m_n_expert_used = 0, m_n_dense_lead = 0, m_n_expert_shared = 0;
     float m_embedding_scale = 1.0f, m_residual_scale = 1.0f, m_logit_scale = 1.0f, m_attention_scale = 0.0f;
     float m_expert_weights_scale = 0.0f;
     float m_attn_soft_cap = 0.0f, m_final_logit_soft_cap = 0.0f;
@@ -701,8 +811,8 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         const std::string p = "blk." + std::to_string(il) + ".";
         const std::string inpSA = cur;
 
-        // attn_norm
-        std::string attn_norm = rms_norm(cur, p + "attn_norm.weight", p + "attn_norm");
+        // attn_norm (key varies by arch: "attn_norm.weight" for most, "post_attention_norm.weight" for exaone4)
+        std::string attn_norm = rms_norm(cur, p + m_attn_norm_key, p + "attn_norm");
 
         // SWA detection: gemma4 uses a per-layer boolean flag array; gpt-oss uses a period.
         bool is_swa_layer = false;
@@ -714,7 +824,9 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         }
         // Per-layer head/KV sizes: gemma4 SWA layers have smaller heads than global layers.
         const int head_size_l = (is_swa_layer && m_head_size_swa > 0) ? m_head_size_swa : m_head_size;
-        const int n_head_kv_l = m_n_head_kv;
+        const int n_head_kv_l = (!m_n_head_kv_per_layer.empty() && il < static_cast<int>(m_n_head_kv_per_layer.size()))
+                                    ? static_cast<int>(m_n_head_kv_per_layer[il])
+                                    : m_n_head_kv;
         // Per-layer attention scale: if m_attention_scale is set explicitly, keep it; otherwise
         // use 1/sqrt(head_size_l) so SWA and global layers each get the right scale.
         const float kq_scale = m_attention_scale != 0.0f
@@ -731,7 +843,16 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         } else {
             add_weight(p + "attn_q.weight");
             add_weight(p + "attn_k.weight");
-            add_weight(p + "attn_v.weight");
+            // MQA tie-V: some global attention layers (e.g. gemma4-12B every 6th layer) have
+            // head_count_kv==1 and no separate attn_v.weight; V shares K's weight tensor.
+            if (m_weights.count(p + "attn_v.weight") > 0) {
+                add_weight(p + "attn_v.weight");
+            } else {
+                // Alias V weight to K weight for this layer.
+                m_graph->model_weights[p + "attn_v.weight"] = m_graph->model_weights.at(p + "attn_k.weight");
+                m_tensor_shapes[p + "attn_v.weight"] = m_tensor_shapes.at(p + "attn_k.weight");
+                m_tensor_types[p + "attn_v.weight"] = m_tensor_types.at(p + "attn_k.weight");
+            }
         }
         auto q = add_op("GGML_OP_MUL_MAT",
                         p + "Qcur",
@@ -933,17 +1054,14 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
 
         auto ffn_inp = add_op("GGML_OP_ADD", p + "ffn_inp", {ao, sa}, ps({1, 1, T, m_n_embd}), f32);
 
-        // Pre-FFN/MoE norm. gpt-oss names it post_attention_norm (applied before FFN, not after
-        // attention); Gemma2 uses ffn_norm.weight here (the Gemma2 post_attention_norm is handled
-        // above). Other archs always use ffn_norm.weight.
-        const std::string ffn_norm_w = (!m_has_attn_post_norm && m_weights.count(p + "post_attention_norm.weight"))
-                                           ? p + "post_attention_norm.weight"
-                                           : p + "ffn_norm.weight";
-        auto ffn_norm = rms_norm(ffn_inp, ffn_norm_w, p + "ffn_norm");
+        // Pre-FFN/MoE norm. Key varies by arch (m_ffn_norm_key is set in constructor).
+        auto ffn_norm = rms_norm(ffn_inp, p + m_ffn_norm_key, p + "ffn_norm");
 
-        std::string down = m_is_moe     ? build_moe_ffn(p, ffn_norm, T)
-                           : m_is_geglu ? build_geglu_ffn(p, ffn_norm, T)
-                                        : build_dense_ffn(p, ffn_norm, T);
+        // Hybrid MoE: lead layers (il < m_n_dense_lead) are always dense regardless of m_is_moe.
+        const bool is_moe_layer = m_is_moe && (il >= m_n_dense_lead);
+        std::string down = is_moe_layer  ? build_moe_ffn(p, ffn_norm, T)
+                           : m_is_geglu  ? build_geglu_ffn(p, ffn_norm, T)
+                                         : build_dense_ffn(p, ffn_norm, T);
         // MiniCPM scales the FFN sublayer output before the residual add.
         if (m_residual_scale != 1.0f) {
             down = scale(down, m_residual_scale, p + "ffn_out_scaled");
@@ -1047,17 +1165,43 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
 // Adding a same-family architecture is just adding its GGUF architecture name here.
 const std::set<std::string>& supported_archs() {
     static const std::set<std::string> archs = {
-        "llama",  // llama-2 / llama-3
-        "qwen2",  // qwen2 / qwen2.5
+        // ---- Originally supported ----
+        "llama",       // llama-2 / llama-3
+        "qwen2",       // qwen2 / qwen2.5
         "qwen3",
-        "phi3",  // phi-3
+        "phi3",        // phi-3
         "minicpm",
         "hunyuan-dense",
-        "olmoe",    // MoE
-        "gpt-oss",  // MoE + sinks + SWA
-        "gemma",    // Gemma 2B / 7B
-        "gemma2",   // Gemma 2 (2B / 9B / 27B) with post-norms and attention soft-cap
-        "gemma4",   // Gemma 4 (E2B / E4B / 12B) with SWA, per-layer embeddings, shared KV
+        "olmoe",       // OLMoE 1B-7B
+        "qwen3moe",    // Qwen3 MoE (0.6B-235B): same topology as olmoe
+        "gpt-oss",     // MoE + sinks + SWA
+        "gemma",       // Gemma 2B / 7B
+        "gemma2",      // Gemma 2 (2B / 9B / 27B): post-norms + attention soft-cap
+        "gemma3",      // Gemma 3 (1B / 4B / 12B / 27B): post-norms + final logit soft-cap
+        "gemma4",      // Gemma 4 (E2B / E4B / 12B): SWA, per-layer embeddings, shared KV
+
+        // ---- H2 2025: dense ----
+        "llama-embed",   // Bidirectional LLaMA (embedding, no causal mask)
+        "exaone4",       // EXAONE 4.0: NEOX rope, post-norms (attn+ffn)
+        "plamo3",        // PLaMo-3: NEOX rope, post-norms (attn+ffn)
+        "smollm3",       // SmolLM3: NORMAL rope + SWA (sliding_window_pattern in GGUF)
+
+        // ---- H2 2025: MoE ----
+        "hunyuan-moe",   // Hunyuan MoE: NEOX rope, MoE routing, QK-norm
+        "glm4moe",       // GLM 4.5 MoE: NEOX rope, 1 dense lead layer, MoE + attn post-norm
+        "exaone-moe",    // EXAONE MoE: NEOX rope, SWA + MoE, shared expert
+        "minimax-m2",    // Minimax M2: NEOX rope, pure MoE
+        "ernie4_5-moe",  // Ernie 4.5 MoE: NORMAL rope, dense lead layers + MoE stride
+        "bailingmoe2",   // BailingMoe V2: NEOX rope, MoE + shared expert + QK-norm
+
+        // ---- 2026: dense ----
+        "maincoder",     // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
+        "mistral3",      // Ministral-3B: NORMAL rope, dense
+
+        // ---- 2026: MoE ----
+        "mellum",        // JetBrains Mellum: NEOX rope, pure MoE
+        "deepseek2-ocr", // DeepSeekOCR: NEOX rope, dense lead layers + MoE
+        "jais2",         // JAIS-2: NEOX rope, dense (biases auto-detected)
     };
     return archs;
 }
@@ -1096,7 +1240,7 @@ std::shared_ptr<GgufGraph> build_ggml_graph_from_gguf(const std::string& file) {
     OPENVINO_ASSERT(supported_archs().count(arch),
                     "[ggml] native GGUF builder does not support architecture '",
                     arch,
-                    "'. Supported: llama, qwen2, qwen3, phi3, minicpm, hunyuan-dense, gemma, gemma2, gemma4.");
+                    "'. See supported_archs() in gguf_builder.cpp for the full list.");
 
     TransformerBuilder builder(config, weights, qtypes);
     auto graph = builder.build();

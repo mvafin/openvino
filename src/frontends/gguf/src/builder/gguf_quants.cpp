@@ -35,24 +35,21 @@ void unpack_32_4(const uint8_t* data, uint8_t* dst) {
 }
 
 // Q4_1 asymmetric: block = |f16 scale|f16 min|32x4bit weights|.
-// Weights are u4 [0..15]; min encodes the zero-point as zp = round(-min / scale).
-// Outputs u32-packed u4 weights + f16 scales + u4 zero-points (one per block).
+// Dequant w = sc*q + mn = sc*(q - zp) with FRACTIONAL zp = -mn/sc (stored f16). An integer zp
+// would force mn to a multiple of sc and inject error (see fill_q4_k for the detailed rationale).
+// Outputs u32-packed u4 weights + f16 scales + f16 zero-points (one per block).
 void fill_q4_1(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t bytes_per_block = 20;  // 2 bytes scale, 2 bytes min, 32x0.5 byte weights
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<uint8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto zp_bytes = static_cast<uint8_t*>(zp_arr.data());  // u4 packed: 2 zp per byte
+    auto zp = zp_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
     const size_t n = scales_arr.get_size();
     ov::parallel_for(n, [&](size_t i) {
         const float sc = static_cast<float>(ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block))));
         const float mn = static_cast<float>(ov::float16::from_bits(*((uint16_t*)(data + i * bytes_per_block + 2))));
         scales[i] = ov::float16(sc);
-        const uint8_t zp = (sc != 0.f) ? static_cast<uint8_t>(std::min(15.f, std::max(0.f, std::round(-mn / sc)))) : 0;
-        if (i % 2 == 0)
-            zp_bytes[i / 2] = zp & 0x0F;
-        else
-            zp_bytes[i / 2] |= (zp << 4);
+        zp[i] = ov::float16((sc != 0.f) ? (-mn / sc) : 0.f);
         unpack_32_4(data + i * bytes_per_block + 4, weights + i * 16);
     });
 }
@@ -114,14 +111,17 @@ void unpack_256_4(const uint8_t* data, uint8_t* dst) {
 
 // Q4_K asymmetric: super-block = |f16 d|f16 dmin|12 bytes scales/mins|128 bytes ql|.
 // 8 sub-blocks of 32 with 6-bit scale and 6-bit min each.
-// Outputs: u32-packed u4 weights + f16 scales + u4 zp (one per sub-block).
+// Outputs: u32-packed u4 weights + f16 scales + FRACTIONAL f16 zp (one per sub-block).
+// Dequant is w = scale*q - min, scale = d*sc_raw, min = dmin*m_raw. We express it as
+// scale*(q - zp) with zp = min/scale (fractional). An INTEGER zp would force min to a
+// multiple of scale and inject ~1e-3 error per weight that compounds across layers.
 void fill_q4_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t bytes_per_block = 2 + 2 + 12 + 128;
     const uint64_t n_super_block = tensor.bsize / bytes_per_block;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<uint8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto zp_bytes = static_cast<uint8_t*>(zp_arr.data());  // u4 packed: 2 zp per byte
+    auto zp = zp_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
 
     ov::parallel_for(n_super_block, [&](size_t i) {
         const uint8_t* block_data = data + i * bytes_per_block;
@@ -139,17 +139,11 @@ void fill_q4_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& s
         }
 
         for (int j = 0; j < 8; ++j) {
-            scales[i * 8 + j] = ov::float16(d * sc_raw[j]);
-            // zp = round(dmin * m_raw / scale); scale = d * sc_raw[j]
             const float sc = d * sc_raw[j];
             const float mn = dmin * m_raw[j];
-            const uint8_t zp =
-                (sc != 0.f) ? static_cast<uint8_t>(std::min(15.f, std::max(0.f, std::round(mn / sc)))) : 0;
-            const size_t idx = i * 8 + j;
-            if (idx % 2 == 0)
-                zp_bytes[idx / 2] = zp & 0x0F;
-            else
-                zp_bytes[idx / 2] |= (zp << 4);
+            scales[i * 8 + j] = ov::float16(sc);
+            // zp = min/scale so scale*(q - zp) = scale*q - min exactly (f16-rounded).
+            zp[i * 8 + j] = ov::float16((sc != 0.f) ? (mn / sc) : 0.f);
         }
         unpack_256_4(block_data + 16, weights + i * 128);
     });
@@ -167,14 +161,16 @@ static inline void get_scale_min_k4(int j, const uint8_t* q, uint8_t* d, uint8_t
 }
 
 // Q5_K asymmetric: super-block = 2(d) + 2(dmin) + 12(scales) + 32(qh) + 128(ql).
-// 8 sub-blocks of 32 with 6-bit scale and 6-bit min. Output: i8 weights + f16 scales + u8 zp.
+// 8 sub-blocks of 32 with 6-bit scale and 6-bit min. Output: i8 weights + f16 scales + f16 zp.
+// Like Q4_K, dequant is w = scale*q - dmin*m; zp = dmin*m/scale stored FRACTIONAL f16 (an
+// integer zp would quantize the min and inject error -- see fill_q4_k).
 void fill_q5_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t bytes_per_block = 2 + 2 + 12 + 32 + 128;
     const uint64_t n_super_block = tensor.bsize / bytes_per_block;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<int8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto zp = static_cast<uint8_t*>(zp_arr.data());  // u8 zp (one per sub-block of 32)
+    auto zp = zp_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
 
     ov::parallel_for(n_super_block, [&](size_t i) {
         const uint8_t* block_data = data + i * bytes_per_block;
@@ -194,10 +190,9 @@ void fill_q5_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& s
             const float d2 = d * sc, m2 = dmin * m;
             scales[i * 8 + is] = ov::float16(d1);
             scales[i * 8 + is + 1] = ov::float16(d2);
-            // zp = round(min / scale) where min = dmin * m
-            zp[i * 8 + is] = (d1 != 0.f) ? static_cast<uint8_t>(std::min(31.f, std::max(0.f, std::round(m1 / d1)))) : 0;
-            zp[i * 8 + is + 1] =
-                (d2 != 0.f) ? static_cast<uint8_t>(std::min(31.f, std::max(0.f, std::round(m2 / d2)))) : 0;
+            // zp = min/scale (fractional) so scale*(q - zp) = scale*q - min exactly.
+            zp[i * 8 + is] = ov::float16((d1 != 0.f) ? (m1 / d1) : 0.f);
+            zp[i * 8 + is + 1] = ov::float16((d2 != 0.f) ? (m2 / d2) : 0.f);
             for (int l = 0; l < 32; ++l) {
                 weights[i * 256 + j + l] = static_cast<int8_t>((ql[l] & 0xF) + ((qh[l] & u1) ? 16 : 0));
                 weights[i * 256 + j + l + 32] = static_cast<int8_t>((ql[l] >> 4) + ((qh[l] & u2) ? 16 : 0));
@@ -211,21 +206,21 @@ void fill_q5_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& s
 }
 
 // Q5_1 asymmetric: block = |f16 d|f16 m|32-bit qh|16 bytes ql (32x4bit low)|.
-// weight = lo|(hi<<4) in [0..31]; dequant = d*(w - zp) where zp = round(-m/d).
-// Output: i8 weights [0..31] (raw, not centered) + f16 scales + u8 zero-points.
+// weight = lo|(hi<<4) in [0..31]; dequant = d*w + m = d*(w - zp), zp = -m/d (FRACTIONAL f16).
+// Output: i8 weights [0..31] (raw, not centered) + f16 scales + f16 zero-points.
 void fill_q5_1(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t weights_per_block = 32;
     const uint64_t bytes_per_block = 2 + 2 + 4 + 16;  // d, m, qh, ql
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<int8_t*>(weights_arr.data());
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto zp = static_cast<uint8_t*>(zp_arr.data());
+    auto zp = zp_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
     ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
         const uint8_t* block = data + i * bytes_per_block;
         const float d = static_cast<float>(ov::float16::from_bits(*(uint16_t*)block));
         const float m = static_cast<float>(ov::float16::from_bits(*(uint16_t*)(block + 2)));
         scales[i] = ov::float16(d);
-        zp[i] = (d != 0.f) ? static_cast<uint8_t>(std::min(31.f, std::max(0.f, std::round(-m / d)))) : 0;
+        zp[i] = ov::float16((d != 0.f) ? (-m / d) : 0.f);
         uint32_t qh;
         std::memcpy(&qh, block + 4, sizeof(qh));
         const uint8_t* ql = block + 8;
@@ -282,14 +277,15 @@ void fill_q3_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& s
 // 16 sub-blocks of 16 elements each. 2-bit raw values [0..3] (u2, 4 per byte in qs).
 // scales[j] lower nibble = 4-bit sub-scale; upper nibble = 4-bit sub-min.
 // Output: u2 weights (direct memcpy of qs; OV u2 packing matches on-disk layout) +
-//         f16 effective scales (d * sub_scale) + u8 zp per sub-block.
+//         f16 effective scales (d * sub_scale) + FRACTIONAL f16 zp per sub-block.
+// Dequant w = dl*q - ml; zp = ml/dl stored f16 (an integer zp would quantize the min).
 void fill_q2_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
     const uint64_t bytes_per_block = 64 + 16 + 2 + 2;  // 84
     const uint64_t n_super_block = tensor.bsize / bytes_per_block;
     auto data = static_cast<const uint8_t*>(tensor.weights_data);
     auto weights = static_cast<uint8_t*>(weights_arr.data());  // packed u2 (4 per byte)
     auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    auto zp = static_cast<uint8_t*>(zp_arr.data());
+    auto zp = zp_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
     ov::parallel_for(n_super_block, [&](size_t i) {
         const uint8_t* block = data + i * bytes_per_block;
         const uint8_t* qs = block;       // 64 bytes: 4 weights per byte, 2 bits each
@@ -300,7 +296,7 @@ void fill_q2_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& s
             const float dl = d * static_cast<float>(sc[j] & 0xF);
             const float ml = dmin * static_cast<float>(sc[j] >> 4);
             scales[i * 16 + j] = ov::float16(dl);
-            zp[i * 16 + j] = (dl > 0.f) ? static_cast<uint8_t>(std::min(3.f, std::max(0.f, std::round(ml / dl)))) : 0;
+            zp[i * 16 + j] = ov::float16((dl != 0.f) ? (ml / dl) : 0.f);
         }
         // OV u2 packs 4 values per byte LSB-first, matching Q2_K's on-disk qs layout exactly.
         std::memcpy(weights + i * 64, qs, 64);
@@ -405,7 +401,26 @@ void gguf_fill_q4_0(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tens
     });
 }
 
+// Q8_K symmetric: block = |f32 d|i8 qs[256]|i16 bsums[16]| (292 bytes/block).
+// bsums are partial sums for dot-product acceleration; unused in dequant-then-multiply.
+void fill_q8_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr) {
+    const uint64_t weights_per_block = 256;
+    const uint64_t bytes_per_block = 292;  // 4(f32 d) + 256(i8) + 32(i16 bsums)
+    auto data = static_cast<const uint8_t*>(tensor.weights_data);
+    auto weights = static_cast<int8_t*>(weights_arr.data());
+    auto scales = static_cast<float*>(scales_arr.data());
+    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
+        const uint8_t* block = data + i * bytes_per_block;
+        float d;
+        std::memcpy(&d, block, sizeof(d));  // f32 scale
+        scales[i] = d;
+        std::memcpy(weights + i * weights_per_block, block + 4, weights_per_block);  // i8 qs
+        // bsums at block+260 are ignored
+    });
+}
+
 // Symmetric types (Q8_0, Q5_0, Q6_K, Q3_K): fill weights + scales (f16), no zero-point.
+// Q8_K uses f32 scales and is handled by a separate overload dispatched on tensor.type.
 void gguf_fill_sym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales) {
     if (tensor.type == GGUF_TYPE_Q8_0) {
         fill_q8_0(tensor, weights, scales);
@@ -415,6 +430,8 @@ void gguf_fill_sym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& s
         fill_q6_k(tensor, weights, scales);
     } else if (tensor.type == GGUF_TYPE_Q3_K) {
         fill_q3_k(tensor, weights, scales);
+    } else if (tensor.type == GGUF_TYPE_Q8_K) {
+        fill_q8_k(tensor, weights, scales);
     } else {
         OPENVINO_ASSERT(false, "Unsupported tensor type in 'gguf_fill_sym'");
     }

@@ -48,6 +48,7 @@ set(FRONTEND_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/../src/op/repeat.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../src/op/view.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../src/pass/squeeze_matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/tokenizer_metadata.cpp"
 )
 
 # test_data/ lives next to this CMakeLists.txt; expose the absolute path to the

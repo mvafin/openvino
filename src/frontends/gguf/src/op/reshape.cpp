@@ -34,17 +34,13 @@ OutputVector translate_reshape(const NodeContext& context) {
     auto output_shape = context.get_output_shape().to_shape();
     std::shared_ptr<ov::Node> new_shape_node;
     if (op_case == 1) {
-        if (context.is_stateful()) {
-            new_shape_node = ov::op::v0::Constant::create(
-                ov::element::i64,
-                {3},
-                std::vector<int64_t>{-1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
-        } else {
-            new_shape_node = ov::op::v0::Constant::create(
-                ov::element::i64,
-                {4},
-                std::vector<int64_t>{(int64_t)output_shape[0], -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
-        }
+        // [B, 1, T, n_head*head_size] -> [B, T, n_head, head_size]: keep B fixed, flatten T into dim1.
+        // Same shape in both stateful and non-stateful paths; the 3D form was causing RoPE
+        // broadcasting to T×T when the trailing dimensions are 1 (MQA, n_head_kv=1).
+        new_shape_node = ov::op::v0::Constant::create(
+            ov::element::i64,
+            {4},
+            std::vector<int64_t>{(int64_t)output_shape[0], -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
     } else if (op_case == 2) {
         new_shape_node = ov::op::v0::Constant::create(
             ov::element::i64,

@@ -342,6 +342,7 @@ std::shared_ptr<ov::Node> make_weight_node(const std::string& base,
     case GGUF_TYPE_Q5_0:
     case GGUF_TYPE_Q8_0:
     case GGUF_TYPE_Q6_K:
+    case GGUF_TYPE_Q8_K:
         node = make_sym_int8(base, weights);
         break;
     case GGUF_TYPE_F16:

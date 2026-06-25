@@ -346,6 +346,14 @@ GGUFLoad get_gguf_data(const std::string& file) {
             return s;
         }();
 
+        if (ti.type == GGUF_TYPE_Q8_K) {
+            // Q8_K: 256 i8 weights + f32 scale + 16 i16 bsums (ignored) per block.
+            size_t nelems = 1;
+            for (auto d : shape) nelems *= d;
+            const size_t n_blocks = nelems / 256;
+            return {nelems, n_blocks * sizeof(float), 0};  // w_bytes, s_bytes(f32), no zp
+        }
+
         if (ti.type == GGUF_TYPE_MXFP4) {
             size_t nelems = 1;
             for (auto d : shape)
@@ -427,7 +435,7 @@ GGUFLoad get_gguf_data(const std::string& file) {
         const bool is_quant = ti.type == GGUF_TYPE_Q4_0 || ti.type == GGUF_TYPE_Q4_1 || ti.type == GGUF_TYPE_Q5_0 ||
                               ti.type == GGUF_TYPE_Q5_1 || ti.type == GGUF_TYPE_Q8_0 || ti.type == GGUF_TYPE_Q2_K ||
                               ti.type == GGUF_TYPE_Q3_K || ti.type == GGUF_TYPE_Q4_K || ti.type == GGUF_TYPE_Q5_K ||
-                              ti.type == GGUF_TYPE_Q6_K || ti.type == GGUF_TYPE_MXFP4;
+                              ti.type == GGUF_TYPE_Q6_K || ti.type == GGUF_TYPE_Q8_K || ti.type == GGUF_TYPE_MXFP4;
         if (!is_quant)
             continue;
         auto [wb, sb, bb] = quant_sizes(ti);
@@ -536,8 +544,8 @@ GGUFLoad get_gguf_data(const std::string& file) {
             ov::Tensor s_view(ov::element::f16, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
             ov::Tensor scales(s_view, so_buf);
             quant_offset += sb;
-            ov::Tensor z_view(ov::element::u8, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
-            ov::Tensor zp(z_view, so_buf);
+            // Fractional zp (= min/scale) in the scale's element type -- see the Q4_K/Q5_K branch.
+            ov::Tensor zp(scales.get_element_type(), scale_shape);
             quant_offset += zb;
 
             gguf_fill_asym(tensor, weights, scales, zp);
@@ -547,6 +555,31 @@ GGUFLoad get_gguf_data(const std::string& file) {
             arrays.emplace(name_prefix + ".scales", std::move(scales));
             arrays.emplace(name_prefix + ".zp", std::move(zp));
             qtype.emplace(name_prefix + ".qtype", GGUF_TYPE_Q2_K);
+        } else if (ti.type == GGUF_TYPE_Q8_K) {
+            // Q8_K: 256 weights/block, f32 scale (NOT f16), 16 i16 bsums (ignored).
+            // block_q8_K: [f32 d][i8 qs[256]][i16 bsums[16]] = 4+256+32 = 292 bytes.
+            auto [wb, sb, zb] = quant_sizes(ti);
+            (void)zb;
+            char* buf_ptr = quant_buf->get_ptr<char>();
+
+            auto shape = get_shape(tensor);
+            auto scale_shape = shape;
+            scale_shape.back() /= 256;  // one f32 scale per 256-weight block
+
+            std::shared_ptr<void> so_buf(quant_buf);
+            ov::Tensor w_view(ov::element::i8, shape, static_cast<void*>(buf_ptr + quant_offset));
+            ov::Tensor weights_t(w_view, so_buf);
+            quant_offset += wb;
+            ov::Tensor s_view(ov::element::f32, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
+            ov::Tensor scales_t(s_view, so_buf);
+            quant_offset += sb;
+
+            gguf_fill_sym(tensor, weights_t, scales_t);
+            mapped->hint_evict(abs_off, tensor.bsize);
+
+            arrays.emplace(name, std::move(weights_t));
+            arrays.emplace(name_prefix + ".scales", std::move(scales_t));
+            qtype.emplace(name_prefix + ".qtype", GGUF_TYPE_Q8_K);
         } else if (ti.type == GGUF_TYPE_Q8_0 || ti.type == GGUF_TYPE_Q5_0 || ti.type == GGUF_TYPE_Q6_K) {
             // Symmetric: i8 weights (no u32 packing) + f16 scales. No zero-point.
             auto [wb, sb, zb] = quant_sizes(ti);
@@ -598,10 +631,19 @@ GGUFLoad get_gguf_data(const std::string& file) {
             ov::Tensor s_view(ov::element::f16, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
             ov::Tensor scales(s_view, so_buf);
             quant_offset += sb;
-            // zp: u4 for Q4_1/Q4_K, u8 for Q5_K/Q5_1
-            ov::element::Type zp_elem = is_4bit ? ov::element::u4 : ov::element::u8;
-            ov::Tensor z_view(zp_elem, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
-            ov::Tensor zp(z_view, so_buf);
+            // Zero-point is a FRACTIONAL value in the SCALE's element type (separately
+            // allocated, not an integer view into quant_buf). Q4_K/Q5_K dequant is
+            // w = scale*q - min, min = dmin*m_raw -- a free scale-typed value; forcing it into
+            // scale*(q - round(min/scale)) with an INTEGER zp quantizes min to a multiple of
+            // scale, injecting ~1.6e-3 (max 8.6e-3) error per sub-block into every weight, which
+            // compounds across a deep model into wrong logits (gemma3-1b garbage). Storing
+            // zp = min/scale in the scale type makes scale*(q - zp) = scale*q - min exact.
+            // Matching the scale type keeps the canonical dequant pattern
+            // Multiply(Subtract(Convert(w), zp), scale) with zp already in the compute type
+            // (the `sub_no_convert` form), so the CPU FC-compressed fusion still folds it and
+            // the weights stay U4/I8 -- verified in the runtime graph. The on-disk integer-zp
+            // region is skipped (quant_offset += zb) but no longer mapped.
+            ov::Tensor zp(scales.get_element_type(), scale_shape);
             quant_offset += zb;
 
             gguf_fill_asym(tensor, weights, scales, zp);
@@ -667,9 +709,26 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
                               ? metadata_to_int(metadata, arch + ".attention.key_length")
                               : (metadata_to_int(metadata, arch + ".embedding_length") /
                                  metadata_to_int(metadata, arch + ".attention.head_count"));
-    config["head_num_kv"] = metadata.count(arch + ".attention.head_count_kv")
-                                ? metadata_to_int(metadata, arch + ".attention.head_count_kv")
-                                : metadata_to_int(metadata, arch + ".attention.head_count");
+    {
+        const std::string kv_key = arch + ".attention.head_count_kv";
+        if (metadata.count(kv_key)) {
+            const auto& kv_val = metadata.at(kv_key);
+            if (auto* t = std::get_if<ov::Tensor>(&kv_val)) {
+                if (t->get_shape().size() == 1 && t->get_shape()[0] > 1) {
+                    // Per-layer array: store as a config tensor for use in the builder.
+                    config["head_num_kv_per_layer"] = *t;
+                    // Global default = the most common value (max over the array).
+                    const auto* data = t->data<uint32_t>();
+                    int global_kv = static_cast<int>(*std::max_element(data, data + t->get_size()));
+                    config["head_num_kv"] = global_kv;
+                } else {
+                    config["head_num_kv"] = metadata_to_int(metadata, kv_key);
+                }
+            }
+        } else {
+            config["head_num_kv"] = metadata_to_int(metadata, arch + ".attention.head_count");
+        }
+    }
     config["hidden_size"] = metadata_to_int(metadata, arch + ".embedding_length");
     config["max_position_embeddings"] =
         metadata.count(arch + ".context_length") ? metadata_to_int(metadata, arch + ".context_length") : 2048;
@@ -699,10 +758,14 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     }
 
     // Number of rope dimensions (n_rot); defaults to head_size. Some archs (e.g. partial-
-    // rotary models) set it smaller.
-    config["rope_dimension_count"] = metadata.count(arch + ".rope.dimension_count")
-                                         ? metadata_to_int(metadata, arch + ".rope.dimension_count")
-                                         : std::get<int>(config["head_size"]);
+    // rotary models) set it smaller. A value of 0 means "no RoPE" or full rotation —
+    // treat as head_size to avoid division-by-zero and empty-vector crashes downstream.
+    {
+        const int rope_dims = metadata.count(arch + ".rope.dimension_count")
+                                  ? metadata_to_int(metadata, arch + ".rope.dimension_count")
+                                  : 0;
+        config["rope_dimension_count"] = (rope_dims > 0) ? rope_dims : std::get<int>(config["head_size"]);
+    }
     // Gemma4: SWA layers use a smaller head size (and fewer rope dims) than global layers.
     // key_length_swa / value_length_swa / rope.dimension_count_swa default to key_length.
     config["head_size_swa"] = metadata.count(arch + ".attention.key_length_swa")
@@ -731,13 +794,23 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     config["expert_feed_forward_length"] = metadata.count(arch + ".expert_feed_forward_length")
                                                ? metadata_to_int(metadata, arch + ".expert_feed_forward_length")
                                                : 0;
+    // Hybrid MoE: first N layers are dense, remainder use MoE routing.
+    // Mirrors llama.cpp hparams.n_layer_dense_lead (deepseek2-ocr, ernie4_5-moe, glm4moe).
+    config["n_layer_dense_lead"] = metadata.count(arch + ".leading_dense_block_count")
+                                       ? metadata_to_int(metadata, arch + ".leading_dense_block_count")
+                                       : 0;
+    // Shared (always-active) experts: run in parallel with routed experts, outputs summed.
+    // Mirrors llama.cpp hparams.n_expert_shared (deepseek2-ocr, bailingmoe2, exaone-moe).
+    config["expert_shared_count"] = metadata.count(arch + ".expert_shared_count")
+                                        ? metadata_to_int(metadata, arch + ".expert_shared_count")
+                                        : 0;
 
     // Per-architecture scalars (MiniCPM family). MiniCPM bakes these into hparams with
     // backward-compatible defaults when the GGUF lacks the keys (older exports); newer
     // exports carry the keys and override. Other archs default to 1.0 (no-op).
     const bool is_minicpm = arch.rfind("minicpm", 0) == 0;
-    // Gemma/Gemma2/Gemma4 scale embeddings by sqrt(n_embd) before the first layer.
-    const bool is_gemma = arch == "gemma" || arch == "gemma2" || arch == "gemma4";
+    // Gemma/Gemma2/Gemma3/Gemma4 scale embeddings by sqrt(n_embd) before the first layer.
+    const bool is_gemma = arch == "gemma" || arch == "gemma2" || arch == "gemma3" || arch == "gemma4";
     const float def_embedding_scale =
         is_minicpm ? 12.0f : (is_gemma ? std::sqrt(static_cast<float>(std::get<int>(config["hidden_size"]))) : 1.0f);
     const float def_residual_scale =
@@ -753,16 +826,41 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
         metadata.count(arch + ".logit_scale") ? metadata_to_float(metadata, arch + ".logit_scale") : def_logit_scale;
     // Optional explicit attention (softmax) scale; 0 -> use 1/sqrt(head_size).
     // Gemma4 uses scale=1.0 (no pre-attn scaling), per llama.cpp hparams.f_attention_scale=1.0.
+    // Gemma3 (like gemma/gemma2) uses 1/sqrt(n_embd_head_k); llama.cpp applies it as a
+    // Qcur pre-scale with build_attn(scale=1.0), which is numerically 1/sqrt(head_size) --
+    // exactly the default branch here, so gemma3 must NOT force scale=1.0.
     const float def_attention_scale = (arch == "gemma4") ? 1.0f : 0.0f;
     config["attention_scale"] = metadata.count(arch + ".attention.scale")
                                     ? metadata_to_float(metadata, arch + ".attention.scale")
                                     : def_attention_scale;
 
     // gpt-oss SWA: separate RoPE frequency base for sliding-window attention layers.
-    // Defaults to the global rope_freq_base when the key is absent (non-SWA or legacy models).
+    // Defaults to the global rope_freq_base when the key is absent (non-SWA or legacy models),
+    // EXCEPT gemma3: llama.cpp's gemma3 loader keeps the struct default 10000.0 when the key is
+    // absent (it does not reset to the global base first, unlike gemma2/gemma4/cohere2/etc.), so
+    // gemma3 SWA layers rope at freq_base=10000 while global layers use 1000000. See
+    // llama.cpp src/models/gemma3.cpp load_arch_hparams.
+    const float def_freq_base_swa = (arch == "gemma3") ? 10000.0f : std::get<float>(config["rope_freq_base"]);
     config["rope_freq_base_swa"] = metadata.count(arch + ".rope.freq_base_swa")
                                        ? metadata_to_float(metadata, arch + ".rope.freq_base_swa")
-                                       : std::get<float>(config["rope_freq_base"]);
+                                       : def_freq_base_swa;
+
+    // has_swa: true when the GGUF carries either a sliding_window_pattern or a
+    // sliding_window (a finite window length), indicating SWA is active. The builder uses
+    // this to add the self_kq_mask_swa input and route SWA layers to the windowed mask.
+    // Architectures that always use sinks (gpt-oss) or per-layer flags (gemma4) are handled
+    // separately inside the builder; has_swa catches newly-added archs like smollm3.
+    config["has_swa"] =
+        (metadata.count(arch + ".attention.sliding_window_pattern") ||
+         (metadata.count(arch + ".attention.sliding_window") &&
+          // A value of 0 or UINT32_MAX typically means "no SWA"; treat only positive finite
+          // values as real SWA.  We check the tensor value directly.
+          [&]() {
+              const auto& t = std::get<ov::Tensor>(metadata.at(arch + ".attention.sliding_window"));
+              const uint32_t v = *t.data<uint32_t>();
+              return v > 0 && v < 0xFFFFFFFFu;
+          }()))
+        ? 1 : 0;
 
     // gpt-oss SWA: alternation period (default 2: even layers are SWA). Matches llama.cpp's
     // set_swa_pattern(swa_period, dense_first=false): il is SWA if il % period < period - 1.
@@ -790,7 +888,9 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
             config["swa_layer_flags"] = std::vector<int32_t>{};
         }
     } else {
-        config["swa_layer_pattern"] = 2;
+        // No explicit pattern key. gemma3 defaults to period 6 (llama.cpp gemma3 load_arch_hparams
+        // passes swa_period=6 to get_key_or_arr); gpt-oss and others default to 2.
+        config["swa_layer_pattern"] = (arch == "gemma3") ? 6 : 2;
         config["swa_layer_flags"] = std::vector<int32_t>{};
     }
 
