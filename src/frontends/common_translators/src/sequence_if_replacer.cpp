@@ -194,9 +194,7 @@ bool cleanup_dead_if_sequence_output(const std::shared_ptr<v8::If>& if_node) {
             }
         }
         auto is_seq_helper = [](const ov::Output<ov::Node>& v) {
-            auto n = unwrap_identity(v).get_node_shared_ptr();
-            return ov::is_type<ov::frontend::SequenceMark>(n) || ov::is_type<ov::frontend::SequenceInsert>(n) ||
-                   ov::is_type<ov::frontend::SequenceErase>(n);
+            return sal_detail::is_sequence_producer(unwrap_identity(v).get_node_shared_ptr());
         };
         if (then_result && is_seq_helper(then_result->input_value(0))) {
             auto dummy = v0::Constant::create(ov::element::i64, ov::Shape{}, {0});

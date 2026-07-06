@@ -77,6 +77,11 @@ ov::Output<ov::Node> make_shape_preserving_select(const ov::Output<ov::Node>& co
     return if_node->output(0);
 }
 
+bool is_sequence_producer(const std::shared_ptr<ov::Node>& node) {
+    return ov::is_type<ov::frontend::SequenceMark>(node) || ov::is_type<ov::frontend::SequenceInsert>(node) ||
+           ov::is_type<ov::frontend::SequenceErase>(node);
+}
+
 ov::Output<ov::Node> unwrap_identity(const ov::Output<ov::Node>& value) {
     ov::Output<ov::Node> cur = value;
     while (auto identity = ov::as_type_ptr<v16::Identity>(cur.get_node_shared_ptr())) {
@@ -91,13 +96,13 @@ ov::Output<ov::Node> make_zero_dummy(const ov::Output<ov::Node>& tmpl) {
     if (et == ov::element::dynamic) {
         et = ov::element::i64;
     }
-    std::vector<int64_t> dims;
+    ov::Shape shape;
     if (!ps.rank().is_dynamic()) {
+        shape.reserve(ps.size());
         for (const auto& d : ps) {
-            dims.push_back(d.is_dynamic() ? 0 : d.get_length());
+            shape.push_back(d.is_dynamic() ? 0 : static_cast<size_t>(d.get_length()));
         }
     }
-    ov::Shape shape(dims.begin(), dims.end());
     return std::make_shared<v0::Constant>(et, shape, std::vector<std::string>{"0"});
 }
 
@@ -216,18 +221,13 @@ bool SlotResolver::is_sequence_merged_input(const std::shared_ptr<v5::Loop>& loo
     const int outer_input = find_input_binding(loop, 0, p_idx, binding) ? binding.outer_input : -1;
     if (outer_input >= 0) {
         auto src = unwrap_identity(loop->input_value(outer_input));
-        auto node = src.get_node_shared_ptr();
-        if (ov::is_type<ov::frontend::SequenceMark>(node) || ov::is_type<ov::frontend::SequenceInsert>(node) ||
-            ov::is_type<ov::frontend::SequenceErase>(node)) {
+        if (is_sequence_producer(src.get_node_shared_ptr())) {
             return true;
         }
     }
     if (back_value_idx < body->get_results().size()) {
         auto back_src = unwrap_identity(body->get_results()[back_value_idx]->input_value(0));
-        auto back_node = back_src.get_node_shared_ptr();
-        if (ov::is_type<ov::frontend::SequenceMark>(back_node) ||
-            ov::is_type<ov::frontend::SequenceInsert>(back_node) ||
-            ov::is_type<ov::frontend::SequenceErase>(back_node)) {
+        if (is_sequence_producer(back_src.get_node_shared_ptr())) {
             return true;
         }
     }
@@ -328,7 +328,7 @@ void SlotResolver::preallocate_loop_merged_params(const std::shared_ptr<ov::Mode
                 if (auto bs = slots_of(back_value)) {
                     slot_templates = *bs;
                 } else if (auto tmpl = find_template_via_chain(back_value, old_param.get())) {
-                    slot_templates = tmpl->slot_templates;
+                    slot_templates = *tmpl;
                 } else {
                     continue;  // cannot infer N -- skip
                 }
@@ -373,7 +373,7 @@ void SlotResolver::preallocate_loop_merged_params(const std::shared_ptr<ov::Mode
                 param_to_model_[np.get()] = body;
                 if (seed_kind == PendingMerged::SeedKind::SYNTHETIC) {
                     // Mark as empty-seed so SequenceLength lowers to runtime ShapeOf.
-                    np->get_rt_info()["sal_empty_seed_slot"] = true;
+                    mark_empty_seed_slot(np.get());
                 }
                 new_params.push_back(np);
                 param_outputs.push_back(np->output(0));
@@ -440,8 +440,8 @@ void SlotResolver::finalize_pending_wiring() {
     }
 }
 
-std::optional<LengthTemplate> SlotResolver::find_template_via_chain(const ov::Output<ov::Node>& root_value,
-                                                                    ov::Node* exclude_p) {
+std::optional<Slots> SlotResolver::find_template_via_chain(const ov::Output<ov::Node>& root_value,
+                                                           ov::Node* exclude_p) {
     std::deque<ov::Output<ov::Node>> q;
     std::set<ov::Output<ov::Node>> visited;
     q.push_back(root_value);
@@ -464,9 +464,7 @@ std::optional<LengthTemplate> SlotResolver::find_template_via_chain(const ov::Ou
                 }
                 if (!deps) {
                     // Enumerate structurally (not via slots_of()) to avoid cyclic dependency.
-                    LengthTemplate t;
-                    t.slot_templates = mark->get_sequence();
-                    return t;
+                    return mark->get_sequence();
                 }
             }
             continue;
@@ -545,11 +543,7 @@ std::optional<Slots> SlotResolver::slots_of(const ov::Output<ov::Node>& value_in
         s.reserve(mark->get_input_size());
         for (size_t i = 0; i < mark->get_input_size(); ++i) {
             auto in = mark->input_value(i);
-            auto in_node = in.get_node_shared_ptr();
-            const bool seq_typed = ov::as_type_ptr<ov::frontend::SequenceInsert>(in_node) ||
-                                   ov::as_type_ptr<ov::frontend::SequenceErase>(in_node) ||
-                                   ov::as_type_ptr<ov::frontend::SequenceMark>(in_node);
-            if (seq_typed) {
+            if (is_sequence_producer(in.get_node_shared_ptr())) {
                 if (auto inner = slots_of(in)) {
                     s.insert(s.end(), inner->begin(), inner->end());
                     continue;
@@ -667,7 +661,7 @@ bool SlotResolver::is_loop_carried_empty_seed(const ov::Output<ov::Node>& value)
         return false;
     }
     for (const auto& slot : *s) {
-        if (unwrap_identity(slot).get_node()->get_rt_info().count("sal_empty_seed_slot")) {
+        if (is_empty_seed_slot(unwrap_identity(slot).get_node())) {
             return true;
         }
     }
@@ -722,8 +716,8 @@ std::optional<Slots> SlotResolver::slots_of_param(const std::shared_ptr<v0::Para
                                                              (*src_slots)[k].get_partial_shape());
             body->add_parameters({new_param});
             param_to_model_[new_param.get()] = body;
-            if ((*src_slots)[k].get_node()->get_rt_info().count("sal_empty_seed_slot")) {
-                new_param->get_rt_info()["sal_empty_seed_slot"] = true;
+            if (is_empty_seed_slot((*src_slots)[k].get_node())) {
+                mark_empty_seed_slot(new_param.get());
             }
             subgraph_op->set_invariant_input(new_param, (*src_slots)[k]);
             param_outputs.push_back(new_param->output(0));
@@ -764,8 +758,8 @@ std::optional<Slots> SlotResolver::slots_of_param(const std::shared_ptr<v0::Para
                                                              (*src_slots)[k].get_partial_shape());
             bodies[bb]->add_parameters({new_param});
             param_to_model_[new_param.get()] = bodies[bb];
-            if ((*src_slots)[k].get_node()->get_rt_info().count("sal_empty_seed_slot")) {
-                new_param->get_rt_info()["sal_empty_seed_slot"] = true;
+            if (is_empty_seed_slot((*src_slots)[k].get_node())) {
+                mark_empty_seed_slot(new_param.get());
             }
             pv.push_back(new_param);
             per_body_outputs[bb].push_back(new_param->output(0));
@@ -854,8 +848,8 @@ bool SlotResolver::expand_branch_to_n_slots(const std::shared_ptr<ov::op::util::
                 std::make_shared<v0::Parameter>(live_param->get_element_type(), live_param->get_partial_shape());
             cur_body->add_parameters({new_param});
             param_to_model_[new_param.get()] = cur_body;
-            if (live_param->get_rt_info().count("sal_empty_seed_slot")) {
-                new_param->get_rt_info()["sal_empty_seed_slot"] = true;
+            if (is_empty_seed_slot(live_param.get())) {
+                mark_empty_seed_slot(new_param.get());
             }
             const size_t new_body_param_idx = cur_body->get_parameters().size() - 1;
             cur_descs.push_back(std::make_shared<ov::op::util::MultiSubGraphOp::InvariantInputDescription>(

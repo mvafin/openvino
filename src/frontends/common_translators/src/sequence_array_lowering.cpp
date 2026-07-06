@@ -53,22 +53,6 @@ bool is_sequence_helper(const std::shared_ptr<ov::Node>& node) {
            ov::is_type<ov::frontend::SequenceLength>(node);
 }
 
-void collect_helpers_recursive(const std::shared_ptr<ov::Model>& m, std::vector<std::shared_ptr<ov::Node>>& out) {
-    if (!m) {
-        return;
-    }
-    for (const auto& n : m->get_ordered_ops()) {
-        if (is_sequence_helper(n)) {
-            out.push_back(n);
-        }
-        if (auto msg = ov::as_type_ptr<ov::op::util::MultiSubGraphOp>(n)) {
-            for (size_t i = 0; i < msg->get_internal_subgraphs_size(); ++i) {
-                collect_helpers_recursive(msg->get_function(i), out);
-            }
-        }
-    }
-}
-
 // True if model (recursively) contains SequenceAt or SequenceLength.
 bool model_has_sequence_reader(const std::shared_ptr<ov::Model>& m) {
     if (!m) {
@@ -90,10 +74,7 @@ bool model_has_sequence_reader(const std::shared_ptr<ov::Model>& m) {
 }
 
 bool produces_sequence_helper_value(const ov::Output<ov::Node>& value) {
-    auto u = unwrap_identity(value);
-    auto n = u.get_node_shared_ptr();
-    return ov::is_type<ov::frontend::SequenceMark>(n) || ov::is_type<ov::frontend::SequenceInsert>(n) ||
-           ov::is_type<ov::frontend::SequenceErase>(n);
+    return is_sequence_producer(unwrap_identity(value).get_node_shared_ptr());
 }
 
 // Apply fn(model) to every model in the subgraph tree, post-order (children before parent).
@@ -110,6 +91,17 @@ void for_each_model_postorder(const std::shared_ptr<ov::Model>& m, Fn&& fn) {
         }
     }
     fn(m);
+}
+
+// Collect every sequence helper across the whole subgraph tree.
+void collect_helpers_recursive(const std::shared_ptr<ov::Model>& m, std::vector<std::shared_ptr<ov::Node>>& out) {
+    for_each_model_postorder(m, [&](const std::shared_ptr<ov::Model>& model) {
+        for (const auto& n : model->get_ordered_ops()) {
+            if (is_sequence_helper(n)) {
+                out.push_back(n);
+            }
+        }
+    });
 }
 
 // Disconnect body Results that still source sequence helpers from back-edges.
@@ -224,17 +216,19 @@ void disconnect_dead_sequence_back_edges(const std::shared_ptr<ov::Model>& root)
 // Detach dead sequence helpers by replacing their inputs with Constants.
 void disconnect_dead_sequence_helpers(const std::shared_ptr<ov::Model>& root) {
     for_each_model_postorder(root, [&](const std::shared_ptr<ov::Model>& m) {
+        // The helper node set is fixed; only their liveness changes as we detach
+        // inputs, so collect once (avoids re-running the topological sort per pass).
+        std::vector<std::shared_ptr<ov::Node>> helpers;
+        for (const auto& n : m->get_ordered_ops()) {
+            if (is_sequence_helper(n)) {
+                helpers.push_back(n);
+            }
+        }
         bool progress = true;
         while (progress) {
             progress = false;
-            for (const auto& n : m->get_ordered_ops()) {
-                if (!is_sequence_helper(n)) {
-                    continue;
-                }
+            for (const auto& n : helpers) {
                 if (!n->output(0).get_target_inputs().empty()) {
-                    continue;
-                }
-                if (n->get_input_size() == 0) {
                     continue;
                 }
                 for (size_t i = 0; i < n->get_input_size(); ++i) {
@@ -361,7 +355,6 @@ void align_if_branch_result_ranks(const std::shared_ptr<ov::Model>& root) {
                         std::shared_ptr<v0::Parameter> then_p = then_is_smaller ? new_param : nullptr;
                         std::shared_ptr<v0::Parameter> else_p = then_is_smaller ? nullptr : new_param;
                         if_op->set_input(hoisted, then_p, else_p);
-                        if_op->input(if_op->get_input_size() - 1).replace_source_output(hoisted);
                         placeholder_res->input(0).replace_source_output(new_param->output(0));
                         continue;
                     }

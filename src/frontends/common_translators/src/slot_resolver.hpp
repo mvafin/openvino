@@ -26,9 +26,21 @@ namespace sal_detail {
 
 using Slots = std::vector<ov::Output<ov::Node>>;
 
-struct LengthTemplate {
-    std::vector<ov::Output<ov::Node>> slot_templates;
-};
+// Runtime-info key marking a per-slot tensor that was seeded from an empty
+// sequence (SequenceEmpty), so SequenceLength over it lowers to a runtime
+// ShapeOf rather than a static Constant. See is_loop_carried_empty_seed.
+constexpr const char* SAL_EMPTY_SEED_SLOT = "sal_empty_seed_slot";
+
+inline void mark_empty_seed_slot(ov::Node* node) {
+    node->get_rt_info()[SAL_EMPTY_SEED_SLOT] = true;
+}
+inline bool is_empty_seed_slot(const ov::Node* node) {
+    return node->get_rt_info().count(SAL_EMPTY_SEED_SLOT) != 0;
+}
+
+// True when the node is a sequence-producing frontend helper
+// (SequenceMark / SequenceInsert / SequenceErase).
+bool is_sequence_producer(const std::shared_ptr<ov::Node>& node);
 
 // Shape-preserving If-based select. Unlike v1::Select, does not broadcast branch
 // inputs - used when branches may have legitimately different shapes.
@@ -122,7 +134,7 @@ private:
                                    size_t ref,
                                    size_t N,
                                    std::vector<Slots>& per_body_slots);
-    std::optional<LengthTemplate> find_template_via_chain(const ov::Output<ov::Node>& root_value, ov::Node* exclude_p);
+    std::optional<Slots> find_template_via_chain(const ov::Output<ov::Node>& root_value, ov::Node* exclude_p);
 
     std::shared_ptr<ov::Model> root_;
     std::vector<PendingMerged> pending_merged_;
