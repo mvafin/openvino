@@ -7,3 +7,6 @@ out/
 tf_models/
 onnx_models/
 
+# TEST REPORTS
+TEST-*.xml
+TEST-*.html
