@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "translate_session.h"
+#include "translate_session.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -28,12 +28,13 @@
 #include <openvino/op/transpose.hpp>
 #include <openvino/pass/constant_folding.hpp>
 
-#include "input_model.h"
-#include "node_context.h"
+#include "input_model.hpp"
+#include "node_context.hpp"
+#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
 #include "pass/lower_set_rows_stateless.hpp"
 #include "transformations/fp16_compression/mark_decompression_convert_constant_folding.hpp"
-#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
-#include "utils.h"
+#include "transformations/op_conversions/convert_convertlike.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {
@@ -245,6 +246,7 @@ std::shared_ptr<Model> TranslateSession::apply_transformations(std::shared_ptr<M
         ext->register_pass(manager);
     }
     manager.register_pass<pass::LowerSetRowsStateless>();
+    manager.register_pass<ov::pass::ConvertConvertLike>();
 
     manager.run_passes(model);
     return model;

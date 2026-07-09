@@ -327,10 +327,8 @@ std::shared_ptr<ov::Node> requantize_q8_0_channelwise(const std::vector<float>& 
     return std::make_shared<ov::op::v0::Convert>(scaled, ov::element::f32);
 }
 
-// Dequantize the extracted weight/scale/zp tensors (the output of gguf_fill_*) to a flat
-// row-major f32 vector, in plain C++ (no OV graph). Handles the forms the requant types
-// produce: i8 symmetric weights, and u32-packed u4 asymmetric weights, both with per-group
-// f16 scales and an optional f16 zero-point. f32 = (w - zp) * scale, grouped along cols.
+// Dequantize the gguf_fill_* output (i8, i4, u2, or u32-packed u4 weights + per-group f16 scale
+// and optional f16 zero-point) to row-major f32: f32 = (w - zp) * scale, grouped along cols.
 std::vector<float> dequant_extracted_to_f32(const std::unordered_map<std::string, ov::Tensor>& w,
                                             const std::string& base,
                                             size_t rows,
@@ -345,29 +343,41 @@ std::vector<float> dequant_extracted_to_f32(const std::unordered_map<std::string
     const ov::Tensor zp = has_zp ? get(w, base + ".zp") : ov::Tensor();
     const ov::float16* z = has_zp ? zp.data<ov::float16>() : nullptr;
 
+    const auto et = weight.get_element_type();
     std::vector<float> out(rows * cols);
-    if (weight.get_element_type() == ov::element::i8) {
+    const auto emit = [&](size_t r, size_t c, float qval) {
+        size_t g = r * num_groups + c / group;
+        float zpf = z ? static_cast<float>(z[g]) : 0.0f;
+        out[r * cols + c] = (qval - zpf) * static_cast<float>(s[g]);
+    };
+    if (et == ov::element::i8) {
         const auto* q = weight.data<int8_t>();
-        for (size_t r = 0; r < rows; ++r) {
+        for (size_t r = 0; r < rows; ++r)
+            for (size_t c = 0; c < cols; ++c)
+                emit(r, c, static_cast<float>(q[r * cols + c]));
+    } else if (et == ov::element::u2) {
+        // Q2_K: u2 weights, 4 per byte LSB-first, raw [0..3] with a zero-point.
+        const auto* bytes = static_cast<const uint8_t*>(weight.data());
+        const size_t per_row_bytes = cols / 4;
+        for (size_t r = 0; r < rows; ++r)
             for (size_t c = 0; c < cols; ++c) {
-                size_t g = r * num_groups + c / group;
-                float zpf = z ? static_cast<float>(z[g]) : 0.0f;
-                out[r * cols + c] = (static_cast<float>(q[r * cols + c]) - zpf) * static_cast<float>(s[g]);
+                uint8_t v = (bytes[r * per_row_bytes + c / 4] >> ((c % 4) * 2)) & 0x3;
+                emit(r, c, static_cast<float>(v));
             }
-        }
     } else {
-        // u32-packed u4 (8 nibbles per u32), asymmetric.
+        // u32-packed 4-bit, 8 nibbles per u32. With a zero-point (Q4_1/Q4_K) the nibbles are
+        // unsigned u4; without one (Q4_0 XOR-encoded, Q3_K centered) they are signed i4.
+        const bool signed_u4 = !has_zp;
         const auto* packed = static_cast<const uint32_t*>(weight.data());
         const size_t per_row_u32 = cols / 8;
-        for (size_t r = 0; r < rows; ++r) {
+        for (size_t r = 0; r < rows; ++r)
             for (size_t c = 0; c < cols; ++c) {
                 uint32_t word = packed[r * per_row_u32 + c / 8];
                 uint8_t nib = (word >> ((c % 8) * 4)) & 0xF;
-                size_t g = r * num_groups + c / group;
-                float zpf = z ? static_cast<float>(z[g]) : 0.0f;
-                out[r * cols + c] = (static_cast<float>(nib) - zpf) * static_cast<float>(s[g]);
+                float qval = signed_u4 ? static_cast<float>(nib < 8 ? static_cast<int>(nib) : static_cast<int>(nib) - 16)
+                                       : static_cast<float>(nib);
+                emit(r, c, qval);
             }
-        }
     }
     return out;
 }
@@ -601,7 +611,7 @@ std::shared_ptr<ov::Node> make_weight_node(const ov::Tensor& data,
     // faithful group-wise dequant. Reproduce that: dequantize to f32 from the extracted
     // weight/scale/zp tensors (cheap C++ arithmetic, no OV graph fold), then channel-wise
     // re-quantize to Q8_0_C.
-    if (needs_q8_0_c_requant(name, qtype)) {
+    if (requant) {  // computed above; reuse rather than re-running getenv + name scans
         auto f32 = dequant_extracted_to_f32(w, base, rows, cols);
         return requantize_q8_0_channelwise(f32, rows, cols);
     }

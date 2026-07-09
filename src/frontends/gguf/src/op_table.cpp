@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op_table.h"
+#include "op_table.hpp"
 
 #include <openvino/op/add.hpp>
 #include <openvino/op/divide.hpp>
@@ -11,7 +11,7 @@
 #include <openvino/op/multiply.hpp>
 #include <openvino/op/subtract.hpp>
 
-#include "utils.h"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

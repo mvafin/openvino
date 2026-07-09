@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "node_context.h"
-#include "op_table.h"
+#include "node_context.hpp"
+#include "op_table.hpp"
 #include "quant/weights.hpp"
-#include "utils.h"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

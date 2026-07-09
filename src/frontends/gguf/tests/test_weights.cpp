@@ -82,19 +82,11 @@ INSTANTIATE_TEST_SUITE_P(AllQuantTypes,
                                            WeightCase{"q5_0", "Q5_0", kTolFaithful},
                                            WeightCase{"q5_1", "Q5_1", kTolFaithful},
                                            WeightCase{"q8_0", "Q8_0", kTolFaithful},
+                                           WeightCase{"q2_k", "Q2_K", kTolFaithful},
+                                           WeightCase{"q3_k", "Q3_K", kTolFaithful},
                                            WeightCase{"q4_k", "Q4_K", kTolIntZp},
                                            WeightCase{"q5_k", "Q5_K", kTolRequant},
                                            WeightCase{"q6_k", "Q6_K", kTolRequant}),
-                         [](const ::testing::TestParamInfo<WeightCase>& i) {
-                             return std::string(i.param.stem);
-                         });
-
-// Known-failing (fill_q2_k / fill_q3_k diverge from ggml), kept DISABLED to match
-// test_dequant_vs_ggml.cpp.
-INSTANTIATE_TEST_SUITE_P(DISABLED_KnownFailingQuantTypes,
-                         GGUFWeight,
-                         ::testing::Values(WeightCase{"q2_k", "Q2_K", kTolFaithful},
-                                           WeightCase{"q3_k", "Q3_K", kTolFaithful}),
                          [](const ::testing::TestParamInfo<WeightCase>& i) {
                              return std::string(i.param.stem);
                          });

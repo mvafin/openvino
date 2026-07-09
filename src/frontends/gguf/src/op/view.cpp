@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op_table.h"
-#include "utils.h"
+#include "op_table.hpp"
+#include "utils.hpp"
 #include <openvino/op/reshape.hpp>
 namespace ov {
 namespace frontend {
@@ -38,6 +38,10 @@ OutputVector translate_view(const NodeContext & context) {
                 slice_dim = i;
                 break;
             }
+        }
+        // Identity view: nothing differs, so nothing to slice (avoids dst_shape[-1]).
+        if (slice_dim < 0) {
+            return {input};
         }
 
         auto begin = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});

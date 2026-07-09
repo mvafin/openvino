@@ -27,12 +27,12 @@
 #include <vector>
 
 #include "common_test_utils/file_utils.hpp"
-#include "input_model.h"
-#include "op_table.h"
+#include "input_model.hpp"
+#include "op_table.hpp"
 #include "openvino/core/model.hpp"
 #include "openvino/core/partial_shape.hpp"
 #include "openvino/core/type/element_type.hpp"
-#include "openvino/frontend/gguf/frontend.h"
+#include "openvino/frontend/gguf/frontend.hpp"
 #include "openvino/op/parameter.hpp"
 #include "openvino/runtime/core.hpp"
 #include "openvino/runtime/tensor.hpp"

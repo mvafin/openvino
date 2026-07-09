@@ -7,12 +7,13 @@
 # frontends (LINKABLE_FRONTEND, no SKIP_INSTALL) so callers -- the llama.cpp ggml-openvino
 # backend and OpenVINO GenAI -- can link openvino::frontend::gguf directly.
 #
-# It is intentionally NOT discoverable via FrontEndManager: it exports no plugin-registration
-# entry points (get_api_version / GetFrontEndData), so it never appears in available_front_ends()
-# and is never auto-selected by load_by_model / load_by_framework, even though it is installed in
-# the frontend directory. See the discoverability note in frontend.cpp. This keeps the
-# not-yet-production frontend hidden from the generic model-loading API while remaining usable by
-# direct linkers.
+# It is intentionally NOT discoverable via FrontEndManager: it DOES export the plugin-registration
+# entry points (get_api_version / get_front_end_data, required so FrontEndManager can load it
+# without error while scanning the frontend directory), but it registers itself as hidden
+# (FrontEndPluginInfo::m_hidden = true), so it never appears in available_front_ends() and is never
+# auto-selected by load_by_model / load_by_framework. See the discoverability note in frontend.cpp.
+# This keeps the not-yet-production frontend hidden from the generic model-loading API while
+# remaining usable by direct linkers.
 ov_add_frontend(NAME gguf
                 LINKABLE_FRONTEND
                 FILEDESCRIPTION "FrontEnd to convert GGUF models"

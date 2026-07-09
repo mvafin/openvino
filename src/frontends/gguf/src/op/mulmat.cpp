@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "node_context.h"
-#include "op_table.h"
-#include "utils.h"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "utils.hpp"
 
 #include <climits>
 #include <cstdint>
@@ -46,7 +46,8 @@ OutputVector translate_mulmat(const NodeContext & context) {
         A = process_view_input(context, 1);
     }
     if (A.get_element_type() != B.get_element_type()) {
-        B = std::make_shared<ov::op::v0::Convert>(context.get_input(0), context.get_input_type(1));
+        // Convert the reprocessed B, not input(0), to preserve the op_case 2/3 rebinding.
+        B = std::make_shared<ov::op::v0::Convert>(B, A.get_element_type());
     }
 
     auto B_shape = context.get_input_shape(0).to_shape();

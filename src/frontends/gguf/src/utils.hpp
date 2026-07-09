@@ -10,7 +10,7 @@
 #include <openvino/op/slice.hpp>
 #include <utility>
 
-#include "node_context.h"
+#include "node_context.hpp"
 
 namespace ov {
 namespace frontend {

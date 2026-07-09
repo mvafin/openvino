@@ -23,9 +23,9 @@
 #include <openvino/op/unsqueeze.hpp>
 #include <vector>
 
-#include "node_context.h"
-#include "op_table.h"
-#include "utils.h"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {
@@ -126,7 +126,8 @@ OutputVector translate_rope(const NodeContext& context) {
 
         res = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{first_half_node, second_half_node}, -1);
     } else if (mode == TYPE_IMROPE) {
-        int64_t n_dims = data_node->get_shape()[3];
+        // Use output_shape, not data_node->get_shape() which throws on a dynamic dim.
+        int64_t n_dims = output_shape[3];
         auto cos_sin_shape = std::make_shared<ov::op::v0::Constant>(ov::element::i64,
                                                                     ov::Shape{4},
                                                                     std::vector<int64_t>{1, -1, 1, (n_dims >> 1)});

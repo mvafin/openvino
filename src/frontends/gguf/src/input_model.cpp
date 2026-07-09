@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "input_model.h"
+#include "input_model.hpp"
 
-#include "openvino/frontend/gguf/decoder.h"
+#include "openvino/frontend/gguf/decoder.hpp"
 
 namespace ov {
 namespace frontend {

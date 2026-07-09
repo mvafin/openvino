@@ -6,7 +6,7 @@
 
 #include <openvino/frontend/input_model.hpp>
 
-#include "openvino/frontend/gguf/decoder.h"
+#include "openvino/frontend/gguf/decoder.hpp"
 #include "openvino/frontend/gguf/visibility.hpp"
 
 namespace ov {

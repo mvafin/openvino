@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "input_model.h"
-#include "node_context.h"
+#include "input_model.hpp"
+#include "node_context.hpp"
 #include "openvino/frontend/extension/decoder_transformation.hpp"
 
 namespace ov {

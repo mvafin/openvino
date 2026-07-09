@@ -38,9 +38,11 @@ LowerSetRowsStateless::LowerSetRowsStateless() {
         // original [1, n_seq, ctx_per_seq, emb] layout (ctx_per_seq stays dynamic for llama-bench).
         if (auto dst_reshape = ov::as_type_ptr<ov::op::v1::Reshape>(dst.get_node_shared_ptr())) {
             auto dst_ps = dst_reshape->get_input_partial_shape(0);
-            std::vector<int64_t> shape = {dst_ps[0].get_length(), dst_ps[1].get_length(),
-                                          dst_ps[2].is_static() ? dst_ps[2].get_length() : -1,
-                                          dst_ps[3].get_length()};
+            // -1 for any dynamic dim; get_length() throws on dynamic.
+            auto dim_or_dynamic = [&](size_t i) -> int64_t {
+                return dst_ps[i].is_static() ? dst_ps[i].get_length() : -1;
+            };
+            std::vector<int64_t> shape = {dim_or_dynamic(0), dim_or_dynamic(1), dim_or_dynamic(2), dim_or_dynamic(3)};
             res = std::make_shared<ov::op::v1::Reshape>(
                 res, ov::op::v0::Constant::create(ov::element::i64, {4}, shape), false);
         }

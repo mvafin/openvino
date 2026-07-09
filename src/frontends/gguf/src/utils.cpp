@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "utils.h"
+#include "utils.hpp"
 
 #include <cmath>
 #include <cstddef>

@@ -8,7 +8,7 @@
 #include <openvino/frontend/node_context.hpp>
 #include <string>
 
-#include "openvino/frontend/gguf/decoder.h"
+#include "openvino/frontend/gguf/decoder.hpp"
 
 namespace ov {
 namespace frontend {
