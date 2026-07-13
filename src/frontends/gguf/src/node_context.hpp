@@ -38,12 +38,8 @@ public:
         return m_decoder->get_input_shape(m_input_names[input_index]);
     }
 
-    std::vector<size_t> get_input_stride(size_t index) const {
-        return m_decoder->get_input_stride(m_input_names[index]);
-    }
-
-    int64_t get_input_view_offset(size_t index) const {
-        return m_decoder->get_input_view_offset(m_input_names[index]);
+    int64_t get_input_view_element_offset(size_t index) const {
+        return m_decoder->get_input_view_element_offset(m_input_names[index]);
     }
 
     PartialShape get_output_shape() const {

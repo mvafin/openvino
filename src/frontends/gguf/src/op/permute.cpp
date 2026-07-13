@@ -73,8 +73,7 @@ OutputVector translate_permute(const NodeContext& context) {
             seq_active_end = context.get_input("seq_active_end");
         } else {
             int64_t n_seq_active = output_shape[0];
-            int64_t offset = context.get_input_view_offset(0);
-            int64_t seq_active_start_val = offset / (int64_t)context.get_input_stride(0)[0];
+            int64_t seq_active_start_val = context.get_attribute<int64_t>("view_seq_offset", 0);
             int64_t seq_active_end_val = seq_active_start_val + n_seq_active;
             seq_active_start = ov::op::v0::Constant::create(ov::element::i64, {1}, {seq_active_start_val});
             seq_active_end = ov::op::v0::Constant::create(ov::element::i64, {1}, {seq_active_end_val});

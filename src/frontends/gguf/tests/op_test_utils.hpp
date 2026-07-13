@@ -89,10 +89,7 @@ public:
     ov::PartialShape get_input_shape(const std::string& name) const override {
         return find_input(name).shape;
     }
-    std::vector<size_t> get_input_stride(const std::string&) const override {
-        return {};
-    }
-    int64_t get_input_view_offset(const std::string&) const override {
+    int64_t get_input_view_element_offset(const std::string&) const override {
         return 0;
     }
     size_t get_input_size() const override {

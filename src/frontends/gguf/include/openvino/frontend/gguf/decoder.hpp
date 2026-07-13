@@ -44,7 +44,7 @@ struct RopeConfig {
 // model-level questions (get_model_inputs, get_model_output_names, get_rope_config, ...).
 //
 // This is a typed, ggml-free interface: operation parameters are exposed through
-// get_attribute(name) / get_input_view_offset / RopeConfig rather than as raw ggml `op_params`
+// get_attribute(name) / get_input_view_element_offset / RopeConfig rather than as raw ggml `op_params`
 // int32 arrays. A concrete decoder (e.g. the llama.cpp cgraph decoder) only has to translate
 // ggml's layout into these typed accessors -- the op translators here never touch ggml memory.
 class GgufDecoder : public DecoderBase {
@@ -56,14 +56,10 @@ public:
 
     virtual PartialShape get_input_shape(const std::string& name) const = 0;
 
-    virtual std::vector<size_t> get_input_stride(const std::string& name) const = 0;
-
-    // Byte offset of an input that is a gguf VIEW into a larger tensor (0 when the input
-    // is not a view). Replaces the raw `get_input_op_params(...)[0]` read: a view's start
-    // offset is a single semantic scalar the decoder knows (by parsing ggml, or by
-    // construction), so translators never touch ggml's op_params layout. Translators
-    // convert bytes -> elements using get_input_stride as needed.
-    virtual int64_t get_input_view_offset(const std::string& name) const = 0;
+    // Element offset of an input that is a ggml VIEW into a larger tensor (0 when the input
+    // is not a view). The decoder converts the raw ggml byte offset to elements by dividing
+    // by the element size, so translators never see byte-level ggml memory layout.
+    virtual int64_t get_input_view_element_offset(const std::string& name) const = 0;
 
     size_t get_input_size() const override = 0;
 
