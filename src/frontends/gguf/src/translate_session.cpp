@@ -127,13 +127,8 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     std::shared_ptr<GgufDecoder> gguf_model_decoder = gguf_model->get_model_decoder();
 
     for (const auto& it : gguf_model_decoder->get_model_inputs()) {
-        params.push_back(std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second));
-        (*tensor_map)[it.first] = it.second;
-    }
-
-    for (const auto& it : gguf_model_decoder->get_model_extra_inputs()) {
-        if (std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second)) {
-            params.push_back(std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second));
+        if (auto param = std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second)) {
+            params.push_back(param);
         }
         (*tensor_map)[it.first] = it.second;
     }

@@ -34,10 +34,6 @@ public:
         return m_decoder->get_input_size();
     }
 
-    ov::element::Type get_input_type(size_t index) const {
-        return m_decoder->get_input_type(m_input_names[index]);
-    }
-
     PartialShape get_input_shape(size_t input_index) const {
         return m_decoder->get_input_shape(m_input_names[input_index]);
     }
@@ -79,10 +75,6 @@ public:
 
     ov::Any get_attribute_as_any(const std::string& name) const override {
         return m_decoder->get_attribute(name);
-    }
-
-    int get_op_case() const {
-        return m_decoder->get_op_case();
     }
 
 private:

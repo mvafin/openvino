@@ -22,7 +22,7 @@ namespace op {
 OutputVector translate_get_rows(const NodeContext & context) {
     num_inputs_check(context, 2, 2);
 
-    int op_case = context.get_op_case();
+    int op_case = context.get_attribute<int>("op_case", 0);
 
     Output<Node> res;
     auto data = context.get_input(0);

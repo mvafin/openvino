@@ -31,7 +31,7 @@ namespace op {
 OutputVector translate_mulmat(const NodeContext & context) {
     num_inputs_check(context, 2, 2);
 
-    int op_case = context.get_op_case();
+    int op_case = context.get_attribute<int>("op_case", 0);
 
     ov::Output<Node> res;
     ov::Output<ov::Node> B = context.get_input(0);

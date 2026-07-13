@@ -28,7 +28,7 @@ OutputVector translate_reshape(const NodeContext & context) {
         return {context.get_input(0)};
     }
 
-    int op_case = context.get_op_case();
+    int op_case = context.get_attribute<int>("op_case", 0);
     FRONT_END_CHECK_IMPLEMENTED(
         op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 || op_case == 6,
         "Unsupported RESHAPE case");

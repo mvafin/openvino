@@ -65,14 +65,14 @@ public:
     // convert bytes -> elements using get_input_stride as needed.
     virtual int64_t get_input_view_offset(const std::string& name) const = 0;
 
-    virtual element::Type get_input_type(const std::string& name) const = 0;
-
     size_t get_input_size() const override = 0;
 
-    void get_input_node(size_t input_port_idx,
-                        std::string& producer_name,
-                        std::string& producer_output_port_name,
-                        size_t& producer_output_port_index) const override = 0;
+    // DecoderBase override: GGUF resolves connectivity through the TensorMap (name-keyed),
+    // not through port-to-port decoder traversal, so this is never called.
+    void get_input_node(size_t,
+                        std::string&,
+                        std::string&,
+                        size_t&) const override {}
 
     virtual std::vector<std::string> get_input_names() const = 0;
 
@@ -88,10 +88,10 @@ public:
 
     virtual void visit_subgraph(std::function<void(std::shared_ptr<GgufDecoder>)> node_visitor) const = 0;
 
-    virtual int get_op_case() const = 0;
-
+    // Returns all model-scope input nodes: both primary inputs (Parameters) and auxiliary inputs
+    // (position IDs, KV-cache lengths, masks, etc.). Parameters are distinguished from auxiliary
+    // nodes by the caller via dynamic_pointer_cast<ov::op::v0::Parameter>.
     virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const = 0;
-    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const = 0;
     virtual std::vector<std::string> get_model_output_names() const = 0;
 
     // NOTE: there is no get_model_weights(). A GGUF weight is surfaced as a regular node in

@@ -25,7 +25,7 @@ namespace op {
 OutputVector translate_permute(const NodeContext& context) {
     num_inputs_check(context, 1, 1);
 
-    int op_case = context.get_op_case();
+    int op_case = context.get_attribute<int>("op_case", 0);
     FRONT_END_CHECK_IMPLEMENTED(op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4,
                                 "Unsupported PERMUTE case");
 
