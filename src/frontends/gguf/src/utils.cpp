@@ -197,7 +197,7 @@ ov::Output<ov::Node> process_view_input(const NodeContext& context, int input_in
     auto input = context.get_input(input_index);
     int64_t split_addr = context.get_input_view_element_offset(input_index);
     if (slice_len == 0) {
-        slice_len = context.get_input_shape(input_index)[3].get_length();
+        slice_len = static_cast<int>(context.get_input(input_index).get_partial_shape()[3].get_length());
     }
     int64_t slice_end = split_addr + slice_len;
 

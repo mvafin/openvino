@@ -44,7 +44,7 @@ struct RopeConfig {
 // model-level questions (get_model_inputs, get_model_output_names, get_rope_config, ...).
 //
 // This is a typed, ggml-free interface: operation parameters are exposed through
-// get_attribute(name) / get_input_view_element_offset / RopeConfig rather than as raw ggml `op_params`
+// get_attribute(name) / get_input_view_element_offset / get_output_shape / RopeConfig rather than raw ggml `op_params`
 // int32 arrays. A concrete decoder (e.g. the llama.cpp cgraph decoder) only has to translate
 // ggml's layout into these typed accessors -- the op translators here never touch ggml memory.
 class GgufDecoder : public DecoderBase {
@@ -53,8 +53,6 @@ public:
     // scalar operation parameters (e.g. "eps", "scale", "bias", "swapped", "rope_config")
     // without dereferencing ggml's raw op_params layout.
     ov::Any get_attribute(const std::string& name) const override = 0;
-
-    virtual PartialShape get_input_shape(const std::string& name) const = 0;
 
     // Element offset of an input that is a ggml VIEW into a larger tensor (0 when the input
     // is not a view). The decoder converts the raw ggml byte offset to elements by dividing
@@ -73,8 +71,6 @@ public:
     virtual std::vector<std::string> get_input_names() const = 0;
 
     virtual PartialShape get_output_shape() const = 0;
-
-    virtual element::Type get_output_type() const = 0;
 
     virtual std::vector<std::string> get_output_names() const = 0;
 

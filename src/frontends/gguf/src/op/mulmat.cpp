@@ -50,8 +50,8 @@ OutputVector translate_mulmat(const NodeContext & context) {
         B = std::make_shared<ov::op::v0::Convert>(B, A.get_element_type());
     }
 
-    auto B_shape = context.get_input_shape(0).to_shape();
-    auto A_shape = context.get_input_shape(1).to_shape();
+    auto B_shape = context.get_input(0).get_partial_shape().to_shape();
+    auto A_shape = context.get_input(1).get_partial_shape().to_shape();
     int64_t A_batch = A_shape[1];
     int64_t B_batch = B_shape[1];
 

@@ -32,7 +32,7 @@ OutputVector translate_soft_max(const NodeContext& context) {
 
     float scale = context.get_attribute<float>("scale", 1.0f);
     float max_bias = context.get_attribute<float>("max_bias", 0.0f);
-    const uint32_t n_head = context.get_input_shape(0).get_shape()[0];
+    const uint32_t n_head = context.get_input(0).get_partial_shape().get_shape()[0];
 
     auto scale_node = std::make_shared<ov::op::v0::Constant>(ov::element::f32, ov::Shape{}, std::vector<float>{scale});
     auto scaled_input = std::make_shared<ov::op::v1::Multiply>(input_node, scale_node);
@@ -53,8 +53,9 @@ OutputVector translate_soft_max(const NodeContext& context) {
         mask_node_sliced = std::make_shared<ov::op::v8::Slice>(mask_node, zero, token_len, one, one);
     }
 
-    if (mask_node_sliced.get_element_type() != context.get_output_type()) {
-        mask_node_sliced = std::make_shared<ov::op::v0::Convert>(mask_node_sliced, context.get_output_type());
+    auto output_type = context.get_attribute<ov::element::Type>("output_type");
+    if (mask_node_sliced.get_element_type() != output_type) {
+        mask_node_sliced = std::make_shared<ov::op::v0::Convert>(mask_node_sliced, output_type);
     }
 
     ov::Output<ov::Node> biased_input = scaled_input;
@@ -65,9 +66,9 @@ OutputVector translate_soft_max(const NodeContext& context) {
         const float m1 = std::pow(2.0f, -(max_bias / 2.0f) / n_head_log2);
         std::vector<float> slopes(n_head);
         for (uint32_t h = 0; h < n_head; ++h) {
-            slopes[h] = h < n_head_log2 ? std::pow(m0, h + 1) : std::pow(m1, 2 * (h - n_head_log2) + 1);
+            slopes[h] = h < n_head_log2 ? std::pow(m0, static_cast<float>(h + 1)) : std::pow(m1, static_cast<float>(2 * (h - n_head_log2) + 1));
         }
-        auto slope_node = std::make_shared<ov::op::v0::Constant>(context.get_output_type(),
+        auto slope_node = std::make_shared<ov::op::v0::Constant>(output_type,
                                                                  ov::Shape{n_head, 1, 1},
                                                                  slopes);
         auto slope_mask = std::make_shared<ov::op::v1::Multiply>(mask_node_sliced, slope_node);

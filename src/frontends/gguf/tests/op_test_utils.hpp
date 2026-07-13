@@ -86,9 +86,6 @@ public:
     }
 
     // ── per-node metadata ───────────────────────────────────────────────────────
-    ov::PartialShape get_input_shape(const std::string& name) const override {
-        return find_input(name).shape;
-    }
     int64_t get_input_view_element_offset(const std::string&) const override {
         return 0;
     }
@@ -102,9 +99,6 @@ public:
 
     ov::PartialShape get_output_shape() const override {
         return m_output.shape;
-    }
-    ov::element::Type get_output_type() const override {
-        return m_output.type;
     }
 
     std::vector<std::string> get_output_names() const override {
@@ -177,7 +171,9 @@ public:
     // Build the single-op InputModel (naive=true skips the LLM preprocess step -- rope
     // sin/cos, attention mask -- which is irrelevant for single-op tests).
     std::shared_ptr<InputModel> input_model() const {
-        auto decoder = std::make_shared<SingleOpDecoder>(m_op_type, m_inputs, m_output, m_attributes);
+        auto attrs = m_attributes;
+        attrs.emplace("output_type", ov::Any(m_output.type));
+        auto decoder = std::make_shared<SingleOpDecoder>(m_op_type, m_inputs, m_output, attrs);
         return std::make_shared<InputModel>(decoder, true);
     }
 

@@ -24,7 +24,6 @@ OutputVector translate_cont(const NodeContext & context) {
     int op_case = context.get_attribute<int>("op_case", 0);
     FRONT_END_CHECK_IMPLEMENTED(op_case == 1 || op_case == 2 || op_case == 3, "Unsupported CONT case");
 
-    auto src_shape = context.get_input_shape(0).to_shape();
     auto dst_shape = context.get_output_shape().to_shape();
     ov::Output<Node> res;
 

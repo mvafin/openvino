@@ -37,10 +37,7 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
     auto scale_node = std::make_shared<ov::op::v0::Constant>(ov::element::f16, ov::Shape{}, std::vector<float>{scale});
 
     ov::Output<ov::Node> mask_sliced, res;
-    std::string mask_name = "KQ_mask_sliced";
-    if (context.get_input_names()[3].find("swa") != std::string::npos) {
-        mask_name = "KQ_mask_swa_sliced";
-    }
+    const std::string mask_name = context.get_attribute<bool>("is_swa", false) ? "KQ_mask_swa_sliced" : "KQ_mask_sliced";
     if (context.has_input(mask_name)) {
         mask_sliced = context.get_input(mask_name);
     } else {
@@ -76,8 +73,8 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
         return kv;
     };
 
-    auto q_shape = context.get_input_shape(0).to_shape();
-    auto k_shape = context.get_input_shape(1).to_shape();
+    auto q_shape = context.get_input(0).get_partial_shape().to_shape();
+    auto k_shape = context.get_input(1).get_partial_shape().to_shape();
     k = tile_kv(q_shape[1], k_shape[1], q_shape[3], k);
     v = tile_kv(q_shape[1], k_shape[1], q_shape[3], v);
 

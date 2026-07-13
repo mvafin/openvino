@@ -26,16 +26,8 @@ public:
         m_output_names = decoder->get_output_names();
     }
 
-    const std::vector<std::string>& get_input_names() const {
-        return m_input_names;
-    }
-
     size_t get_input_size() const override {
         return m_decoder->get_input_size();
-    }
-
-    PartialShape get_input_shape(size_t input_index) const {
-        return m_decoder->get_input_shape(m_input_names[input_index]);
     }
 
     int64_t get_input_view_element_offset(size_t index) const {
@@ -44,10 +36,6 @@ public:
 
     PartialShape get_output_shape() const {
         return m_decoder->get_output_shape();
-    }
-
-    ov::element::Type get_output_type() const {
-        return m_decoder->get_output_type();
     }
 
     Output<Node> get_input(int idx) const override {
