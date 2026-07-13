@@ -36,22 +36,27 @@ struct RopeConfig {
 
 // Decoder interface consumed by the gguf frontend translators.
 //
-// Following the established OpenVINO frontend pattern (cf. the PyTorch frontend), a GgufDecoder
-// is node-scoped: visit_subgraph hands the visitor a fresh decoder bound to a single node, and
-// every per-node accessor (get_attribute, get_input_*, get_output_*, get_op_*) refers to that
-// node -- no node index is threaded through. The same object type, queried at model scope (the
-// instance returned by InputModel::get_decoder and iterated by visit_subgraph), answers the
-// model-level questions (get_model_inputs, get_model_output_names, get_rope_config, ...).
+// Following the established OpenVINO frontend pattern (cf. the PyTorch TorchDecoder + InputModel),
+// the translators see a GgufDecoder as a NODE decoder: visit_subgraph hands the visitor a fresh
+// decoder bound to a single node, and every per-node accessor (get_attribute, get_input_*,
+// get_output_*, get_op_*) refers to that node -- no node index is threaded through. The
+// MODEL-level questions (the graph's Parameter inputs, its output names, the shared RoPE config,
+// and node iteration) are asked through ov::frontend::gguf::InputModel, not by treating a decoder
+// instance as a "model decoder". The InputModel forwards those to the model-scope accessors below;
+// a concrete decoder answers them when queried before visit_subgraph binds it to a node.
 //
 // This is a typed, ggml-free interface: operation parameters are exposed through
-// get_attribute(name) / get_input_view_element_offset / get_output_shape / RopeConfig rather than raw ggml `op_params`
-// int32 arrays. A concrete decoder (e.g. the llama.cpp cgraph decoder) only has to translate
-// ggml's layout into these typed accessors -- the op translators here never touch ggml memory.
+// get_attribute(name) / get_input_view_element_offset / get_output_shape / RopeConfig rather than
+// raw ggml `op_params` int32 arrays. A concrete decoder (e.g. the llama.cpp cgraph decoder) only
+// has to translate ggml's layout into these typed accessors -- the op translators never touch
+// ggml memory.
 class GgufDecoder : public DecoderBase {
 public:
-    // Per-node typed attribute access (the bound node). The op translators use this to read
-    // scalar operation parameters (e.g. "eps", "scale", "bias", "swapped", "rope_config")
-    // without dereferencing ggml's raw op_params layout.
+    // ── Node scope (the bound node; used by the op translators) ──────────────────────────────
+
+    // Typed attribute access. The op translators use this to read scalar operation parameters
+    // (e.g. "eps", "scale", "bias", "swapped", "op_case", "output_type", "rope_config") without
+    // dereferencing ggml's raw op_params layout.
     ov::Any get_attribute(const std::string& name) const override = 0;
 
     // Element offset of an input that is a ggml VIEW into a larger tensor (0 when the input
@@ -78,9 +83,13 @@ public:
 
     const std::string& get_op_name() const override = 0;
 
+    // ── Model scope (asked via ov::frontend::gguf::InputModel, not by the translators) ─────────
+
+    // Iterate the operation nodes in topological order, handing the visitor a decoder bound to
+    // each node. This is the bridge from model scope to node scope.
     virtual void visit_subgraph(std::function<void(std::shared_ptr<GgufDecoder>)> node_visitor) const = 0;
 
-    // Returns all model-scope input nodes: both primary inputs (Parameters) and auxiliary inputs
+    // All model-scope input nodes: both primary inputs (Parameters) and auxiliary inputs
     // (position IDs, KV-cache lengths, masks, etc.). Parameters are distinguished from auxiliary
     // nodes by the caller via dynamic_pointer_cast<ov::op::v0::Parameter>.
     virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const = 0;
@@ -96,8 +105,9 @@ public:
     // resolved to Parameters before the walk, so they carry no "data".)
 
     // RoPE configuration, exposed through get_attribute<RopeConfig>("rope_config"):
-    //   - at model scope, used by TranslateSession::preprocess to pre-build the shared rope
-    //     sin/cos table (skipped when RopeConfig::n_dims == 0, i.e. no RoPE, or per_op == true);
+    //   - at model scope (via InputModel::get_rope_config), used by TranslateSession::preprocess
+    //     to pre-build the shared rope sin/cos table (skipped when RopeConfig::n_dims == 0, i.e.
+    //     no RoPE, or per_op == true);
     //   - at node scope, the ROPE translator reads the same key for the op's own config.
 };
 

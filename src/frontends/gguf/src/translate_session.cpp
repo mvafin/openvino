@@ -44,7 +44,7 @@ using namespace ov::op;
 
 namespace {
 
-void add_sliced_mask(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
+void add_sliced_mask(TensorMap& tensor_map) {
     // Slice the full attention mask down to the current token window for the attention ops.
     // For static (fixed-shape) models the slice bounds are constants, so this folds to a
     // fixed-size slice -- there is no separate static pass-through branch.
@@ -68,8 +68,7 @@ void add_sliced_mask(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
     create_sliced_mask("self_kq_mask_swa", "KQ_mask_swa_sliced");
 }
 
-void add_rope_sin_cos(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
-    const auto rope_config = gguf_model_decoder.get_attribute("rope_config").as<RopeConfig>();
+void add_rope_sin_cos(TensorMap& tensor_map, const RopeConfig& rope_config) {
     // n_dims == 0 means the model uses no RoPE; per_op means each ROPE op builds its own sin/cos
     // (e.g. gemma4 where SWA and global layers differ), so skip the shared table entirely.
     if (tensor_map.find("inp_pos") == tensor_map.end() || rope_config.n_dims == 0 || rope_config.per_op) {
@@ -92,9 +91,9 @@ void add_rope_sin_cos(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
 }
 
 // Create common patterns
-void preprocess(TensorMap& tensor_map, GgufDecoder& gguf_model_decoder) {
-    add_sliced_mask(tensor_map, gguf_model_decoder);
-    add_rope_sin_cos(tensor_map, gguf_model_decoder);
+void preprocess(TensorMap& tensor_map, const RopeConfig& rope_config) {
+    add_sliced_mask(tensor_map);
+    add_rope_sin_cos(tensor_map, rope_config);
 }
 
 }  // namespace
@@ -124,9 +123,8 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     std::shared_ptr<Model> resulting_model;
 
     const auto& gguf_model = std::dynamic_pointer_cast<InputModel>(input_model);
-    std::shared_ptr<GgufDecoder> gguf_model_decoder = gguf_model->get_model_decoder();
 
-    for (const auto& it : gguf_model_decoder->get_model_inputs()) {
+    for (const auto& it : gguf_model->get_model_inputs()) {
         if (auto param = std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second)) {
             params.push_back(param);
         }
@@ -177,11 +175,11 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     };
 
     if (!m_naive) {
-        preprocess(*tensor_map, *gguf_model_decoder);
+        preprocess(*tensor_map, gguf_model->get_rope_config());
     }
-    gguf_model_decoder->visit_subgraph(node_visitor);
+    gguf_model->visit_subgraph(node_visitor);
 
-    for (const auto& name : gguf_model_decoder->get_model_output_names()) {
+    for (const auto& name : gguf_model->get_model_output_names()) {
         FRONT_END_GENERAL_CHECK(tensor_map->find(name) != tensor_map->end(),
                                 "Output name not found in tensor map: ",
                                 name);
