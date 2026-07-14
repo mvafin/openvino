@@ -1,10 +1,7 @@
-// Copyright (C) 2018-2026 Intel Corporation
-// SPDX-License-Identifier: Apache-2.0
-//
-
 #include "op_table.hpp"
 
 #include <openvino/op/add.hpp>
+#include <openvino/op/concat.hpp>
 #include <openvino/op/divide.hpp>
 #include <openvino/op/gather.hpp>
 #include <openvino/op/matmul.hpp>
@@ -22,29 +19,51 @@ std::unordered_map<std::string, CreatorFunction> get_supported_ops() {
     return {
         {"GGML_GLU_OP_GEGLU", op::translate_glu_geglu},
         {"GGML_GLU_OP_SWIGLU", op::translate_glu_swiglu},
+        {"GGML_GLU_OP_SWIGLU_OAI", op::translate_glu_swiglu_oai},
         {"GGML_OP_ADD", op::translate_1to1_match_2_inputs<v1::Add>},
         {"GGML_OP_ADD1", op::translate_1to1_match_2_inputs<v1::Add>},
+        {"GGML_OP_ADD_ID", op::translate_add_id},
+        {"GGML_OP_ARGSORT", op::translate_argsort},
+        {"GGML_OP_CLAMP", op::translate_clamp},
+        {"GGML_OP_CONCAT", op::translate_concat},
         {"GGML_OP_CONT", op::translate_cont},
+        {"GGML_OP_COS", op::translate_cos},
         {"GGML_OP_CPY", op::translate_cpy},
         {"GGML_OP_DIV", op::translate_1to1_match_2_inputs<v1::Divide>},
         {"GGML_OP_FLASH_ATTN_EXT", op::translate_flash_attn_ext},
         {"GGML_OP_GET_ROWS", op::translate_get_rows},
+        {"GGML_OP_LOG", op::translate_log},
         {"GGML_OP_MUL", op::translate_1to1_match_2_inputs<v1::Multiply>},
         {"GGML_OP_MUL_MAT", op::translate_mulmat},
-        // A GGML_OP_NONE leaf carrying a "data" attribute is a weight (see translate_weight).
+        {"GGML_OP_MUL_MAT_ID", op::translate_mul_mat_id},
+        // A GGML_OP_NONE leaf carrying a "data" attribute is a weight (see translate_weight). This
+        // is the llama.cpp cgraph decoder path; the native .gguf builder path instead pre-builds
+        // weights into get_model_weights() and emits no GGML_OP_NONE nodes.
         {"GGML_OP_NONE", op::translate_weight},
+        {"GGML_OP_NORM", op::translate_norm},
         {"GGML_OP_PERMUTE", op::translate_permute},
+        {"GGML_OP_REPEAT", op::translate_repeat},
         {"GGML_OP_RESHAPE", op::translate_reshape},
         {"GGML_OP_RMS_NORM", op::translate_rms_norm},
         {"GGML_OP_ROPE", op::translate_rope},
         {"GGML_OP_SCALE", op::translate_scale},
         {"GGML_OP_SET_ROWS", op::translate_set_rows},
+        {"GGML_OP_SIN", op::translate_sin},
         {"GGML_OP_SOFT_MAX", op::translate_soft_max},
+        {"GGML_OP_SQR", op::translate_sqr},
+        {"GGML_OP_SQRT", op::translate_sqrt},
         {"GGML_OP_SUB", op::translate_1to1_match_2_inputs<v1::Subtract>},
+        {"GGML_OP_SUM_ROWS", op::translate_sum_rows},
+        {"GGML_OP_TOP_K", op::translate_top_k},
         {"GGML_OP_TRANSPOSE", op::translate_transpose},
         {"GGML_OP_VIEW", op::translate_view},
+        {"GGML_UNARY_OP_ELU", op::translate_unary_elu},
         {"GGML_UNARY_OP_GELU", op::translate_unary_gelu},
+        {"GGML_UNARY_OP_GELU_QUICK", op::translate_unary_gelu_quick},
+        {"GGML_UNARY_OP_RELU", op::translate_unary_relu},
+        {"GGML_UNARY_OP_SIGMOID", op::translate_unary_sigmoid},
         {"GGML_UNARY_OP_SILU", op::translate_unary_silu},
+        {"GGML_UNARY_OP_TANH", op::translate_unary_tanh},
     };
 }
 

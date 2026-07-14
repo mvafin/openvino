@@ -2,18 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-# The GGUF frontend is an MVP port of llama.cpp's ggml-openvino frontend, built only when
-# ENABLE_OV_GGUF_FRONTEND is ON. It installs the library + headers alongside the other
-# frontends (LINKABLE_FRONTEND, no SKIP_INSTALL) so callers -- the llama.cpp ggml-openvino
-# backend and OpenVINO GenAI -- can link openvino::frontend::gguf directly.
-#
-# It is intentionally NOT discoverable via FrontEndManager: it DOES export the plugin-registration
-# entry points (get_api_version / get_front_end_data, required so FrontEndManager can load it
-# without error while scanning the frontend directory), but it registers itself as hidden
-# (FrontEndPluginInfo::m_hidden = true), so it never appears in available_front_ends() and is never
-# auto-selected by load_by_model / load_by_framework. See the discoverability note in frontend.cpp.
-# This keeps the not-yet-production frontend hidden from the generic model-loading API while
-# remaining usable by direct linkers.
+# The GGUF frontend converts GGUF models to OpenVINO, built only when ENABLE_OV_GGUF_FRONTEND is
+# ON. It installs the library + headers alongside the other frontends (LINKABLE_FRONTEND, no
+# SKIP_INSTALL) so direct linkers -- the llama.cpp ggml-openvino backend and OpenVINO GenAI --
+# can link openvino::frontend::gguf, and it is discoverable via FrontEndManager so
+# core.read_model("model.gguf") selects it by the .gguf extension + GGUF magic (see
+# supported_impl / get_front_end_data in frontend.cpp). Two ingest paths converge on the same op
+# translators: a live GgufDecoder (cgraph path) and a native .gguf-file builder.
 ov_add_frontend(NAME gguf
                 LINKABLE_FRONTEND
                 FILEDESCRIPTION "FrontEnd to convert GGUF models"

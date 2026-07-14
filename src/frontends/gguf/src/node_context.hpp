@@ -26,16 +26,36 @@ public:
         m_output_names = decoder->get_output_names();
     }
 
+    const std::vector<std::string>& get_input_names() const {
+        return m_input_names;
+    }
+
     size_t get_input_size() const override {
         return m_decoder->get_input_size();
     }
 
-    int64_t get_input_view_element_offset(size_t index) const {
-        return m_decoder->get_input_view_element_offset(m_input_names[index]);
+    ov::element::Type get_input_type(size_t index) const {
+        return m_decoder->get_input_type(m_input_names[index]);
+    }
+
+    PartialShape get_input_shape(size_t input_index) const {
+        return m_decoder->get_input_shape(m_input_names[input_index]);
+    }
+
+    std::vector<size_t> get_input_stride(size_t index) const {
+        return m_decoder->get_input_stride(m_input_names[index]);
+    }
+
+    int64_t get_input_view_offset(size_t index) const {
+        return m_decoder->get_input_view_offset(m_input_names[index]);
     }
 
     PartialShape get_output_shape() const {
         return m_decoder->get_output_shape();
+    }
+
+    ov::element::Type get_output_type() const {
+        return m_decoder->get_output_type();
     }
 
     Output<Node> get_input(int idx) const override {
@@ -59,6 +79,21 @@ public:
 
     ov::Any get_attribute_as_any(const std::string& name) const override {
         return m_decoder->get_attribute(name);
+    }
+
+    int get_op_case() const {
+        return m_decoder->get_op_case();
+    }
+
+    // Execution-mode flags, delegated to the decoder. Op translators branch on these to emit the
+    // stateful KV-cache layout (Concat/beam_idx) vs the stateless one, and the static (fixed
+    // token length) layout for NPU.
+    bool is_stateful() const {
+        return m_decoder->is_stateful();
+    }
+
+    bool is_static() const {
+        return m_decoder->is_static();
     }
 
 private:

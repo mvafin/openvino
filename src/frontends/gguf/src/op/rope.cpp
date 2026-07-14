@@ -1,6 +1,4 @@
-// Copyright (C) 2018-2026 Intel Corporation
-// SPDX-License-Identifier: Apache-2.0
-//
+#include "openvino/decompositions/rope.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -23,9 +21,10 @@
 #include <openvino/op/unsqueeze.hpp>
 #include <vector>
 
-#include "node_context.hpp"
-#include "op_table.hpp"
-#include "utils.hpp"
+#include "../node_context.hpp"
+#include "../op_table.hpp"
+#include "../utils.hpp"
+#include "openvino/pass/node_registry.hpp"
 
 namespace ov {
 namespace frontend {
@@ -35,7 +34,7 @@ namespace op {
 OutputVector translate_rope(const NodeContext& context) {
     num_inputs_check(context, 2, 3);
 
-    int op_case = context.get_attribute<int>("op_case", 0);
+    int op_case = context.get_op_case();
 
     ov::Output<Node> res;
 
@@ -69,11 +68,19 @@ OutputVector translate_rope(const NodeContext& context) {
         // The input comes from a VIEW
         int slice_len = output_shape[2] * output_shape[3];
         data_node = process_view_input(context, 0, slice_len).get_node_shared_ptr();
-        auto data_shape = ov::op::v0::Constant::create(
-            ov::element::i64,
-            {4},
-            std::vector<int64_t>{1, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
-        data_node = std::make_shared<ov::op::v1::Reshape>(data_node, data_shape, false);
+        if (context.is_stateful()) {
+            auto data_shape = ov::op::v0::Constant::create(
+                ov::element::i64,
+                {3},
+                std::vector<int64_t>{-1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
+            data_node = std::make_shared<ov::op::v1::Reshape>(data_node, data_shape, false);
+        } else {
+            auto data_shape = ov::op::v0::Constant::create(
+                ov::element::i64,
+                {4},
+                std::vector<int64_t>{1, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
+            data_node = std::make_shared<ov::op::v1::Reshape>(data_node, data_shape, false);
+        }
     }
 
     if (mode == TYPE_NORMAL) {
@@ -84,7 +91,7 @@ OutputVector translate_rope(const NodeContext& context) {
         auto end = ov::op::v0::Constant::create(ov::element::i64, {1}, {output_shape[3]});
         Output<Node> even_slice;
         Output<Node> odd_slice;
-        int32_t unsqueeze_dim = 4;
+        int32_t unsqueeze_dim = context.is_stateful() ? 3 : 4;
         even_slice = std::make_shared<ov::op::v8::Slice>(data_node, zero, end, two, neg_one);
         odd_slice = std::make_shared<ov::op::v8::Slice>(data_node, one, end, two, neg_one);
 
@@ -109,25 +116,63 @@ OutputVector translate_rope(const NodeContext& context) {
             std::vector<int64_t>{1, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
         res = std::make_shared<ov::op::v1::Reshape>(stack, data_shape, false);
     } else if (mode == TYPE_NEOX) {
-        auto data_split =
-            std::make_shared<ov::op::v1::Split>(data_node,
-                                                ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {-1}),
-                                                2);
-        Output<Node> slice_data_node_0 = data_split->outputs()[0];
-        Output<Node> slice_data_node_1 = data_split->outputs()[1];
+        // Build the canonical NEOX RoPE via the shared decomposition helper, which emits the
+        // exact split-halves + Multiply(-1)+Add + Concat pattern that ov::pass::RoPEFusion
+        // (specifically the RoPEFusionGPTOSS matcher) folds into the fused
+        // ov::op::internal::RoPE primitive on CPU/GPU.
+        //
+        // That matcher only fires when the rotated tensor is laid out as [B, H, L, S] and the
+        // cos/sin caches are [?, 1, ?, head/2]. Our tensors are ggml-natural: data is
+        // [B, L, H, S] (or [L, H, S] when stateful) and cos/sin are [B, L, 1, head/2] (or
+        // [L, 1, head/2]). So we transpose every operand into the canonical [B, H, L, S]
+        // layout (heads on axis 1), run the decomposition there, and transpose the result
+        // back to the gguf layout. The math is unchanged; the wrapping Transposes are sunk /
+        // cancelled against the adjacent PERMUTE during TransposeSinking.
+        //
+        // The ggml-natural shapes here are: data [B,L,H,S] (or [B,L,H*S] when the
+        // Kcur_r reshape was eliminated for n_head_kv=1) and cos/sin [B,L,1,head/2].
+        // For rank-4 data [B,L,H,S]: Transpose {0,2,1,3} → [B,H,L,S].
+        // For rank-3 data [B,L,H*S]: first reshape to [B,L,H,S] using output_shape,
+        // then Transpose {0,2,1,3} → [B,H,L,S]. The cos/sin are always rank-4 [B,L,1,S/2].
+        const int64_t n_head_rope = static_cast<int64_t>(output_shape[2]);
+        const int64_t head_size_rope = static_cast<int64_t>(output_shape[3]);
+        const auto perm_bhls = ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3});
 
-        auto first_half_node = std::make_shared<ov::op::v1::Subtract>(
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_0, cos_theta_node),
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_1, sin_theta_node));
+        // The DATA reaches this op in inconsistent shapes depending on the layer's upstream rank:
+        // rank-3 [B, L, H*S] (e.g. n_head_kv=1 layers fed by a rank-3 producer), or rank-4 that
+        // may be [B, L, H, S] OR [B, 1, L, S] (when an upstream rank-4 l_out makes OV keep a
+        // leading 1 and the head axis lands at position 1). A single fixed Transpose cannot
+        // normalize all of these. Instead, always Reshape the data to the canonical ggml-natural
+        // [B, L, H, S] using the op's output_shape (element order is preserved, so this correctly
+        // reinterprets every incoming layout), then Transpose {0,2,1,3} -> [B, H, L, S].
+        auto data_to_bhls = [&](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
+            auto shape4d = ov::op::v0::Constant::create(
+                ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_head_rope, head_size_rope});
+            x = std::make_shared<ov::op::v1::Reshape>(x, shape4d, false);  // [B, L, H, S]
+            return std::make_shared<ov::op::v1::Transpose>(x, perm_bhls);  // [B, H, L, S]
+        };
+        // cos/sin always arrive rank-4 [B, L, 1, head/2]; just transpose to [B, 1, L, head/2].
+        auto cossin_to_bhls = [&](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
+            return std::make_shared<ov::op::v1::Transpose>(x, perm_bhls);
+        };
 
-        auto second_half_node = std::make_shared<ov::op::v1::Add>(
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_0, sin_theta_node),
-            std::make_shared<ov::op::v1::Multiply>(slice_data_node_1, cos_theta_node));
+        auto x_bhls = data_to_bhls(data_node);       // [B, H, L, S]
+        auto cos_bhls = cossin_to_bhls(cos_theta_node);  // [B, 1, L, head/2]
+        auto sin_bhls = cossin_to_bhls(sin_theta_node);  // [B, 1, L, head/2]
 
-        res = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{first_half_node, second_half_node}, -1);
+        ov::pass::NodeRegistry reg;
+        const int64_t half = static_cast<int64_t>(output_shape[3]) / 2;
+        auto roped = ov::decomposition::rope(reg, x_bhls, cos_bhls, sin_bhls, half);  // [B, H, L, S]
+
+        // Back to the gguf layout the rest of the graph expects. The original NEOX branch
+        // always produced a rank-4 [B, L, H, S] tensor (the rank-3 stateful data was lifted
+        // to rank-4 by the NUMPY broadcast against the rank-4 cos/sin), and the downstream
+        // PERMUTE consumes rank-4, so we emit rank-4 here too.
+        res = std::make_shared<ov::op::v1::Transpose>(
+            roped,
+            ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3}));  // [B, L, H, S]
     } else if (mode == TYPE_IMROPE) {
-        // Use output_shape, not data_node->get_shape() which throws on a dynamic dim.
-        int64_t n_dims = output_shape[3];
+        int64_t n_dims = data_node->get_shape()[3];
         auto cos_sin_shape = std::make_shared<ov::op::v0::Constant>(ov::element::i64,
                                                                     ov::Shape{4},
                                                                     std::vector<int64_t>{1, -1, 1, (n_dims >> 1)});

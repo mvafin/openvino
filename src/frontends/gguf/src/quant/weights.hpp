@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -46,6 +47,26 @@ std::shared_ptr<ov::Node> make_weight_node(const ov::Tensor& data,
 
 // Map a ggml quant type name (e.g. "Q4_K") to its gguf_tensor_type id. Throws if unknown.
 gguf_tensor_type gguf_type_from_name(const std::string& quant_type);
+
+// One split part of a fused attn_qkv weight: the extracted tensors keyed as "<part>.weight"
+// [+ ".scales" [+ ".zp"]] plus the shared quant type. Used by the GGUF builder to emit a
+// GGML_OP_NONE weight leaf per q/k/v part (routing them through translate_weight like any other
+// weight) instead of building the decompression nodes eagerly.
+struct FusedQkvPart {
+    std::unordered_map<std::string, ov::Tensor> extracted;
+    gguf_tensor_type qtype = GGUF_TYPE_F16;
+};
+
+// Row-slice a fused `<base>` attn_qkv weight into q/k/v extracted-tensor sub-maps (no OV nodes).
+// The returned parts' tensors are keyed "<base>.q.weight"/".scales"/".zp" etc. Same slicing as
+// make_fused_qkv_weights, but returns the extracted payload for GGML_OP_NONE emission.
+std::array<FusedQkvPart, 3> split_fused_qkv_extracted(
+    const std::string& base,
+    const std::unordered_map<std::string, ov::Tensor>& weights,
+    const std::unordered_map<std::string, gguf_tensor_type>& qtypes,
+    size_t n_q,
+    size_t n_k,
+    size_t n_v);
 
 }  // namespace gguf
 }  // namespace frontend

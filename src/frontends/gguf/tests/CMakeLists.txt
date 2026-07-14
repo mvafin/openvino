@@ -31,6 +31,10 @@ ov_add_test_target(
     INCLUDES
         "${CMAKE_CURRENT_SOURCE_DIR}/../src"
         "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+        # frontend.cpp (compiled into the self-contained test binary) includes the native
+        # .gguf load path (get_path_from_any in openvino/frontend/common/path_util.hpp).
+        "${OpenVINO_SOURCE_DIR}/src/frontends/common/include"
+        "${OpenVINO_SOURCE_DIR}/src/frontends/common/dev_api"
     ADD_CLANG_FORMAT
     LABELS
         OV UNIT GGUF_FE

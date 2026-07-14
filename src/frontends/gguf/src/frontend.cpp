@@ -4,9 +4,15 @@
 
 #include "openvino/frontend/gguf/frontend.hpp"
 
+#include <filesystem>
+#include <fstream>
+
+#include "builder/gguf_builder.hpp"
+#include "builder/gguf_builder_decoder.hpp"
 #include "input_model.hpp"
 #include "op_table.hpp"
 #include "openvino/core/so_extension.hpp"
+#include "openvino/frontend/common/path_util.hpp"
 #include "openvino/frontend/extension/decoder_transformation.hpp"
 #include "openvino/frontend/gguf/decoder.hpp"
 #include "openvino/frontend/manager.hpp"
@@ -16,19 +22,14 @@ namespace ov {
 namespace frontend {
 namespace gguf {
 
-// NOTE ON DISCOVERABILITY (intentional):
-// This frontend is consumed only by direct linkage -- a caller (the llama.cpp ggml-openvino
-// backend, OpenVINO GenAI) links openvino::frontend::gguf, constructs ov::frontend::gguf::FrontEnd
-// and feeds it a GgufDecoder. It has no file-based reader (see supported_impl / load_impl: it only
-// accepts a live GgufDecoder, never a .gguf path).
-//
-// The library is installed alongside the other frontends, so it exports the standard plugin
-// registration entry points (get_api_version / get_front_end_data) -- otherwise FrontEndManager
-// would throw while scanning the frontend directory. It registers itself as HIDDEN
-// (FrontEndPluginInfo::m_hidden), which keeps it out of get_available_front_ends() and prevents
-// load_by_model / load_by_framework from ever selecting it. supported_impl() also returns false.
-// Direct linkers are unaffected. Flip m_hidden to false only once this frontend gains file-based
-// loading and passes production review.
+// This frontend has two ingest paths, both converging on the same GgufDecoder + op translators:
+//   1. a live GgufDecoder passed in by a direct linker (the llama.cpp ggml-openvino cgraph path);
+//   2. a .gguf file path (the OpenVINO-native path): the frontend parses the container and builds
+//      the transformer graph per-architecture via the native builder (see load_impl Path 2).
+// It is installed alongside the other frontends (LINKABLE_FRONTEND) so direct linkers -- the
+// llama.cpp backend and OpenVINO GenAI -- can link openvino::frontend::gguf, and it is
+// discoverable via FrontEndManager so core.read_model("model.gguf") selects it by the .gguf
+// extension + GGUF magic (see supported_impl).
 
 struct FrontEnd::Impl {
     std::unordered_map<std::string, CreatorFunction> op_extension_translators;
@@ -50,6 +51,17 @@ std::unordered_map<std::string, CreatorFunction> merged_ops(
         ops[ext.first] = ext.second;
     }
     return ops;
+}
+
+// True if the file at `path` begins with the GGUF magic ("GGUF").
+bool has_gguf_magic(const std::filesystem::path& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        return false;
+    }
+    char magic[4] = {};
+    f.read(magic, sizeof(magic));
+    return f.gcount() == 4 && magic[0] == 'G' && magic[1] == 'G' && magic[2] == 'U' && magic[3] == 'F';
 }
 
 }  // namespace
@@ -96,32 +108,58 @@ void FrontEnd::add_extension(const std::shared_ptr<ov::Extension>& extension) {
     }
 }
 
-bool FrontEnd::supported_impl(const std::vector<ov::Any>&) const {
-    // Always false: this frontend is never selected by FrontEndManager (load_by_model). It is used
-    // only via direct linkage -- a caller constructs FrontEnd and calls convert() with an
-    // InputModel built from a GgufDecoder -- which does not go through supported(). See the
-    // discoverability note at the top of this file.
+bool FrontEnd::supported_impl(const std::vector<ov::Any>& variants) const {
+    // Two accepted inputs:
+    //  1. a GgufDecoder (the llama.cpp cgraph path passes one in directly), or
+    //  2. a path to a .gguf file (the OpenVINO-native path; sniff the GGUF magic).
+    if (variants.empty()) {
+        return false;
+    }
+    if (variants[0].is<std::shared_ptr<GgufDecoder>>()) {
+        return true;
+    }
+    if (auto path = ov::frontend::get_path_from_any(variants[0])) {
+        std::filesystem::path model_path = std::move(*path);
+        return model_path.extension() == ".gguf" && has_gguf_magic(model_path);
+    }
     return false;
 }
 
 InputModel::Ptr FrontEnd::load_impl(const std::vector<ov::Any>& variants) const {
     FRONT_END_GENERAL_CHECK(!variants.empty(),
                             "GGUF Frontend requires at least one parameter in model representation.");
-    FRONT_END_GENERAL_CHECK(variants[0].is<std::shared_ptr<GgufDecoder>>(),
-                            "GGUF Frontend supports loading from a GgufDecoder only.");
-    auto decoder = variants[0].as<std::shared_ptr<GgufDecoder>>();
-    FRONT_END_GENERAL_CHECK(decoder, "Couldn't cast ov::Any to std::shared_ptr<GgufDecoder>");
-    return std::make_shared<InputModel>(decoder);
+
+    // Path 1: a GgufDecoder passed in directly (e.g. llama.cpp cgraph decoder).
+    if (variants[0].is<std::shared_ptr<GgufDecoder>>()) {
+        auto decoder = variants[0].as<std::shared_ptr<GgufDecoder>>();
+        FRONT_END_GENERAL_CHECK(decoder, "Couldn't cast ov::Any to std::shared_ptr<GgufDecoder>");
+        return std::make_shared<InputModel>(decoder);
+    }
+
+    // Path 2: a .gguf file path -> native builder -> GgufBuilderDecoder.
+    if (auto path = ov::frontend::get_path_from_any(variants[0])) {
+        std::filesystem::path model_path = std::move(*path);
+        FRONT_END_GENERAL_CHECK(model_path.extension() == ".gguf",
+                                "GGUF Frontend file loading expects a .gguf file, got: ",
+                                model_path.string());
+        auto graph = build_ggml_graph_from_gguf(model_path.string());
+        auto decoder = std::make_shared<GgufBuilderDecoder>(graph);
+        return std::make_shared<InputModel>(decoder);
+    }
+
+    FRONT_END_GENERAL_CHECK(false,
+                            "GGUF Frontend doesn't support the provided model representation. Provide a GgufDecoder "
+                            "or a path to a .gguf file.");
 }
 
 }  // namespace gguf
 }  // namespace frontend
 }  // namespace ov
 
-// Plugin registration. The frontend is installed in the frontend directory, so it must export
-// these entry points or FrontEndManager throws while scanning it. It registers as hidden (see the
-// discoverability note above): FrontEndManager loads it without error but never lists or
-// auto-selects it; only direct linkers use it.
+// Plugin registration. The frontend is installed in the frontend directory and exports these
+// entry points so FrontEndManager can load it and select it for .gguf model files (via
+// supported_impl: .gguf extension + GGUF magic), which is how core.read_model("model.gguf")
+// and OpenVINO GenAI reach it.
 GGUF_FRONTEND_C_API ov::frontend::FrontEndVersion get_api_version() {
     return OV_FRONTEND_API_VERSION;
 }
@@ -132,6 +170,5 @@ GGUF_FRONTEND_C_API void* get_front_end_data() {
     res->m_creator = []() {
         return std::make_shared<ov::frontend::gguf::FrontEnd>();
     };
-    res->m_hidden = true;
     return res;
 }

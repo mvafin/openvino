@@ -1,7 +1,3 @@
-// Copyright (C) 2018-2026 Intel Corporation
-// SPDX-License-Identifier: Apache-2.0
-//
-
 #include <cstdint>
 #include <memory>
 #include <openvino/core/node_output.hpp>
@@ -10,9 +6,9 @@
 #include <openvino/op/sigmoid.hpp>
 #include <openvino/op/slice.hpp>
 
-#include "node_context.hpp"
-#include "op_table.hpp"
-#include "utils.hpp"
+#include "../node_context.hpp"
+#include "../op_table.hpp"
+#include "../utils.hpp"
 
 namespace ov {
 namespace frontend {
@@ -28,7 +24,7 @@ OutputVector translate_glu_swiglu(const NodeContext& context) {
         src0 = context.get_input(0);
         src1 = context.get_input(1);
     } else {
-        // GGML splits along ne[0] (OV last axis) using floor division: nc = ne[0] / 2.
+        // GGUF splits along ne[0] (OV last axis) using floor division: nc = ne[0] / 2.
         // Both halves are nc elements; if the dimension is odd, the last element is dropped.
         // Use Slice instead of Split to handle odd dimensions correctly.
         auto combined = context.get_input(0);

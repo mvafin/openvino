@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <array>
 #include <cstring>
 #include <vector>
 
@@ -36,8 +37,21 @@ namespace {
 
 const ov::Tensor& get(const std::unordered_map<std::string, ov::Tensor>& weights, const std::string& key) {
     auto it = weights.find(key);
-    OPENVINO_ASSERT(it != weights.end(), "[ggml] missing weight tensor: ", key);
+    OPENVINO_ASSERT(it != weights.end(), "[GGUF] missing weight tensor: ", key);
     return it->second;
+}
+
+// Copy rows [r0, r1) out of a 2D tensor. Rows are block-independent in every GGUF quant layout
+// (a full row's worth of blocks is contiguous), so a fused attn_qkv weight can be split into
+// q/k/v by a plain byte-range row copy without touching the quant blocks.
+ov::Tensor slice_rows(const ov::Tensor& t, size_t r0, size_t r1) {
+    const auto& s = t.get_shape();
+    OPENVINO_ASSERT(s.size() == 2 && r1 <= s[0] && r0 <= r1, "[GGUF] bad row slice");
+    ov::Shape out_shape{r1 - r0, s[1]};
+    ov::Tensor out(t.get_element_type(), out_shape);
+    const size_t row_bytes = t.get_byte_size() / s[0];
+    std::memcpy(out.data(), static_cast<const uint8_t*>(t.data()) + r0 * row_bytes, (r1 - r0) * row_bytes);
+    return out;
 }
 
 
@@ -473,8 +487,50 @@ gguf_tensor_type gguf_type_from_name(const std::string& quant_type) {
         ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
     }
     auto it = names.find(key);
-    OPENVINO_ASSERT(it != names.end(), "[ggml] unsupported weight quant type: ", quant_type);
+    OPENVINO_ASSERT(it != names.end(), "[GGUF] unsupported weight quant type: ", quant_type);
     return it->second;
+}
+
+std::array<FusedQkvPart, 3> split_fused_qkv_extracted(
+    const std::string& base,
+    const std::unordered_map<std::string, ov::Tensor>& weights,
+    const std::unordered_map<std::string, gguf_tensor_type>& qtypes,
+    size_t n_q,
+    size_t n_k,
+    size_t n_v) {
+    gguf_tensor_type qtype = GGUF_TYPE_F16;
+    if (auto it = qtypes.find(base + ".qtype"); it != qtypes.end()) {
+        qtype = it->second;
+    }
+    const bool has_scales = qtype == GGUF_TYPE_Q4_0 || qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K ||
+                            qtype == GGUF_TYPE_Q5_0 || qtype == GGUF_TYPE_Q5_1 || qtype == GGUF_TYPE_Q8_0 ||
+                            qtype == GGUF_TYPE_Q2_K || qtype == GGUF_TYPE_Q3_K || qtype == GGUF_TYPE_Q5_K ||
+                            qtype == GGUF_TYPE_Q6_K;
+    const bool has_zp = qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K || qtype == GGUF_TYPE_Q5_K ||
+                        qtype == GGUF_TYPE_Q5_1 || qtype == GGUF_TYPE_Q2_K;
+
+    const ov::Tensor& w = get(weights, base + ".weight");
+    const size_t total_rows = w.get_shape()[0];
+    OPENVINO_ASSERT(n_q + n_k + n_v == total_rows, "[GGUF] fused qkv row mismatch for ", base);
+
+    const std::array<std::pair<size_t, size_t>, 3> ranges = {std::make_pair(size_t(0), n_q),
+                                                             std::make_pair(n_q, n_q + n_k),
+                                                             std::make_pair(n_q + n_k, total_rows)};
+    const std::array<std::string, 3> parts = {base + ".q", base + ".k", base + ".v"};
+
+    std::array<FusedQkvPart, 3> out;
+    for (size_t i = 0; i < 3; ++i) {
+        const auto [r0, r1] = ranges[i];
+        out[i].qtype = qtype;
+        out[i].extracted[parts[i] + ".weight"] = slice_rows(w, r0, r1);
+        if (has_scales) {
+            out[i].extracted[parts[i] + ".scales"] = slice_rows(get(weights, base + ".scales"), r0, r1);
+        }
+        if (has_zp) {
+            out[i].extracted[parts[i] + ".zp"] = slice_rows(get(weights, base + ".zp"), r0, r1);
+        }
+    }
+    return out;
 }
 
 std::shared_ptr<ov::Node> make_weight_node(const ov::Tensor& data,
@@ -482,7 +538,7 @@ std::shared_ptr<ov::Node> make_weight_node(const ov::Tensor& data,
                                            const ov::Shape& logical_shape,
                                            const std::string& name) {
     OPENVINO_ASSERT(logical_shape.size() == 2,
-                    "[ggml] weight logical shape must be 2D [rows, cols], got rank ",
+                    "[GGUF] weight logical shape must be 2D [rows, cols], got rank ",
                     logical_shape.size());
     const uint64_t rows = logical_shape[0];
     const uint64_t cols = logical_shape[1];
@@ -603,7 +659,7 @@ std::shared_ptr<ov::Node> make_weight_node(const ov::Tensor& data,
         break;
     }
     default:
-        OPENVINO_THROW("[ggml] unsupported weight quant type: ", quant_type);
+        OPENVINO_THROW("[GGUF] unsupported weight quant type: ", quant_type);
     }
 
     // For the embedding / output / Q6_K / Q5_K tensors the llama.cpp CPU/GPU backend

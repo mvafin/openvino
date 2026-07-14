@@ -65,11 +65,13 @@ public:
     SingleOpDecoder(std::string op_type,
                     std::vector<TensorDesc> inputs,
                     TensorDesc output,
-                    std::map<std::string, ov::Any> attributes)
+                    std::map<std::string, ov::Any> attributes,
+                    int op_case)
         : m_op_type(std::move(op_type)),
           m_inputs(std::move(inputs)),
           m_output(std::move(output)),
-          m_attributes(std::move(attributes)) {
+          m_attributes(std::move(attributes)),
+          m_op_case(op_case) {
         for (const auto& in : m_inputs) {
             m_input_names.push_back(in.name);
             auto p = std::make_shared<ov::op::v0::Parameter>(in.type, in.shape);
@@ -86,12 +88,23 @@ public:
     }
 
     // ── per-node metadata ───────────────────────────────────────────────────────
-    int64_t get_input_view_element_offset(const std::string&) const override {
+    ov::PartialShape get_input_shape(const std::string& name) const override {
+        return find_input(name).shape;
+    }
+    std::vector<size_t> get_input_stride(const std::string&) const override {
+        return {};
+    }
+    int64_t get_input_view_offset(const std::string&) const override {
         return 0;
+    }
+    ov::element::Type get_input_type(const std::string& name) const override {
+        return find_input(name).type;
     }
     size_t get_input_size() const override {
         return m_inputs.size();
     }
+
+    void get_input_node(size_t, std::string&, std::string&, size_t&) const override {}
 
     std::vector<std::string> get_input_names() const override {
         return m_input_names;
@@ -99,6 +112,9 @@ public:
 
     ov::PartialShape get_output_shape() const override {
         return m_output.shape;
+    }
+    ov::element::Type get_output_type() const override {
+        return m_output.type;
     }
 
     std::vector<std::string> get_output_names() const override {
@@ -116,11 +132,40 @@ public:
         node_visitor(std::const_pointer_cast<SingleOpDecoder>(shared_from_this()));
     }
 
+    int get_op_case() const override {
+        return m_op_case;
+    }
+
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const override {
         return m_model_inputs;
     }
+    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const override {
+        return m_empty;
+    }
     std::vector<std::string> get_model_output_names() const override {
         return {m_output.name};
+    }
+
+    // Model-scope queries added to the GgufDecoder interface for the native .gguf builder path.
+    // A single-op test decoder is a stateless decoder-replay: no pre-built weights (weights are
+    // GGML_OP_NONE + "data" leaves), not stateful/static, no KV cache or tokenizer metadata.
+    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const override {
+        return m_empty;
+    }
+    std::map<std::string, std::string> get_kv_param_res_names() const override {
+        return {};
+    }
+    bool is_static() const override {
+        return false;
+    }
+    bool is_stateful() const override {
+        return false;
+    }
+    bool is_swa_layer(int) const override {
+        return false;
+    }
+    const ov::AnyMap& get_tokenizer_config() const override {
+        return m_empty_tok;
     }
 
 private:
@@ -137,8 +182,11 @@ private:
     std::vector<TensorDesc> m_inputs;
     TensorDesc m_output;
     std::map<std::string, ov::Any> m_attributes;
+    int m_op_case;
     std::vector<std::string> m_input_names;
     std::map<std::string, std::shared_ptr<ov::Node>> m_model_inputs;
+    std::map<std::string, std::shared_ptr<ov::Node>> m_empty;
+    ov::AnyMap m_empty_tok;
 };
 
 // Fluent builder: describe a single op and convert it to an ov::Model.
@@ -164,16 +212,14 @@ public:
         return *this;
     }
     SingleOpBuilder& op_case(int c) {
-        m_attributes["op_case"] = ov::Any(c);
+        m_op_case = c;
         return *this;
     }
 
     // Build the single-op InputModel (naive=true skips the LLM preprocess step -- rope
     // sin/cos, attention mask -- which is irrelevant for single-op tests).
     std::shared_ptr<InputModel> input_model() const {
-        auto attrs = m_attributes;
-        attrs.emplace("output_type", ov::Any(m_output.type));
-        auto decoder = std::make_shared<SingleOpDecoder>(m_op_type, m_inputs, m_output, attrs);
+        auto decoder = std::make_shared<SingleOpDecoder>(m_op_type, m_inputs, m_output, m_attributes, m_op_case);
         return std::make_shared<InputModel>(decoder, true);
     }
 
@@ -196,6 +242,7 @@ private:
     std::vector<TensorDesc> m_inputs;
     TensorDesc m_output;
     std::map<std::string, ov::Any> m_attributes;
+    int m_op_case = 0;
 };
 
 // ── inference / comparison helpers ──────────────────────────────────────────────

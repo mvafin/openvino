@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <openvino/core/any.hpp>
 #include <openvino/core/node.hpp>
 #include <openvino/frontend/decoder.hpp>
 #include <string>
@@ -36,46 +37,49 @@ struct RopeConfig {
 
 // Decoder interface consumed by the gguf frontend translators.
 //
-// Following the established OpenVINO frontend pattern (cf. the PyTorch TorchDecoder + InputModel),
-// the translators see a GgufDecoder as a NODE decoder: visit_subgraph hands the visitor a fresh
-// decoder bound to a single node, and every per-node accessor (get_attribute, get_input_*,
-// get_output_*, get_op_*) refers to that node -- no node index is threaded through. The
-// MODEL-level questions (the graph's Parameter inputs, its output names, the shared RoPE config,
-// and node iteration) are asked through ov::frontend::gguf::InputModel, not by treating a decoder
-// instance as a "model decoder". The InputModel forwards those to the model-scope accessors below;
-// a concrete decoder answers them when queried before visit_subgraph binds it to a node.
+// Following the established OpenVINO frontend pattern (cf. the PyTorch frontend), a GgufDecoder
+// is node-scoped: visit_subgraph hands the visitor a fresh decoder bound to a single node, and
+// every per-node accessor (get_attribute, get_input_*, get_output_*, get_op_*) refers to that
+// node -- no node index is threaded through. The same object type, queried at model scope (the
+// instance returned by InputModel::get_decoder and iterated by visit_subgraph), answers the
+// model-level questions (get_model_inputs, get_model_output_names, get_rope_config, ...).
 //
 // This is a typed, ggml-free interface: operation parameters are exposed through
-// get_attribute(name) / get_input_view_element_offset / get_output_shape / RopeConfig rather than
-// raw ggml `op_params` int32 arrays. A concrete decoder (e.g. the llama.cpp cgraph decoder) only
-// has to translate ggml's layout into these typed accessors -- the op translators never touch
-// ggml memory.
+// get_attribute(name) / get_input_view_offset / RopeConfig rather than as raw ggml `op_params`
+// int32 arrays. A concrete decoder (e.g. the llama.cpp cgraph decoder) only has to translate
+// ggml's layout into these typed accessors -- the op translators here never touch ggml memory.
 class GgufDecoder : public DecoderBase {
 public:
-    // ── Node scope (the bound node; used by the op translators) ──────────────────────────────
-
-    // Typed attribute access. The op translators use this to read scalar operation parameters
-    // (e.g. "eps", "scale", "bias", "swapped", "op_case", "output_type", "rope_config") without
-    // dereferencing ggml's raw op_params layout.
+    // Per-node typed attribute access (the bound node). The op translators use this to read
+    // scalar operation parameters (e.g. "eps", "scale", "bias", "swapped", "rope_config")
+    // without dereferencing ggml's raw op_params layout.
     ov::Any get_attribute(const std::string& name) const override = 0;
 
-    // Element offset of an input that is a ggml VIEW into a larger tensor (0 when the input
-    // is not a view). The decoder converts the raw ggml byte offset to elements by dividing
-    // by the element size, so translators never see byte-level ggml memory layout.
-    virtual int64_t get_input_view_element_offset(const std::string& name) const = 0;
+    virtual PartialShape get_input_shape(const std::string& name) const = 0;
+
+    virtual std::vector<size_t> get_input_stride(const std::string& name) const = 0;
+
+    // Byte offset of an input that is a gguf VIEW into a larger tensor (0 when the input
+    // is not a view). Replaces the raw `get_input_op_params(...)[0]` read: a view's start
+    // offset is a single semantic scalar the decoder knows (by parsing ggml, or by
+    // construction), so translators never touch ggml's op_params layout. Translators
+    // convert bytes -> elements using get_input_stride as needed.
+    virtual int64_t get_input_view_offset(const std::string& name) const = 0;
+
+    virtual element::Type get_input_type(const std::string& name) const = 0;
 
     size_t get_input_size() const override = 0;
 
-    // DecoderBase override: GGUF resolves connectivity through the TensorMap (name-keyed),
-    // not through port-to-port decoder traversal, so this is never called.
-    void get_input_node(size_t,
-                        std::string&,
-                        std::string&,
-                        size_t&) const override {}
+    void get_input_node(size_t input_port_idx,
+                        std::string& producer_name,
+                        std::string& producer_output_port_name,
+                        size_t& producer_output_port_index) const override = 0;
 
     virtual std::vector<std::string> get_input_names() const = 0;
 
     virtual PartialShape get_output_shape() const = 0;
+
+    virtual element::Type get_output_type() const = 0;
 
     virtual std::vector<std::string> get_output_names() const = 0;
 
@@ -83,32 +87,50 @@ public:
 
     const std::string& get_op_name() const override = 0;
 
-    // ── Model scope (asked via ov::frontend::gguf::InputModel, not by the translators) ─────────
-
-    // Iterate the operation nodes in topological order, handing the visitor a decoder bound to
-    // each node. This is the bridge from model scope to node scope.
     virtual void visit_subgraph(std::function<void(std::shared_ptr<GgufDecoder>)> node_visitor) const = 0;
 
-    // All model-scope input nodes: both primary inputs (Parameters) and auxiliary inputs
-    // (position IDs, KV-cache lengths, masks, etc.). Parameters are distinguished from auxiliary
-    // nodes by the caller via dynamic_pointer_cast<ov::op::v0::Parameter>.
+    virtual int get_op_case() const = 0;
+
     virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const = 0;
+    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const = 0;
     virtual std::vector<std::string> get_model_output_names() const = 0;
 
-    // NOTE: there is no get_model_weights(). A GGUF weight is surfaced as a regular node in
-    // visit_subgraph with the genuine ggml leaf op type "GGML_OP_NONE": the decoder marks it as a
-    // weight by exposing the raw weight bytes via get_attribute<ov::Tensor>("data"), the ggml
-    // quant type name via get_attribute<std::string>("quant_type") (e.g. "Q4_K", "F16") and the
-    // logical [rows, cols] shape via get_output_shape(). The frontend's translate_weight does the
-    // dequant / repacking / requantization, so the decoder never builds OV nodes itself. (Model
-    // inputs are also GGML_OP_NONE leaves, but they are returned via get_model_inputs() and
-    // resolved to Parameters before the walk, so they carry no "data".)
+    // Pre-built OpenVINO weight nodes, keyed by ggml tensor name (e.g. "blk.0.attn_q.weight").
+    // The native .gguf builder path dequantizes weights up front and returns them here; the
+    // TranslateSession seeds them into the tensor map before the graph walk. A decoder that
+    // instead surfaces each weight as a GGML_OP_NONE leaf carrying a "data" attribute (the
+    // llama.cpp cgraph path) returns an empty map -- translate_weight then builds the node.
+    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const = 0;
+
+    // KV-cache parameter/result friendly-name pairs consumed by ov::pass::MakeStateful when the
+    // model is stateful (empty otherwise): each entry maps a cache Parameter name to its Result
+    // name so MakeStateful turns them into a ReadValue/Assign pair.
+    virtual std::map<std::string, std::string> get_kv_param_res_names() const = 0;
+
+    // Execution-mode flags. A static model uses fixed token length (NPU-friendly, SqueezeMatmul);
+    // a stateful model carries an OpenVINO KV cache (ReadValue/Assign, beam_idx) and is what
+    // OpenVINO GenAI consumes. The cgraph/decoder-replay path reports both false (stateless).
+    virtual bool is_static() const = 0;
+    virtual bool is_stateful() const = 0;
+
+    // Whether attention layer `layer` uses a sliding window (gpt-oss/gemma SWA pattern). Used to
+    // route the per-layer sliced attention mask. Returns false for models without SWA.
+    virtual bool is_swa_layer(int layer) const = 0;
+
+    // GGUF tokenizer metadata (the file's `tokenizer.*` keys), attached to the converted model's
+    // rt_info so a downstream consumer (OpenVINO GenAI) can build the tokenizer without reopening
+    // the .gguf. Empty when the decoder carries no tokenizer metadata.
+    virtual const ov::AnyMap& get_tokenizer_config() const = 0;
 
     // RoPE configuration, exposed through get_attribute<RopeConfig>("rope_config"):
-    //   - at model scope (via InputModel::get_rope_config), used by TranslateSession::preprocess
-    //     to pre-build the shared rope sin/cos table (skipped when RopeConfig::n_dims == 0, i.e.
-    //     no RoPE, or per_op == true);
+    //   - at model scope, used by TranslateSession::preprocess to pre-build the shared rope
+    //     sin/cos table (skipped when RopeConfig::n_dims == 0, i.e. no RoPE, or per_op == true);
     //   - at node scope, the ROPE translator reads the same key for the op's own config.
+    //
+    // NOTE: weights may also be surfaced as GGML_OP_NONE leaves (the cgraph path): the decoder
+    // marks such a leaf via get_attribute<ov::Tensor>("data") + get_attribute<std::string>(
+    // "quant_type") + get_output_shape(), and translate_weight builds the node. The native .gguf
+    // builder path uses get_model_weights() instead and returns those leaves' data pre-dequantized.
 };
 
 }  // namespace gguf
