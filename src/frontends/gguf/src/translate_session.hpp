@@ -25,6 +25,11 @@ private:
     const std::unordered_map<std::string, CreatorFunction>& m_translator_map;
     std::shared_ptr<Model> m_ov_model;
     std::vector<DecoderTransformationExtension::Ptr> m_transformation_extensions;
+    // Declared output shape per node output name, captured during the graph walk. For a stateful
+    // model the decoder declares rank-4 output shapes (e.g. logits [1,1,seq,vocab]) while the
+    // converted graph collapses the leading 1; apply_transformations uses this to Unsqueeze such
+    // outputs back so the model matches the decoder's declared IO (what AdaptToGenAI consumes).
+    std::map<std::string, PartialShape> m_output_declared_shapes;
 };
 
 }  // namespace ov::frontend::gguf

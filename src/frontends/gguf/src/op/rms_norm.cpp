@@ -1,7 +1,3 @@
-// Copyright (C) 2018-2026 Intel Corporation
-// SPDX-License-Identifier: Apache-2.0
-//
-
 #include <memory>
 
 #include "openvino/core/node_output.hpp"
@@ -9,9 +5,9 @@
 #include "openvino/op/constant.hpp"
 #include "openvino/pass/node_registry.hpp"
 
-#include "node_context.hpp"
-#include "op_table.hpp"
-#include "utils.hpp"
+#include "../node_context.hpp"
+#include "../op_table.hpp"
+#include "../utils.hpp"
 
 namespace ov {
 namespace frontend {

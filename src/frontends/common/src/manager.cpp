@@ -22,8 +22,13 @@ namespace {
 // Frontends for direct linkage only: loadable, but never listed by available_front_ends() nor
 // auto-selected by load_by_model / load_by_framework. A manager-side list (not a plugin-info flag)
 // keeps the public FrontEndPluginInfo struct / ABI unchanged.
+//
+// The "gguf" frontend is intentionally NOT hidden: it now supports file-based loading (a .gguf
+// path via its native builder) and must be auto-selectable by load_by_model so that
+// core.read_model("model.gguf") and OpenVINO GenAI reach it. Its supported_impl gates selection
+// on the .gguf extension + GGUF magic, so it is only chosen for genuine GGUF files.
 bool is_hidden_frontend(const std::string& name) {
-    static const std::set<std::string> hidden_frontends = {"gguf"};
+    static const std::set<std::string> hidden_frontends = {};
     return hidden_frontends.count(name) != 0;
 }
 }  // namespace
