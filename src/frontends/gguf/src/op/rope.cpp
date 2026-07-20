@@ -8,6 +8,7 @@
 #include <openvino/core/node_output.hpp>
 #include <openvino/frontend/exception.hpp>
 #include <openvino/op/add.hpp>
+#include <openvino/op/broadcast.hpp>
 #include <openvino/op/concat.hpp>
 #include <openvino/op/constant.hpp>
 #include <openvino/op/convert.hpp>
@@ -83,33 +84,61 @@ OutputVector translate_rope(const NodeContext& context) {
     }
 
     if (mode == TYPE_NORMAL) {
-        auto neg_one = ov::op::v0::Constant::create(ov::element::i64, {1}, {-1});
-        auto zero = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
-        auto one = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
-        auto two = ov::op::v0::Constant::create(ov::element::i64, {1}, {2});
-        auto end = ov::op::v0::Constant::create(ov::element::i64, {1}, {output_shape[3]});
-        Output<Node> even_slice;
-        Output<Node> odd_slice;
-        int32_t unsqueeze_dim = 4;
-        even_slice = std::make_shared<ov::op::v8::Slice>(data_node, zero, end, two, neg_one);
-        odd_slice = std::make_shared<ov::op::v8::Slice>(data_node, one, end, two, neg_one);
+        // Emit the Flux-style interleaved RoPE pattern so ov::pass::RoPEFusionFlux
+        // folds this subgraph into ov::op::internal::RoPE, enabling the GPU plugin's
+        // ocl::rope::opt kernel.  RoPEFusionFlux requires rank-4 x with static
+        // last two dims [num_heads, head_size].  After the VIEW prologue the data
+        // is already [1, L, n_heads, head_size] satisfying this contract.
+        //
+        // Formula:  y = x * cos_full + x_rotated * sin_full
+        // where x_rotated uses the Flux interleave:
+        //   Reshape(x,[1,L,H,half,2]) → Split(-1,2) → neg(x1) → Concat([neg_x1,x0]) → Reshape
 
-        Output<Node> first_half =
-            std::make_shared<ov::op::v1::Subtract>(std::make_shared<ov::op::v1::Multiply>(even_slice, cos_theta_node),
-                                                   std::make_shared<ov::op::v1::Multiply>(odd_slice, sin_theta_node));
-        Output<Node> second_half =
-            std::make_shared<ov::op::v1::Add>(std::make_shared<ov::op::v1::Multiply>(even_slice, sin_theta_node),
-                                              std::make_shared<ov::op::v1::Multiply>(odd_slice, cos_theta_node));
+        const int64_t n_heads   = static_cast<int64_t>(output_shape[2]);
+        const int64_t head_size = static_cast<int64_t>(output_shape[3]);
+        const int64_t half      = head_size / 2;
 
-        first_half = std::make_shared<ov::op::v0::Unsqueeze>(
-            first_half,
-            ov::op::v0::Constant::create(ov::element::i64, {1}, {unsqueeze_dim}));
-        second_half = std::make_shared<ov::op::v0::Unsqueeze>(
-            second_half,
-            ov::op::v0::Constant::create(ov::element::i64, {1}, {unsqueeze_dim}));
-        auto stack = std::make_shared<ov::op::v0::Concat>(OutputVector{first_half, second_half}, unsqueeze_dim);
+        // Reshape data to canonical [1, L, n_heads, head_size] if needed.
+        data_node = std::make_shared<ov::op::v1::Reshape>(data_node, make_bhsd_shape(), false);
 
-        res = std::make_shared<ov::op::v1::Reshape>(stack, make_bhsd_shape(), false);
+        // Reshape to [1, L, n_heads, half, 2] to expose interleaved pairs.
+        auto paired_shape = ov::op::v0::Constant::create(
+            ov::element::i64, {5}, std::vector<int64_t>{1, -1, n_heads, half, 2});
+        auto x_paired = std::make_shared<ov::op::v1::Reshape>(data_node, paired_shape, false);
+
+        // Split last axis: x0 (even / real) and x1 (odd / imaginary).
+        auto split_axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {-1LL});
+        auto data_split = std::make_shared<ov::op::v1::Split>(x_paired, split_axis, 2);
+        auto x0 = data_split->output(0);  // [1, L, n_heads, half, 1]
+        auto x1 = data_split->output(1);
+
+        // Negate x1: the Flux fusion expects Concat([neg_x1, x0]).
+        auto neg_one_f = ov::op::v0::Constant::create(data_node->get_element_type(), ov::Shape{}, {-1.0f});
+        auto x1_neg = std::make_shared<ov::op::v1::Multiply>(x1, neg_one_f);
+
+        // x_rotated: flatten the interleaved pairs back to [1, L, n_heads, head_size].
+        auto x_rotated_paired = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x1_neg, x0}, -1);
+        auto x_rotated = std::make_shared<ov::op::v1::Reshape>(x_rotated_paired, make_bhsd_shape(), false);
+
+        // Expand cos/sin from [B, L, 1, half] to [B, L, 1, head_size] by tiling each
+        // entry twice (broadcast) and flattening, matching the full rotation.
+        auto expand_cos_sin = [&](ov::Output<ov::Node> cs) -> ov::Output<ov::Node> {
+            auto cs_unsq = std::make_shared<ov::op::v0::Unsqueeze>(
+                cs, ov::op::v0::Constant::create(ov::element::i64, {1}, {-1LL}));
+            auto bcast_target = ov::op::v0::Constant::create(
+                ov::element::i64, {5}, std::vector<int64_t>{1, 1, 1, half, 2});
+            auto bcast = std::make_shared<ov::op::v3::Broadcast>(
+                cs_unsq, bcast_target, ov::op::BroadcastType::BIDIRECTIONAL);
+            auto flat = ov::op::v0::Constant::create(
+                ov::element::i64, {4}, std::vector<int64_t>{0, 0, 0, head_size});
+            return std::make_shared<ov::op::v1::Reshape>(bcast, flat, /*special_zero=*/true);
+        };
+        auto cos_full = expand_cos_sin(cos_theta_node);
+        auto sin_full = expand_cos_sin(sin_theta_node);
+
+        auto y1 = std::make_shared<ov::op::v1::Multiply>(data_node, cos_full);
+        auto y2 = std::make_shared<ov::op::v1::Multiply>(x_rotated, sin_full);
+        res    = std::make_shared<ov::op::v1::Add>(y1, y2);
     } else if (mode == TYPE_NEOX) {
         // Partial rotary (ggml n_dims < head_dim): only the first n_dims elements of each head
         // are rotated; the remainder [n_dims:head_dim] passes through unchanged. cos/sin are built
