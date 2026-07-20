@@ -254,7 +254,7 @@ TEST(GGUFOps, SoftMaxAlibi) {
     const float m1 = std::pow(2.0f, -(max_bias / 2.0f) / n_head_log2);
     std::vector<float> expected(x.size());
     for (uint32_t h = 0; h < n_head; ++h) {
-        float slope = h < n_head_log2 ? std::pow(m0, static_cast<float>(h + 1)) : std::pow(m1, static_cast<float>(2 * (h - n_head_log2) + 1));
+        float slope = h < n_head_log2 ? std::pow(m0, h + 1) : std::pow(m1, 2 * (h - n_head_log2) + 1);
         for (size_t t = 0; t < T; ++t) {
             float mx = -1e30f;
             std::vector<float> z(Kd);

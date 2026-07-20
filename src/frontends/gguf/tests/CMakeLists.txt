@@ -15,8 +15,14 @@ set(FRONTEND_SRCS
     "${FE_SRC_DIR}/utils.cpp"
     "${FE_SRC_DIR}/helper_ops/set_rows_op.cpp"
     "${FE_SRC_DIR}/pass/lower_set_rows_stateless.cpp"
+    "${FE_SRC_DIR}/pass/lower_set_rows_stateful.cpp"
+    "${FE_SRC_DIR}/pass/squeeze_matmul.cpp"
+    "${FE_SRC_DIR}/tokenizer_metadata.cpp"
+    "${FE_SRC_DIR}/quant/gguf.cpp"
     "${FE_SRC_DIR}/quant/gguf_quants.cpp"
     "${FE_SRC_DIR}/quant/weights.cpp"
+    "${FE_SRC_DIR}/builder/gguf_builder.cpp"
+    "${FE_SRC_DIR}/builder/gguf_builder_decoder.cpp"
     "${FE_SRC_DIR}/op/add_id.cpp"
     "${FE_SRC_DIR}/op/argsort.cpp"
     "${FE_SRC_DIR}/op/clamp.cpp"
@@ -44,8 +50,11 @@ set(FRONTEND_SRCS
     "${FE_SRC_DIR}/op/softmax.cpp"
     "${FE_SRC_DIR}/op/ssm_conv.cpp"
     "${FE_SRC_DIR}/op/sum_rows.cpp"
+    "${FE_SRC_DIR}/op/top_k.cpp"
     "${FE_SRC_DIR}/op/transpose.cpp"
     "${FE_SRC_DIR}/op/unary_gelu.cpp"
+    "${FE_SRC_DIR}/op/unary_math.cpp"
+    "${FE_SRC_DIR}/op/unary_misc.cpp"
     "${FE_SRC_DIR}/op/unary_silu.cpp"
     "${FE_SRC_DIR}/op/view.cpp"
     "${FE_SRC_DIR}/op/weight.cpp"
@@ -74,6 +83,10 @@ ov_add_test_target(
     INCLUDES
         "${CMAKE_CURRENT_SOURCE_DIR}/../src"
         "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+        # frontend.cpp (compiled into the self-contained test binary) includes the native
+        # .gguf load path (get_path_from_any in openvino/frontend/common/path_util.hpp).
+        "${OpenVINO_SOURCE_DIR}/src/frontends/common/include"
+        "${OpenVINO_SOURCE_DIR}/src/frontends/common/dev_api"
     ADD_CLANG_FORMAT
     LABELS
         OV UNIT GGUF_FE

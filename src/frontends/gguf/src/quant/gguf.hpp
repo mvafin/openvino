@@ -138,4 +138,7 @@ GGUFLoad get_gguf_data(const std::string& file);
 // file_type) from parsed metadata.
 std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<std::string, GGUFMetaData>& metadata);
 
+// Reverse of the GGML dimension order (GGUF stores dims fastest-first).
+ov::Shape get_shape(const gguf_tensor& tensor);
+
 }  // namespace ov::frontend::gguf

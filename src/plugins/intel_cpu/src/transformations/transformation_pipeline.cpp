@@ -50,6 +50,7 @@
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/util/attr_types.hpp"
 #include "ov_ops/gather_compressed.hpp"
+#include "ov_ops/gather_matmul.hpp"
 
 // Common transformations
 #include "openvino/pass/constant_folding.hpp"
@@ -308,10 +309,17 @@ bool Transformations::is_decompression_multiply(const_node_ptr& node) {
         });
     };
 
+    // Decompression consumers whose compressed weights must stay compressed:
+    //  - MatMul / Convolution / GroupedMatMul: the standard decompression targets;
+    //  - GatherMatmul: the batched expert-matmul used for MoE blocks, which keeps its weights
+    //    compressed via GatherMatmulCompressed. Treating it as a decompression consumer keeps the
+    //    MoE expert weight decompression chain compressed (otherwise experts expand to f32 and
+    //    compile memory blows up, e.g. OLMoE q4_0 ~53GB -> ~8.7GB).
     auto benefit_from_decompression = [&all_has_type](const std::set<ov::Input<ov::Node>>& consumers) {
         return all_has_type(consumers, ov::op::v0::MatMul::get_type_info_static()) ||
                all_has_type(consumers, ov::op::v1::Convolution::get_type_info_static()) ||
-               all_has_type(consumers, ov::op::v17::GroupedMatMul::get_type_info_static());
+               all_has_type(consumers, ov::op::v17::GroupedMatMul::get_type_info_static()) ||
+               all_has_type(consumers, ov::op::internal::GatherMatmul::get_type_info_static());
     };
 
     const auto consumers = node->get_output_target_inputs(0);

@@ -58,6 +58,7 @@
 #include "openvino/op/util/arithmetic_reductions_keep_dims.hpp"
 #include "openvino/op/util/multi_subgraph_base.hpp"
 #include "openvino/op/util/sub_graph_base.hpp"
+#include "ov_ops/gather_matmul.hpp"
 #include "snippets/pass/tokenization.hpp"
 #include "transformations/utils/utils.hpp"
 #include "utils/cpu_utils.hpp"
@@ -583,6 +584,18 @@ bool SnippetsMarkSkipped::run_on_model(const std::shared_ptr<ov::Model>& m) {
         // We perform this check separately because we mark here only weights path
         // Matmul itself will be checked further
         if (isSuitableMatMulWithConstantPath(node)) {
+            auto markup_func = [](Node* node) {
+                SetSnippetsNodeType(node->shared_from_this(), snippets::pass::SnippetsNodeType::SkippedByPlugin);
+            };
+            std::unordered_set<Node*> visited;
+            ov::op::util::visit_constant_path(node->get_input_node_ptr(1), visited, markup_func);
+        }
+        // GatherMatmul (MoE expert dispatch): weight input is input(1), which feeds a compressed
+        // decompression chain that must not be tokenized by Snippets — ConvertGatherMatmulToGatherMatmulCompressed
+        // in CpuSpecificOpSet (which runs after Snippets) needs to match the raw Constant→Convert→Multiply chain.
+        if (ov::is_type<ov::op::internal::GatherMatmul>(node) &&
+            !ov::is_type<ov::op::v0::Constant>(node->get_input_node_shared_ptr(1)) &&
+            ov::op::util::is_on_path<ov::op::v0::Constant>(node->input_value(1))) {
             auto markup_func = [](Node* node) {
                 SetSnippetsNodeType(node->shared_from_this(), snippets::pass::SnippetsNodeType::SkippedByPlugin);
             };

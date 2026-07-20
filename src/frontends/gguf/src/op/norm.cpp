@@ -3,39 +3,35 @@
 //
 
 #include <memory>
-#include "openvino/op/add.hpp"
-#include "openvino/op/constant.hpp"
-#include "openvino/op/divide.hpp"
-#include "openvino/op/multiply.hpp"
-#include "openvino/op/reduce_mean.hpp"
-#include "openvino/op/sqrt.hpp"
-#include "openvino/op/subtract.hpp"
+#include <openvino/core/node_output.hpp>
+#include <openvino/op/constant.hpp>
+#include <openvino/op/mvn.hpp>
 
-#include "node_context.hpp"
-#include "op_table.hpp"
-#include "utils.hpp"
+#include "../node_context.hpp"
+#include "../op_table.hpp"
+#include "../utils.hpp"
 
 namespace ov {
 namespace frontend {
 namespace gguf {
 namespace op {
 
-// LayerNorm over the last dimension: (x - mean) / sqrt(var + eps).
+// GGML_OP_NORM: standard LayerNorm (mean subtraction + variance normalization).
+// Maps to MVN v6 with normalize_variance=true, reducing over the last axis.
 OutputVector translate_norm(const NodeContext& context) {
     num_inputs_check(context, 1, 1);
 
-    auto input_node = context.get_input(0);
-    float eps = context.get_attribute<float>("eps");
+    float eps = context.get_attribute<float>("eps", 1e-5f);
 
-    auto axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {-1});
-    auto mean = std::make_shared<ov::op::v1::ReduceMean>(input_node, axis, true);
-    auto centered = std::make_shared<ov::op::v1::Subtract>(input_node, mean);
-    auto squared = std::make_shared<ov::op::v1::Multiply>(centered, centered);
-    auto variance = std::make_shared<ov::op::v1::ReduceMean>(squared, axis, true);
-    auto std_dev = std::make_shared<ov::op::v0::Sqrt>(std::make_shared<ov::op::v1::Add>(
-        variance, ov::op::v0::Constant::create(ov::element::f32, ov::Shape{1}, {eps})));
-    auto res = std::make_shared<ov::op::v1::Divide>(centered, std_dev);
+    auto input = context.get_input(0);
+    int64_t rank = static_cast<int64_t>(input.get_partial_shape().rank().get_length());
+    auto reduction_axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {rank - 1});
 
+    auto res = std::make_shared<ov::op::v6::MVN>(input,
+                                                 reduction_axes,
+                                                 true,  // normalize_variance
+                                                 eps,
+                                                 ov::op::MVNEpsMode::INSIDE_SQRT);
     return rename_outputs_with_suffix({res}, context.get_name());
 }
 
