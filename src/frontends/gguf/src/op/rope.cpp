@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#include "openvino/op/broadcast.hpp"
 #include "openvino/decompositions/rope.hpp"
 
 #include <cstdint>

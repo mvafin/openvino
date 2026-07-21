@@ -646,19 +646,14 @@ GGUFLoad get_gguf_data(const std::string& file) {
             ov::Tensor s_view(ov::element::f16, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
             ov::Tensor scales(s_view, so_buf);
             quant_offset += sb;
-            // Zero-point is a FRACTIONAL value in the SCALE's element type (separately
-            // allocated, not an integer view into quant_buf). Q4_K/Q5_K dequant is
-            // w = scale*q - min, min = dmin*m_raw -- a free scale-typed value; forcing it into
-            // scale*(q - round(min/scale)) with an INTEGER zp quantizes min to a multiple of
-            // scale, injecting ~1.6e-3 (max 8.6e-3) error per sub-block into every weight, which
-            // compounds across a deep model into wrong logits (gemma3-1b garbage). Storing
-            // zp = min/scale in the scale type makes scale*(q - zp) = scale*q - min exact.
-            // Matching the scale type keeps the canonical dequant pattern
-            // Multiply(Subtract(Convert(w), zp), scale) with zp already in the compute type
-            // (the `sub_no_convert` form), so the CPU FC-compressed fusion still folds it and
-            // the weights stay U4/I8 -- verified in the runtime graph. The on-disk integer-zp
-            // region is skipped (quant_offset += zb) but no longer mapped.
-            ov::Tensor zp(scales.get_element_type(), scale_shape);
+            // Zero-point is an INTEGER value stored as u8 (one byte per sub-block scale group).
+            // Q4_K/Q5_K dequant is w = scale*q - min = scale*(q - min/scale). Using integer
+            // zp = round(min/scale) introduces a small per-weight rounding error (at most scale/2)
+            // but ensures the dequant pattern Multiply(Subtract(Convert(w), zp), scale) uses an
+            // integer ZP type, which enables the GPU plugin's INT4 compressed weight fast-path
+            // (dynamic_quantize_gpu_opt) that requires integer U4/U8 ZP. The alternative fractional
+            // F16 ZP is more accurate but the GPU kernel cannot use the INT4 acceleration path.
+            ov::Tensor zp(ov::element::u8, scale_shape);
             quant_offset += zb;
 
             gguf_fill_asym(tensor, weights, scales, zp);

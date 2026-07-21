@@ -420,10 +420,10 @@ std::shared_ptr<Model> TranslateSession::apply_transformations(std::shared_ptr<M
         manager.register_pass<ov::pass::MakeStateful>(get_kv_param_res_pairs(model, kv_param_res_names));
     }
 
-    // Static (fixed token length, NPU) models: NPUW DynamicQuantization expects 3D activations.
-    if (is_static) {
-        manager.register_pass<pass::SqueezeMatmul>();
-    }
+    // Squeeze the leading batch-1 dim from 4D MatMul activations [1,1,T,n] -> [1,T,n] to satisfy
+    // GPU and NPU plugin requirements.  The pass pairs each squeeze with a matching unsqueeze on
+    // the output so downstream ops continue to receive the expected 4D tensors.
+    manager.register_pass<pass::SqueezeMatmul>();
 
     manager.register_pass<ov::pass::ConvertConvertLike>();
     manager.run_passes(model);
