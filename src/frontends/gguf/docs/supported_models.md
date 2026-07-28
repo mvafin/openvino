@@ -178,6 +178,7 @@ genuinely requires RAM (see [`frontend_design.md`](frontend_design.md) on the me
 | `exaone4` | 774 | 4.3 | 236.5 | 35.54 | 2594 | 2520 |
 | `olmoe` | 4018 | 12.9 | 86.6 | 35.17 | 11760 | 11684 |
 | `llama` | 770 | 6.0 | 323.8 | 35.08 | 2628 | 2556 |
+| `bailingmoe2` | 5573 | 44.9 | 108.1 | 26.97 | 36956 | 36237 |
 | `deepseek2-ocr` | 1859 | 7.4 | 299.2 | 71.38 | 5392 | 5318 |
 | `mellum` | 7697 | 27.7 | 70.8 | 21.48 | 21282 | 21194 |
 | `gemma` | 1425 | 3.8 | 149.6 | 18.47 | 4570 | 4501 |
@@ -187,7 +188,6 @@ genuinely requires RAM (see [`frontend_design.md`](frontend_design.md) on the me
 | `ernie4_5-moe` | 12873 | 46.6 | 45.8 | 14.67 | 36551 | 36460 |
 | `gemma2` | 1629 | 3.4 | 132.8 | 14.35 | 5692 | 5617 |
 | `mistral3` | 2047 | 8.8 | 103.6 | 12.96 | 6871 | 6796 |
-| `bailingmoe2` | 5573 | 64.7 | 92.8 | 12.71 | 117295 | 117245 |
 | `phi3` | 2282 | 4.4 | 108.3 | 11.84 | 8197 | 8130 |
 | `gemma4` | 4746 | 9.6 | 63.6 | 9.24 | 12309 | 11953 |
 | `gpt-oss` | 11548 | 89.3 | 18.7 | 5.48 | 123720 | 123493 |
@@ -195,10 +195,45 @@ genuinely requires RAM (see [`frontend_design.md`](frontend_design.md) on the me
 Numbers from architectures marked degenerate above still describe real compute cost (the
 graph runs, it is just numerically wrong), so they are kept for completeness.
 
-Two outliers are worth calling out because they are memory-model problems, not model size:
-`bailingmoe2` peaks at **117 GiB from a 5.6 GiB file (21x)** and `gpt-oss` at **124 GiB from
-11.5 GiB (11x)**, versus a typical 3-4x elsewhere. Both are wide-MoE models, so the expert
-weight tensors are what blow up. On a smaller-RAM host these two would OOM.
+One outlier remains: `gpt-oss` peaks at **124 GiB from an 11.5 GiB file (11x)**, versus a
+typical 3-4x elsewhere. On a smaller-RAM host it would OOM. The cause is the compressed-weights
+type gate on the MoE expert matmul described below — for gpt-oss the expert type is MXFP4
+(`f4e2m1`), which the frontend dequantizes on-graph in `MUL_MAT_ID` rather than routing through
+`GatherMatmul` at all, so the plugin-side widening does not reach it.
+
+### MoE expert weights and the compressed-weights type gate
+
+Worth knowing when picking a quantization for a MoE model, though the handling is entirely
+plugin-side. MoE expert weights do not go through `FullyConnected`: `MUL_MAT_ID` lowers to the
+CPU plugin's `GatherMatmul` (equally, to `GroupedMatMul` on the public-op side — on CPU
+`ConvertGroupedMatMulToGatherMatmul` rewrites it into the same node *before* the compression
+pass, so the two are indistinguishable here). That node accepts a **narrower set of compressed
+weight types than `FullyConnected` does**:
+
+| | accepted compressed weight types |
+|---|---|
+| `FullyConnected` | `u8, i8, u4, i4, nf4, f4e2m1, u2` |
+| `GatherMatmul` / GPU grouped-matmul | `u8, i8, u4, i4` |
+
+If an expert weight's element type is outside the second set, `ConvertGatherMatmulToGather
+MatmulCompressed` does not fire, the `Convert -> Subtract -> Multiply` dequantization block stays
+in the graph, and constant folding materializes the experts **in f32** — a 16x expansion off a
+2-bit type, i.e. far more than the quantization was saving.
+
+Q2_K is the case this affects: its weights map to `u2`. The CPU plugin's
+`WidenGatherMatmulWeights` pass handles it by re-emitting *expert* weight constants as `u4`
+(lossless — raw Q2_K values are `[0..3]`, which fit a nibble) at 2x the weight bytes, which is
+much cheaper than falling off the compressed path. Dense `u2` weights are left alone. This is a
+plugin-side workaround for a missing `u2` expert-matmul executor and needs nothing from the
+frontend, which emits plain `u2` either way. Measured on Q2_K models, peak anonymous memory:
+
+| Model | file MiB | before | after |
+|---|---|---|---|
+| Qwen3-0.9B-A0.6B (`qwen3moe`) | 373 | 4251 | 2071 |
+| Ling-mini-2.0 (`bailingmoe2`) | 5573 | 117245 | 36237 |
+
+Decode also improves (bailingmoe2: 12.7 → 27.0 t/s) because the experts are no longer read from
+f32.
 
 ## Adding a new architecture
 

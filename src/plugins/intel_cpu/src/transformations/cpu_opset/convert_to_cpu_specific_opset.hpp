@@ -16,6 +16,7 @@
 #include "common/pass/fc_bias_fusion.hpp"
 #include "common/pass/move_readvalue_inputs_to_subgraph.hpp"
 #include "common/pass/rnn_sequences_optimization.hpp"
+#include "common/pass/widen_gather_matmul_weights.hpp"
 #include "config.h"
 #include "nodes/fullyconnected.h"
 #include "nodes/gathermatmul.h"
@@ -49,6 +50,12 @@ inline void ConvertToCPUSpecificOpset(std::shared_ptr<ov::Model>& model, const C
     // Convert public GroupedMatMul-17 into the internal GatherMatmul
     // Must run before the compression pass.
     CPU_REGISTER_PASS_COMMON(manager, ov::pass::ConvertGroupedMatMulToGatherMatmul);
+
+    // Widen expert weights whose type GatherMatmul has no executor for to one it does support,
+    // so the compression pass below can still fold them. Must run before it.
+    CPU_REGISTER_PASS_COMMON(manager,
+                             WidenGatherMatmulWeights,
+                             ov::intel_cpu::node::GatherMatmul::getSupportedCompressedWeightsTypes());
 
     // TransformMoeBlockToGatherMatmuls
     CPU_REGISTER_PASS_X64(manager, ov::pass::ConvertTiledMoeBlockToGatherMatmuls);
