@@ -590,7 +590,9 @@ private:
                          ps({1, T, K, n_ff}),
                          f32,
                          0,
-                         {{"swapped", false}, {"alpha", 1.702f}, {"limit", 7.0f}});
+                         // Attribute names must match the cgraph decoder's (ggml-decoder.cpp), which
+                         // is the external contract the shared translators read: glu_alpha/glu_limit.
+                         {{"swapped", false}, {"glu_alpha", 1.702f}, {"glu_limit", 7.0f}});
         } else {
             act = add_op("GGML_GLU_OP_SWIGLU",
                          p + "moe_act",
