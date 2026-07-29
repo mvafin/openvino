@@ -126,16 +126,47 @@ NOT the dequantized model size — *provided* the CPU decompression-recognition 
 place. If a future change makes a model's weights expand to f32 at compile, that is the regression
 to look for (compile peak jumping toward the dequantized size).
 
-## Statefulness & the SDPA backend
+## Statefulness & the attention backends
 
 The native builder emits a **stateful** graph: per-layer f16 KV-cache `Parameter`s written via a
 `SetRows` placeholder, lowered to an appending `Concat` (+ `beam_idx` `Gather`) and turned into
 `ReadValue`/`Assign` by `MakeStateful`. The graph is shaped so the CPU plugin's
-`stateful_sdpa_fusion` folds attention into `ScaledDotProductAttentionWithKVCache`. The graph runs
-on the **SDPA** attention backend, not PagedAttention — GenAI's `LLMPipeline` defaults to SDPA for
-`.gguf` inputs (see `pipeline.cpp`). `AdaptToGenAI` (`src/pass/adapt_to_genai.cpp`, run by GenAI,
-not the frontend) rewrites the llama.cpp-style IO (`inp_tokens`/`inp_pos`/`self_kq_mask`/... ) into
-GenAI's contract (`input_ids`/`attention_mask`/`position_ids`/`beam_idx` -> `logits`).
+`stateful_sdpa_fusion` folds attention into `ScaledDotProductAttentionWithKVCache`.
+`AdaptToGenAI` (`src/pass/adapt_to_genai.cpp`, run by GenAI, not the frontend) rewrites the
+llama.cpp-style IO (`inp_tokens`/`inp_pos`/`self_kq_mask`/... ) into GenAI's contract
+(`input_ids`/`attention_mask`/`position_ids`/`beam_idx` -> `logits`).
+
+The result is valid under **both** attention backends: plain stateful SDPA inference, and
+`ov::pass::SDPAToPagedAttention` (the transform GenAI's ContinuousBatching adapter applies for
+`ATTENTION_BACKEND=PA`). There is no mode flag — one graph serves both.
+
+That works because the two backends disagree only about *where the token count lives*. Plain
+inference feeds `input_ids` as `[1, tokens]`; `SDPAToPagedAttention` rewrites the `Parameter` to
+rank-1 `[tokens]` and splices an `Unsqueeze(axis=1)` in front of its consumers, so the body sees
+`[tokens, 1]` and PA's hardcoded flattens read the count out of dim 0. Since ggml activations are
+`[batch, tokens, heads, head_size]` with `batch == 1`, `[1, T, H, D]` and `[T, 1, H, D]` are
+element-for-element the same buffer.
+
+**The invariant to preserve: no node may pin the leading two dims to constants.** `AdaptToGenAI`
+derives them from the live `input_ids`, and the op translators reshape with `special_zero=true` so a
+`0` copies dim 0 through instead of writing a literal `1` (`reshape` cases 1/2, `rope`'s
+bhsd/paired/to_bhls targets, `set_rows`, `LowerSetRowsStateful`). Two traps when touching these:
+
+- **OV broadcasts elementwise operands from the right.** A rank-4 activation against a rank-3 one
+  *appears* to work while dim 0 is a literal batch 1 (`[1,1,T,E]` right-aligns onto `[1,T,E]`), then
+  silently forms a `T x T` outer product once tokens move to dim 0. Emit the rank the mode's
+  activation convention uses (rank 3 stateful, rank 4 otherwise).
+- **`get_rows` lowers to `Gather(act, ids, axis=1, batch_dims=1)`** = `act[i, ids[i,j]]`, so an
+  identity selection is `ids[i,j] == j` — an index along axis 1 replicated over axis 0, *not* a
+  `0..tokens` range. A range only coincides with the identity when axis 0 is a batch of 1.
+
+A `Convert` between the KV-cache `Concat` and SDPA also silently disables PA: `StateManagementPattern`
+admits none, so `TranslateSession` runs `EliminateConvert` after `ConvertConvertLike` to drop the
+no-op ones. If PA conversion regresses to 0, check for a reintroduced `Convert` there first.
+
+Verifying PA is actually in use requires looking at the **compiled runtime graph**, not the
+`ov::Model` — see "Measuring performance correctly" in
+[`supported_models.md`](supported_models.md).
 
 ## Tokenizer metadata
 

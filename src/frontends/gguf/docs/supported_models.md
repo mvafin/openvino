@@ -201,6 +201,113 @@ type gate on the MoE expert matmul described below — for gpt-oss the expert ty
 (`f4e2m1`), which the frontend dequantizes on-graph in `MUL_MAT_ID` rather than routing through
 `GatherMatmul` at all, so the plugin-side widening does not reach it.
 
+### Measuring performance correctly
+
+Three traps have each produced a wrong published number at least once. Read this before
+benchmarking, especially when comparing against llama.cpp.
+
+**1. Disable prefix caching when measuring prefill under PagedAttention.** `ATTENTION_BACKEND=PA`
+routes through GenAI's ContinuousBatching adapter, and `get_latency_oriented_scheduler_config()`
+(GenAI `src/cpp/src/utils.cpp`) sets `enable_prefix_caching = true` by default. Benchmarks
+typically repeat one fixed prompt for N iterations to amortize the first-request dynamic-shape
+compile — with prefix caching on, **every iteration after the first is a cache hit**, so the
+reported TTFT is not prefill work at all. On Llama-3.2-1B this reads 125 ms cached vs 300 ms
+uncached (SDPA measures 304 ms): the cache made PA look 2.4x faster at prefill than an identical
+computation. Pass an explicit scheduler config with it off:
+
+```cpp
+ov::genai::SchedulerConfig sched;
+sched.max_num_batched_tokens = std::numeric_limits<std::size_t>::max();  // as the latency default
+sched.enable_prefix_caching = false;
+props[ov::genai::scheduler_config.name()] = sched;
+```
+
+Note the asymmetry that makes this specifically a *comparison* hazard: SDPA ignores this knob
+entirely, and neither llama.cpp reference path caches across runs. `llama-bench` calls
+`llama_memory_clear()` inside the rep loop before the timer starts (its state-reuse path is gated on
+`-d/--n-depth > 0`, which defaults to 0); `llama-cli` is single-shot and its `--prompt-cache`
+defaults to empty. So a cached PA number is being compared against two uncached ones. Sanity check:
+run llama-bench with `-r 5` and confirm variance stays under ~1% — a cache hit shows as a large drop
+after rep 0, not as noise. Prefix caching is a real PA capability worth reporting *separately*; it
+just is not prefill throughput.
+
+**2. Confirm PA is actually in use — the fallback is silent.** GenAI catches a PA initialization
+failure and falls back to SDPA with only a `GENAI_WARN` (`src/cpp/src/llm/pipeline.cpp`), and the
+default log level is `ERR` (`src/cpp/src/logger.cpp`), so **the warning is invisible unless you set
+`OPENVINO_LOG_LEVEL=4`**. Correct output and plausible timings therefore prove nothing. Counting
+`PagedAttention` in the `ov::Model` is also insufficient — that is the graph handed *to* the plugin.
+Check the compiled **runtime** graph:
+
+```cpp
+auto rt = compiled_model.get_runtime_model();
+for (const auto& op : rt->get_ops())
+    hist[op->get_rt_info().at("layerType").as<std::string>()]++;
+```
+
+For Llama-3.2-1B (16 layers) the two backends must look like this — note `MemoryInput`/`MemoryOutput`
+disappearing, since PA replaces the stateful KV cache with the plugin's block-table cache. A rename
+alone would not do that:
+
+| runtime `layerType` | SDPA | PA |
+|---|---|---|
+| `PagedAttention` | 0 | 16 |
+| `ScaledDotProductAttention` | 16 | 0 |
+| `MemoryInput` / `MemoryOutput` | 32 / 32 | 0 / 0 |
+
+**3. Drop iteration 0 and pin the comparison.** Iteration 0 carries the first-request dynamic-shape
+compile (several hundred ms to seconds); average iterations 1..N-1 for steady state. Compare on the
+same `.gguf` file, the same prompt text, and the same `n_ctx` — llama.cpp preallocates the whole
+`n_ctx` KV cache up front while OV's stateful cache grows on demand, so a mismatched context length
+makes the memory figures incomparable. Also record the thread counts: llama.cpp auto-selects
+P-cores only (8 on an i9-12900K) where OV uses all 24 by default, which is not a like-for-like
+core budget unless equalized.
+
+Putting it together — the three commands behind the table below. llama.cpp is measured twice because
+`llama-bench` gives steady-state kernel throughput with no process/load overhead, while `llama-cli`
+walks the same end-to-end path as the GenAI sample and so is the fair peak-RSS comparison:
+
+```sh
+# steady-state kernel throughput (cache cleared per rep; -r 5 to confirm low variance)
+llama-bench -m "$MODEL" -p 128 -n 128 -r 5
+
+# end-to-end, for max-RSS parity with the GenAI sample
+/usr/bin/time -v llama-cli -m "$MODEL" -p "$PROMPT" -n 128 -c 1024 \
+    -no-cnv -st --temp 0 --seed 1 --no-warmup --ignore-eos
+
+# GenAI, once per backend; the sample turns prefix caching off for PA (trap 1) and
+# reports per-iteration TTFT/TPOT so iteration 0 can be dropped (trap 3)
+/usr/bin/time -v bench_gguf_perf "$MODEL" "$PROMPT" 128 4 {SDPA|PA}
+```
+
+`bench_gguf_perf` is the GenAI sample at `samples/cpp/text_generation/bench_gguf_perf.cpp`; keep the
+same `-c/n_ctx` on both sides and the same prompt text everywhere.
+
+#### PagedAttention vs SDPA vs llama.cpp (measured under the rules above)
+
+i9-12900K, Q4_K_M, 128 generated tokens, 4 iterations with iteration 0 dropped, `n_ctx=1024`,
+prefix caching **off**, PA presence confirmed in the runtime graph for every row. llama.cpp is its
+default ggml CPU backend (`llama-bench pp128/tg128`), 8 threads by its own auto-selection.
+
+| Model | prompt tok | prefill t/s (lcpp / SDPA / PA) | decode t/s (lcpp / SDPA / PA) | PA/SDPA | PA/lcpp | peak RSS GB (lcpp / SDPA / PA) |
+|---|---|---|---|---|---|---|
+| Llama-3.2-1B | 87 | 528 / 291 / 291 | 73.7 / 39.7 / 41.3 | 1.04 | 0.56 | 1.30 / 2.51 / 2.51 |
+| Maincoder-1B | 68 | 591 / 405 / 409 | 84.1 / 43.9 / 45.7 | 1.04 | 0.54 | 1.10 / 2.24 / 2.24 |
+| gemma-3-1b | 75 | 411 / 467 / 429 | 75.5 / 47.1 / 47.1 | 1.00 | 0.62 | 0.92 / 2.49 / 2.49 |
+| Ministral-3-3B | 631 | 158 / 111 / 120 | 27.1 / 14.8 / 15.0 | 1.01 | 0.55 | 3.60 / 6.67 / 6.65 |
+| SmolLM3-3B | 302 | 173 / 135 / 136 | 30.2 / 16.8 / 17.2 | 1.02 | 0.57 | 3.21 / 5.71 / 5.70 |
+| mistral-7b-v0.1 | 55 | 68 / 52 / 56 | 13.7 / 6.94 / 6.99 | 1.01 | 0.51 | 7.37 / 11.81 / 11.82 |
+| Ministral-8B | 53 | 69 / 40 / 39 | 12.8 / 7.01 / 7.05 | 1.01 | 0.55 | 7.92 / 13.10 / 13.11 |
+| gemma-4-E4B | 58 | 111 / 55 / 56 | 18.2 / 11.1 / 11.6 | 1.04 | 0.64 | 6.96 / 12.36 / 11.92 |
+
+**PA vs SDPA: parity.** Decode 1.00-1.04x (PA marginally ahead on all 8), prefill within +-8%, peak
+RSS within 0.2% except gemma-4 where PA is 0.44 GB lower. Enabling PA costs nothing; the reason to
+use it is that continuous batching, prefix caching and multi-sequence serving become available at
+all, which the SDPA-only graph could not do.
+
+**PA vs llama.cpp: decode 0.51-0.64x**, prefill 0.55-1.04x, peak RSS 1.7-2.4x. These ratios match
+what the SDPA path already measured, so PA neither introduces nor closes that gap — see
+[`frontend_design.md`](frontend_design.md) on the memory model for the RSS side.
+
 ### MoE expert weights and the compressed-weights type gate
 
 Worth knowing when picking a quantization for a MoE model, though the handling is entirely
