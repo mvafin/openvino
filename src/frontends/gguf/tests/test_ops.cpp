@@ -816,6 +816,74 @@ TEST(GGUFOps, ReshapeCase3) {
     expect_near(out, x, 0.0f);
 }
 
+// RESHAPE op_cases 1 and 2 are the attention split/merge pair, and they must be LAYOUT-POLYMORPHIC:
+// valid both for plain SDPA inference, which feeds a batch-major activation ([1, tokens, ..]), and
+// after ov::pass::SDPAToPagedAttention, which moves the token count into dim 0 ([tokens, 1, ..]).
+// Those two are the same buffer, so the op must copy the leading dim through rather than pin a
+// literal 1 -- pinning silently rewrites a token-major activation into a batch-major one and the
+// PagedAttention operands come out token-count-squared.
+//
+// Feeding the same values under both arrangements and requiring the same output element order is
+// exactly that property, and it fails on a literal-1 reshape.
+TEST(GGUFOps, ReshapeCase1SplitHeadsIsLayoutPolymorphic) {
+    const int64_t tokens = 2, heads = 2, head_size = 2;
+    const std::vector<float> x{1, 2, 3, 4, 5, 6, 7, 8};
+
+    // Batch-major (what genai feeds a plain SDPA model): [1, 1, tokens, heads*head_size].
+    auto sdpa = SingleOpBuilder()
+                    .op("GGML_OP_RESHAPE")
+                    .input("x", ov::element::f32, {1, 1, tokens, heads * head_size})
+                    .output("out", ov::element::f32, {1, tokens, heads, head_size})
+                    .op_case(1)
+                    .build();
+    auto sdpa_out = run_on_cpu(sdpa, {{"x", make_f32_tensor({1, 1, (size_t)tokens, (size_t)(heads * head_size)}, x)}});
+    EXPECT_EQ(sdpa_out.get_shape(), (ov::Shape{1, (size_t)tokens, (size_t)heads, (size_t)head_size}));
+
+    // Token-major (the layout SDPAToPagedAttention establishes): [tokens, 1, 1, heads*head_size].
+    // The op must keep the tokens in dim 0 instead of moving them to dim 1.
+    auto pa = SingleOpBuilder()
+                  .op("GGML_OP_RESHAPE")
+                  .input("x", ov::element::f32, {tokens, 1, 1, heads * head_size})
+                  .output("out", ov::element::f32, {1, tokens, heads, head_size})
+                  .op_case(1)
+                  .build();
+    auto pa_out = run_on_cpu(pa, {{"x", make_f32_tensor({(size_t)tokens, 1, 1, (size_t)(heads * head_size)}, x)}});
+    EXPECT_EQ(pa_out.get_shape(), (ov::Shape{(size_t)tokens, 1, (size_t)heads, (size_t)head_size}));
+
+    // Same buffer in, same buffer out.
+    expect_near(sdpa_out, x, 0.0f);
+    expect_near(pa_out, x, 0.0f);
+}
+
+TEST(GGUFOps, ReshapeCase2MergeHeadsIsLayoutPolymorphic) {
+    const int64_t tokens = 2, heads = 2, head_size = 2;
+    const std::vector<float> x{1, 2, 3, 4, 5, 6, 7, 8};
+
+    // Non-stateful ggml keeps activations rank-4 throughout: [1, tokens, H, S] -> [1, 1, tokens, H*S].
+    auto sdpa = SingleOpBuilder()
+                    .op("GGML_OP_RESHAPE")
+                    .input("x", ov::element::f32, {1, tokens, heads, head_size})
+                    .output("out", ov::element::f32, {1, 1, tokens, heads * head_size})
+                    .op_case(2)
+                    .build();
+    auto sdpa_out =
+        run_on_cpu(sdpa, {{"x", make_f32_tensor({1, (size_t)tokens, (size_t)heads, (size_t)head_size}, x)}});
+    EXPECT_EQ(sdpa_out.get_shape(), (ov::Shape{1, 1, (size_t)tokens, (size_t)(heads * head_size)}));
+
+    // Token-major: the tokens stay in dim 0.
+    auto pa = SingleOpBuilder()
+                  .op("GGML_OP_RESHAPE")
+                  .input("x", ov::element::f32, {tokens, 1, heads, head_size})
+                  .output("out", ov::element::f32, {1, 1, tokens, heads * head_size})
+                  .op_case(2)
+                  .build();
+    auto pa_out = run_on_cpu(pa, {{"x", make_f32_tensor({(size_t)tokens, 1, (size_t)heads, (size_t)head_size}, x)}});
+    EXPECT_EQ(pa_out.get_shape(), (ov::Shape{(size_t)tokens, 1, 1, (size_t)(heads * head_size)}));
+
+    expect_near(sdpa_out, x, 0.0f);
+    expect_near(pa_out, x, 0.0f);
+}
+
 // SET_ROWS into a flattened KV-cache row (row_size taken from the dst input, not the op output):
 // dst cache [1,1,ctx=3,row=2], data [1,1,n=2,row=2] written at indices {2,0}.
 TEST(GGUFOps, SetRowsFlattenedCache) {

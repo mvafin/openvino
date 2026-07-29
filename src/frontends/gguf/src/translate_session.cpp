@@ -11,7 +11,14 @@
 #include <memory>
 #include <set>
 
+#include "input_model.hpp"
+#include "node_context.hpp"
+#include "openvino/core/graph_util.hpp"
 #include "openvino/core/node.hpp"
+#include "openvino/core/preprocess/pre_post_process.hpp"
+#include "openvino/core/rt_info.hpp"
+#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
+#include "openvino/frontend/gguf/tokenizer_metadata.hpp"
 #include "openvino/op/add.hpp"
 #include "openvino/op/broadcast.hpp"
 #include "openvino/op/concat.hpp"
@@ -35,17 +42,10 @@
 #include "openvino/op/unsqueeze.hpp"
 #include "openvino/pass/constant_folding.hpp"
 #include "openvino/pass/make_stateful.hpp"
-
-#include "input_model.hpp"
-#include "node_context.hpp"
-#include "openvino/core/graph_util.hpp"
-#include "openvino/core/rt_info.hpp"
-#include "openvino/core/rt_info/weightless_caching_attributes.hpp"
-#include "openvino/frontend/gguf/tokenizer_metadata.hpp"
-#include "openvino/core/preprocess/pre_post_process.hpp"
 #include "pass/lower_set_rows_stateful.hpp"
 #include "pass/lower_set_rows_stateless.hpp"
 #include "pass/squeeze_matmul.hpp"
+#include "transformations/common_optimizations/nop_elimination.hpp"
 #include "transformations/fp16_compression/mark_decompression_convert_constant_folding.hpp"
 #include "transformations/op_conversions/convert_convertlike.hpp"
 #include "utils.hpp"
@@ -426,6 +426,11 @@ std::shared_ptr<Model> TranslateSession::apply_transformations(std::shared_ptr<M
     }
 
     manager.register_pass<ov::pass::ConvertConvertLike>();
+    // The lowered ConvertLikes are frequently no-ops (k/v already share q's precision). Drop them:
+    // a same-type Convert on an SDPA k/v input is invisible to the plugins but breaks
+    // StateManagementPattern, which admits no Convert between the KV-cache Concat and SDPA, and so
+    // silently disables the PagedAttention backend for every GGUF model.
+    manager.register_pass<ov::pass::EliminateConvert>();
     manager.run_passes(model);
 
     if (is_stateful) {

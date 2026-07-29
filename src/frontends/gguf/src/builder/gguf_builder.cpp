@@ -1221,10 +1221,14 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         if (m_n_embd_per_layer > 0) {
             // Global per-layer projected embedding was added as "per_layer_embd" before the loop.
             // Slice out this layer's [1,1,T,n_embd_per_layer] chunk (dim 1 at index il).
+            // `cur` is passed as a second input purely as a shape reference: per_layer_embd is stored
+            // layer-major, so the slice's token axis does not necessarily sit where the layer
+            // activation keeps its own, and the ops below combine the two elementwise. See the
+            // op_case 104 note in op/view.cpp.
             const std::string pl_slice = p + "per_layer_slice";
             add_op("GGML_OP_VIEW",
                    pl_slice,
-                   {"per_layer_embd"},
+                   {"per_layer_embd", cur},
                    ps({1, 1, T, m_n_embd_per_layer}),
                    f32,
                    104,  // layer-index slice using the "layer_idx" attribute

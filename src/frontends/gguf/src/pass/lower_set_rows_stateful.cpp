@@ -49,6 +49,14 @@ bool LowerSetRowsStateful::run_on_model(const std::shared_ptr<ov::Model>& model)
         // The cache layout is [1, ctx, n_head_kv, head_size]. Reshape the new rows from the
         // [1, 1, seq, emb] placeholder layout into [1, seq, n_head_kv, head_size] before the
         // Concat along the sequence axis (axis 1). emb == n_head_kv * head_size.
+        //
+        // The leading dim is copied from the incoming data (special_zero) rather than pinned to 1, so
+        // this stays valid in the token-major layout ov::pass::SDPAToPagedAttention establishes:
+        //   SDPA inference: [1, 1, seq*n_head_kv, head_size] -> [1, seq, n_head_kv, head_size]
+        //   PagedAttention: [seq, 1, n_head_kv, head_size]   -> [seq, 1, n_head_kv, head_size]
+        // Under PA the Concat below is matched and removed by StateManagementPattern (the cache
+        // becomes its key_cache/value_cache inputs), and it needs to see the new rows with the token
+        // count in dim 0 to derive the [tokens, n_head_kv*head_size] operand the plugin expects.
         const auto& dst_ps = dst.get_partial_shape();
         OPENVINO_ASSERT(dst_ps.rank().is_static() && dst_ps.rank().get_length() == 4,
                         "LowerSetRowsStateful expects a rank-4 KV-cache destination");
@@ -56,8 +64,8 @@ bool LowerSetRowsStateful::run_on_model(const std::shared_ptr<ov::Model>& model)
         int64_t dim3 = dst_ps[3].get_length();
         data = std::make_shared<ov::op::v1::Reshape>(
             data,
-            ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t)1, (int64_t)-1, dim2, dim3}),
-            false);
+            ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t)0, (int64_t)-1, dim2, dim3}),
+            true);
 
         Output<Node> past = dst;
         if (beam_idx) {

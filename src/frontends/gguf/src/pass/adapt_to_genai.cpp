@@ -7,6 +7,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include "openvino/op/broadcast.hpp"
 #include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
@@ -15,11 +16,14 @@
 #include "openvino/op/parameter.hpp"
 #include "openvino/op/range.hpp"
 #include "openvino/op/read_value.hpp"
+#include "openvino/op/reduce_prod.hpp"
 #include "openvino/op/reshape.hpp"
 #include "openvino/op/result.hpp"
+#include "openvino/op/scaled_dot_product_attention.hpp"
 #include "openvino/op/select.hpp"
 #include "openvino/op/shape_of.hpp"
 #include "openvino/op/squeeze.hpp"
+#include "openvino/op/transpose.hpp"
 #include "openvino/runtime/properties.hpp"
 
 namespace ov {
@@ -106,30 +110,54 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
     auto beam_idx = find_param(model, "beam_idx");
     OPENVINO_ASSERT(beam_idx, "[gguf] AdaptToGenAI: frontend model is missing the 'beam_idx' input.");
 
-    const auto shape_1_1_1_m1 = const_i64({1, 1, 1, -1});
+    // ---- token_len_per_seq = number of tokens in input_ids -> [1] ----
+    // The token count is the ELEMENT COUNT of input_ids, not any single dimension of it. genai feeds
+    // [batch, seq] (batch == 1), but SDPAToPagedAttention rewrites this Parameter to rank-1 [tokens]
+    // and splices an Unsqueeze(axis=1) in front of its consumers, making it [tokens, 1]. Reading
+    // dim 1 would then yield 1 for every prompt, collapsing the causal mask and the logits to a
+    // single token; reading dim 0 breaks the un-rewritten case. ReduceProd is correct under both.
+    auto ids_shape = make_shared<ov::op::v3::ShapeOf>(input_ids, ov::element::i64);
+    auto seq_len = make_shared<ov::op::v1::ReduceProd>(ids_shape, const_i64({0}), true);  // [1]
+    token_len_per_seq->output(0).replace(seq_len->output(0));
 
-    // ---- inp_tokens = Reshape(Convert(input_ids, i32), [1,1,1,-1]) ----
+    // The two gguf rank-4 input kinds carry the (batch, tokens) pair on different axes, so they get
+    // different lifts. Both are written so the genai Parameter's own leading dims flow through
+    // instead of being replaced by literals -- that is the whole mechanism by which one graph serves
+    // both attention backends (see the layout note on the class).
+    //
+    // INDEX vectors (inp_tokens, inp_out_ids): consumed by get_rows, which squeezes the two leading
+    // axes and gathers rows. The gathered result inherits the indices' trailing 2D shape, so the
+    // indices must present exactly the Parameter's own [batch, seq]: prepend two 1s.
+    //   SDPA: [1,1,1,tokens] -> squeeze -> [1,tokens] -> embd [1,tokens,n_embd]
+    //   PA  : [1,1,tokens,1] -> squeeze -> [tokens,1] -> embd [tokens,1,n_embd]
+    const auto shape_1_1_batch_seq = make_shared<ov::op::v0::Concat>(ov::OutputVector{const_i64({1, 1}), ids_shape}, 0);
+
+    // ACTIVATION-like inputs (inp_pos): consumed by make_sin_cos, which transposes {0,3,1,2} to put
+    // the token axis at 1, yielding cos/sin [batch, tokens, 1, n_rot/2] that broadcast against the
+    // roped [batch, heads, tokens, head_size]. special_zero's 0 copies dim 0 and -1 absorbs the rest.
+    //   SDPA: [1,1,1,tokens] -> cos/sin [1,tokens,1,half]
+    //   PA  : [tokens,1,1,1] -> cos/sin [tokens,1,1,half], which broadcasts against [tokens,H,1,S]
+    const auto shape_keep0_1_1_rest = const_i64({0, 1, 1, -1});
+
     auto tokens_i32 = make_shared<ov::op::v0::Convert>(input_ids, ov::element::i32);
-    auto tokens_4d = make_shared<ov::op::v1::Reshape>(tokens_i32, shape_1_1_1_m1, false);
+    auto tokens_4d = make_shared<ov::op::v1::Reshape>(tokens_i32, shape_1_1_batch_seq, false);
     inp_tokens->output(0).replace(tokens_4d->output(0));
 
-    // ---- inp_pos = Reshape(Convert(position_ids, i32), [1,1,1,-1]) ----
     auto pos_i32 = make_shared<ov::op::v0::Convert>(position_ids, ov::element::i32);
-    auto pos_4d = make_shared<ov::op::v1::Reshape>(pos_i32, shape_1_1_1_m1, false);
+    auto pos_4d = make_shared<ov::op::v1::Reshape>(pos_i32, shape_keep0_1_1_rest, true);
     inp_pos->output(0).replace(pos_4d->output(0));
-
-    // ---- token_len_per_seq = ShapeOf(input_ids, i64)[1] -> [1] ----
-    auto ids_shape = make_shared<ov::op::v3::ShapeOf>(input_ids, ov::element::i64);
-    auto seq_len = make_shared<ov::op::v8::Gather>(ids_shape, const_i64({1}), const_i64({0}));  // [1]
-    token_len_per_seq->output(0).replace(seq_len->output(0));
 
     // ---- self_kq_mask [1,1,seq,kv_len] f32: 0 where attended, -inf above causal ----
     // kv_len = attention_mask length (= past + seq). query absolute positions = position_ids[0].
     auto am_shape = make_shared<ov::op::v3::ShapeOf>(attention_mask, ov::element::i64);
     auto kv_len = make_shared<ov::op::v8::Gather>(am_shape, const_i64({1}), const_i64({0}));  // [1]
 
-    auto q_pos = make_shared<ov::op::v0::Convert>(make_shared<ov::op::v0::Squeeze>(position_ids, const_i64({0})),
-                                                  ov::element::i32);  // [seq]
+    // Flatten position_ids to [seq] via a shape-independent Reshape({-1}) rather than Squeeze(axis=0):
+    // PA also rewrites position_ids to rank-1 and Unsqueezes it to [seq,1], where squeezing axis 0
+    // would fail (or drop the wrong axis).
+    auto q_pos =
+        make_shared<ov::op::v0::Convert>(make_shared<ov::op::v1::Reshape>(position_ids, const_i64({-1}), false),
+                                         ov::element::i32);  // [seq]
     auto q_pos_col = make_shared<ov::op::v1::Reshape>(
         q_pos,
         make_shared<ov::op::v0::Concat>(ov::OutputVector{seq_len, const_i64({1})}, 0),
@@ -162,20 +190,37 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
     }
 
     // inp_out_ids selects which sequence rows to emit logits for; make it the whole sequence
-    // (genai slices the last-token logits itself). Reshape(Range(0, seq, 1), [1,1,1,-1]).
+    // (genai slices the last-token logits itself). An INDEX vector like inp_tokens, so it takes the
+    // same [1, 1, batch, seq] lift, which keeps the gathered activation in whichever of the two
+    // layouts the rest of the graph is running in.
+    //
+    // Its VALUES cannot be a plain 0..tokens range, though. get_rows lowers this to
+    // Gather(activation, ids, axis=1, batch_dims=1), which computes act[i, ids[i, j]], so the
+    // identity selection is ids[i, j] == j -- an index along axis 1 only, replicated over axis 0.
+    // A 0..tokens range happens to satisfy that when axis 0 is a batch of 1, but under the
+    // ov::pass::SDPAToPagedAttention layout the pair is [tokens, 1] and rows 1..tokens-1 would then
+    // index out of bounds on a size-1 axis, zeroing every logit but the first. So range over dim 1
+    // and broadcast across dim 0; that is the identity in both layouts.
     if (auto inp_out_ids = find_param(model, "inp_out_ids")) {
-        auto seq_i32 = make_shared<ov::op::v0::Squeeze>(make_shared<ov::op::v0::Convert>(seq_len, ov::element::i32),
-                                                        const_i64({0}));  // scalar
-        auto out_range = make_shared<ov::op::v4::Range>(zero_i32, seq_i32, one_i32, ov::element::i32);
-        auto out_ids = make_shared<ov::op::v1::Reshape>(out_range, shape_1_1_1_m1, false);
+        auto gathered_axis_len = make_shared<ov::op::v0::Squeeze>(
+            make_shared<ov::op::v0::Convert>(make_shared<ov::op::v8::Gather>(ids_shape, const_i64({1}), const_i64({0})),
+                                             ov::element::i32),
+            const_i64({0}));  // scalar: ids_shape[1]
+        auto out_range = make_shared<ov::op::v4::Range>(zero_i32, gathered_axis_len, one_i32, ov::element::i32);
+        auto out_grid = make_shared<ov::op::v3::Broadcast>(out_range, ids_shape);  // [batch, seq]
+        auto out_ids = make_shared<ov::op::v1::Reshape>(out_grid, shape_1_1_batch_seq, false);
         inp_out_ids->output(0).replace(out_ids->output(0));
     }
 
-    // ---- logits: [1,1,seq,vocab] -> [b, seq, vocab] (b = 1) ----
+    // ---- logits: rank-4 [.., .., .., vocab] -> [b, seq, vocab] ----
+    // genai always wants [batch, seq, vocab] regardless of which axis the body kept the tokens on,
+    // and both layouts hold seq*vocab contiguous values, so collapse everything ahead of vocab into
+    // the sequence axis with a fixed batch of 1. (batch > 1 is not part of the genai stateful
+    // contract this pass targets; token_len_per_seq above is likewise a whole-input token count.)
     auto old_result = model->get_results()[0];
     auto logits_src = old_result->input_value(0);
     auto vocab = make_shared<ov::op::v8::Gather>(make_shared<ov::op::v3::ShapeOf>(logits_src, ov::element::i64),
-                                                 const_i64({3}),
+                                                 const_i64({-1}),
                                                  const_i64({0}));  // [1]
     auto logits_3d = make_shared<ov::op::v1::Reshape>(
         logits_src,

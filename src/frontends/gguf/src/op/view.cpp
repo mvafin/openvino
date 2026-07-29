@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-#include "op_table.hpp"
-#include "utils.hpp"
-#include "openvino/op/constant.hpp"
-#include "openvino/op/reshape.hpp"
-#include "openvino/op/slice.hpp"
 #include <limits>
 #include <vector>
+
+#include "op_table.hpp"
+#include "openvino/frontend/exception.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/gather.hpp"
+#include "openvino/op/reshape.hpp"
+#include "openvino/op/shape_of.hpp"
+#include "openvino/op/slice.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {
@@ -56,7 +61,7 @@ void place_dynamic_token_axis(std::vector<int64_t> & tgt, const ov::PartialShape
 // cases >= 100 are emitted only by the native .gguf builder decoder, which owns its own numbering
 // so the two decoders never collide.
 OutputVector translate_view(const NodeContext & context) {
-    num_inputs_check(context, 1, 1);
+    num_inputs_check(context, 1, 2);
 
     if (context.get_op_case() == 2) {
         auto dst_shape = context.get_output_shape().to_shape();
@@ -218,8 +223,42 @@ OutputVector translate_view(const NodeContext & context) {
         // in non-stateful it is 4D [1, n_layer, T, D] -- slice dim 1.
         const int64_t slice_axis = context.is_stateful() ? 0 : 1;
         auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {slice_axis});
-        auto sliced = std::make_shared<ov::op::v8::Slice>(input, start, stop, step, axes);
-        return rename_outputs_with_suffix({sliced}, context.get_name());
+        ov::Output<ov::Node> sliced = std::make_shared<ov::op::v8::Slice>(input, start, stop, step, axes);
+
+        // The slice comes out with the token count on the axis the per-layer tensor happens to keep it
+        // on (dim 1 here), because per_layer_embd is stored layer-major so the layer index can be
+        // sliced off axis 0. Every consumer, though, is an elementwise op against the layer's own
+        // activation, and OV broadcasts elementwise operands positionally -- so the two operands must
+        // agree on WHICH leading axis holds the tokens. That is not a fixed choice: it is [1, T, ..]
+        // under plain SDPA inference and [T, 1, ..] once ov::pass::SDPAToPagedAttention moves the token
+        // count into dim 0. Both hold the same T*D values contiguously, so when the builder supplies
+        // the activation as a second (shape-reference) input, reinterpret the slice into that operand's
+        // leading dims. Without this the multiply below broadcasts to a T x T outer product under PA.
+        if (context.get_input_size() > 1) {
+            const auto& ref = context.get_input(1);
+            const auto ref_rank = ref.get_partial_shape().rank();
+            FRONT_END_OP_CONVERSION_CHECK(ref_rank.is_static(),
+                                          "VIEW case 104 shape reference must have a static rank");
+            const auto d_ps = context.get_output_shape();
+            const int64_t rank = ref_rank.get_length();
+            FRONT_END_OP_CONVERSION_CHECK(d_ps.rank().is_static() && d_ps[d_ps.rank().get_length() - 1].is_static(),
+                                          "VIEW case 104 requires a static per-layer embedding width");
+            const int64_t d = d_ps[d_ps.rank().get_length() - 1].get_length();
+
+            std::vector<int64_t> lead(rank - 1);
+            for (int64_t i = 0; i < rank - 1; ++i) {
+                lead[i] = i;
+            }
+            auto lead_dims = std::make_shared<ov::op::v8::Gather>(
+                std::make_shared<ov::op::v3::ShapeOf>(ref, ov::element::i64),
+                ov::op::v0::Constant::create(ov::element::i64, {lead.size()}, lead),
+                ov::op::v0::Constant::create(ov::element::i64, {}, {0}));
+            auto target = std::make_shared<ov::op::v0::Concat>(
+                ov::OutputVector{lead_dims, ov::op::v0::Constant::create(ov::element::i64, {1}, {d})},
+                0);
+            sliced = std::make_shared<ov::op::v1::Reshape>(sliced, target, false);
+        }
+        return rename_outputs_with_suffix({sliced.get_node_shared_ptr()}, context.get_name());
     }
     // op_case 105 (builder): head-size slice. Slices the last dimension to "head_size" (an attribute).
     // Used for gemma4 shared SWA layers that reuse the global anchor's K/V but need only the

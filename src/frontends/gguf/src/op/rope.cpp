@@ -70,13 +70,16 @@ OutputVector translate_rope(const NodeContext& context) {
         cos_theta_node = sin_cos.second;
     }
 
-    // The canonical [1, -1, n_head, head_size] reshape target (token count on the dynamic axis),
-    // used by the VIEW prologue and the TYPE_NORMAL stack below.
+    // The canonical [B, -1, n_head, head_size] reshape target (token count on the dynamic axis), used
+    // by the VIEW prologue and the TYPE_NORMAL stack below. The leading 0 is a special_zero marker
+    // that COPIES the input's dim 0 rather than pinning a literal 1, so a token-major activation
+    // (the layout ov::pass::SDPAToPagedAttention establishes) keeps its tokens in dim 0. Every use
+    // must therefore pass special_zero=true.
     auto make_bhsd_shape = [&]() {
         return ov::op::v0::Constant::create(
             ov::element::i64,
             {4},
-            std::vector<int64_t>{1, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
+            std::vector<int64_t>{0, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
     };
 
     if (op_case == 2) {
@@ -91,7 +94,7 @@ OutputVector translate_rope(const NodeContext& context) {
                 std::vector<int64_t>{-1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
             data_node = std::make_shared<ov::op::v1::Reshape>(data_node, data_shape, false);
         } else {
-            data_node = std::make_shared<ov::op::v1::Reshape>(data_node, make_bhsd_shape(), false);
+            data_node = std::make_shared<ov::op::v1::Reshape>(data_node, make_bhsd_shape(), true);
         }
     }
 
@@ -105,11 +108,12 @@ OutputVector translate_rope(const NodeContext& context) {
         const int64_t head_size = static_cast<int64_t>(output_shape[3]);
         const int64_t half      = head_size / 2;
 
-        // Reshape to [1, L, n_heads, half, 2] to expose interleaved pairs (reinterprets any
-        // incoming rank in element order, so no separate rank lift is needed).
-        auto paired_shape = ov::op::v0::Constant::create(
-            ov::element::i64, {5}, std::vector<int64_t>{1, -1, n_heads, half, 2});
-        auto x_paired = std::make_shared<ov::op::v1::Reshape>(data_node, paired_shape, false);
+        // Reshape to [B, L, n_heads, half, 2] to expose interleaved pairs (reinterprets any
+        // incoming rank in element order, so no separate rank lift is needed). The leading 0 copies
+        // the input's batch dim (special_zero) so the token axis stays where the caller had it.
+        auto paired_shape =
+            ov::op::v0::Constant::create(ov::element::i64, {5}, std::vector<int64_t>{0, -1, n_heads, half, 2});
+        auto x_paired = std::make_shared<ov::op::v1::Reshape>(data_node, paired_shape, true);
 
         auto split_axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {-1LL});
         auto data_split = std::make_shared<ov::op::v1::Split>(x_paired, split_axis, 2);
@@ -120,7 +124,7 @@ OutputVector translate_rope(const NodeContext& context) {
         auto x1_neg = std::make_shared<ov::op::v1::Multiply>(x1, neg_one_f);
 
         auto x_rotated_paired = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x1_neg, x0}, -1);
-        auto x_rotated = std::make_shared<ov::op::v1::Reshape>(x_rotated_paired, make_bhsd_shape(), false);
+        auto x_rotated = std::make_shared<ov::op::v1::Reshape>(x_rotated_paired, make_bhsd_shape(), true);
 
         // Expand cos/sin from [B, L, 1, half] to [B, L, 1, head_size].
         auto expand_cos_sin = [&](ov::Output<ov::Node> cs) -> ov::Output<ov::Node> {
@@ -187,10 +191,14 @@ OutputVector translate_rope(const NodeContext& context) {
             // normalize all of these. Instead, always Reshape the data to the canonical
             // ggml-natural [B, L, H, S] using the op's output_shape (element order is preserved,
             // so this correctly reinterprets every incoming layout), then Transpose {0,2,1,3}.
+            // The leading dim is copied through (special_zero) instead of written as a literal 1, so a
+            // token-major activation ([L,1,H,S], the layout SDPAToPagedAttention establishes) keeps its
+            // tokens in dim 0 here; cos/sin below broadcast against either arrangement.
             auto data_to_bhls = [&](ov::Output<ov::Node> x) -> ov::Output<ov::Node> {
-                auto shape4d = ov::op::v0::Constant::create(
-                    ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_head_rope, head_size_rope});
-                x = std::make_shared<ov::op::v1::Reshape>(x, shape4d, false);  // [B, L, H, S]
+                auto shape4d = ov::op::v0::Constant::create(ov::element::i64,
+                                                            {4},
+                                                            std::vector<int64_t>{0, -1, n_head_rope, head_size_rope});
+                x = std::make_shared<ov::op::v1::Reshape>(x, shape4d, true);   // [B, L, H, S]
                 return std::make_shared<ov::op::v1::Transpose>(x, perm_bhls);  // [B, H, L, S]
             };
             // cos/sin always arrive rank-4 [B, L, 1, head/2]; just transpose to [B, 1, L, head/2].

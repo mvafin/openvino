@@ -46,10 +46,13 @@ OutputVector translate_set_rows(const NodeContext & context) {
 
     auto ind_squeezed =
         std::make_shared<ov::op::v0::Squeeze>(indices, ov::op::v0::Constant::create(ov::element::i64, {3}, {0, 1, 2}));
+    // Flatten the new rows to [.., 1, tokens, row_size]. The leading dim is copied from the incoming
+    // data (special_zero) instead of pinned to 1, so the KV write stays in whichever layout the
+    // attention block is running in; the stateful lowering re-splits it against the cache shape.
     auto data_reshaped = std::make_shared<ov::op::v1::Reshape>(
         data,
-        ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t) 1, (int64_t) 1, (int64_t) -1, row_size}),
-        false);
+        ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t)0, (int64_t)1, (int64_t)-1, row_size}),
+        true);
 
     auto set_rows = std::make_shared<SetRows>(data_reshaped, ind_squeezed, dst);
     return rename_outputs_with_suffix({set_rows}, context.get_name());

@@ -34,6 +34,22 @@ namespace pass {
 ///
 /// If the required gguf inputs are absent (e.g. the model is already in genai form), the
 /// pass is a no-op and returns false.
+///
+/// LAYOUT POLYMORPHISM (why this pass derives the leading dims instead of pinning them).
+/// The result must be valid under BOTH attention backends, which disagree about where the token
+/// count lives. Plain SDPA inference feeds input_ids as [1, tokens]. ov::pass::SDPAToPagedAttention
+/// instead rewrites input_ids to rank-1 [tokens] and splices an Unsqueeze(axis=1) in front of its
+/// consumers, so the body sees [tokens, 1] -- its hardcoded flattens (Reshape({0,-1}) on the PA
+/// operands) then read the token count out of dim 0.
+///
+/// Both are the same buffer: ggml's activation layout is [batch, tokens, heads, head_size] with
+/// batch == 1, and [1, tokens, H, D] and [tokens, 1, H, D] are element-for-element identical. So a
+/// single graph serves both, PROVIDED no node pins the leading two dims to constants. This pass
+/// therefore derives them from the live input_ids (and the op translators reshape with
+/// special_zero, copying dim 0 through rather than writing a literal 1). Under SDPA that is exactly
+/// the old batch-major graph; under PagedAttention the tokens reach dim 0 on their own, which is
+/// what lets SDPAToPagedAttention's rewrite bind. No backend flag is needed, and no attention
+/// re-layout is performed here.
 class GGUF_FRONTEND_API AdaptToGenAI : public ov::pass::ModelPass {
 public:
     OPENVINO_MODEL_PASS_RTTI("ov::frontend::gguf::pass::AdaptToGenAI");

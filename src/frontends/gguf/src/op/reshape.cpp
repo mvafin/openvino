@@ -47,18 +47,54 @@ OutputVector translate_reshape(const NodeContext& context) {
     auto output_shape = context.get_output_shape().to_shape();
     std::shared_ptr<ov::Node> new_shape_node;
     if (op_case == 1) {
-        // [B, 1, T, n_head*head_size] -> [B, T, n_head, head_size]: keep B fixed, flatten T into dim1.
-        // Same shape in both stateful and non-stateful paths; the 3D form was causing RoPE
-        // broadcasting to T×T when the trailing dimensions are 1 (MQA, n_head_kv=1).
+        // [B, 1, T, n_head*head_size] -> [B, T, n_head, head_size]: split the last dim into heads and
+        // flatten whatever leads it into dim 1. Same shape in both stateful and non-stateful paths;
+        // the 3D form was causing RoPE broadcasting to T×T when the trailing dimensions are 1 (MQA,
+        // n_head_kv=1).
+        //
+        // The leading dim is COPIED from the input via special_zero rather than written as
+        // output_shape[0] (a literal 1). That is what makes the attention block layout-polymorphic:
+        // ov::pass::SDPAToPagedAttention moves the token count into dim 0 by rewriting input_ids, and
+        // a literal here would discard that and leave PA deriving [1, T*H*S] operands where the
+        // plugin wants [T, H*S]. With the 0 the same constant serves both:
+        //   SDPA inference: in [1, 1, T, H*S]  -> [1, T, H, S]
+        //   PagedAttention: in [T, 1, 1, H*S]  -> [T, 1, H, S]  (identical buffer, tokens in dim 0)
         new_shape_node = ov::op::v0::Constant::create(
             ov::element::i64,
             {4},
-            std::vector<int64_t>{(int64_t)output_shape[0], -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
+            std::vector<int64_t>{0, -1, (int64_t)output_shape[2], (int64_t)output_shape[3]});
+        return rename_outputs_with_suffix(
+            {std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, /*special_zero=*/true)},
+            context.get_name());
     } else if (op_case == 2) {
-        new_shape_node = ov::op::v0::Constant::create(
-            ov::element::i64,
-            {4},
-            std::vector<int64_t>{(int64_t)output_shape[0], (int64_t)output_shape[1], -1, (int64_t)output_shape[3]});
+        // Merge the heads back after attention. Like op_case 1, the leading dim is copied from the input
+        // (special_zero) rather than pinned to output_shape[0], so the token axis stays wherever the
+        // active attention backend put it.
+        //
+        // The output rank follows the mode's activation convention, because the very next op is the
+        // residual Add against the layer input and OV broadcasts elementwise operands from the RIGHT.
+        // Emitting rank 4 here while the residual is the rank-3 stateful activation only appears to work
+        // when dim 0 is a literal batch 1 ([1,1,T,E] right-aligns onto [1,T,E]); once the token count
+        // moves into dim 0 the same alignment silently forms a token x token outer product. So the
+        // stateful path stays rank 3, matching get_rows / rms_norm / mulmat (cf. op_case 5).
+        //   stateful,     SDPA inference: in [1, T, H, S] -> [1, T, H*S]
+        //   stateful,     PagedAttention: in [T, 1, H, S] -> [T, 1, H*S]
+        //   non-stateful (ggml is 4D throughout): in [1, T, H, S] -> [1, 1, T, H*S]
+        // Either way the last dim is the static n_head*head_size and the -1 absorbs the remaining axis,
+        // so the following MatMul against [n_embd, n_embd] is unaffected.
+        if (context.is_stateful()) {
+            new_shape_node = ov::op::v0::Constant::create(ov::element::i64,
+                                                          {3},
+                                                          std::vector<int64_t>{0, -1, (int64_t)output_shape[3]});
+        } else {
+            new_shape_node = ov::op::v0::Constant::create(
+                ov::element::i64,
+                {4},
+                std::vector<int64_t>{0, (int64_t)output_shape[1], -1, (int64_t)output_shape[3]});
+        }
+        return rename_outputs_with_suffix(
+            {std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, /*special_zero=*/true)},
+            context.get_name());
 
     } else if (op_case == 3) {
         // Flatten-for-SET_ROWS: [F, tok, 1, 1] -> [1, F*tok, -1, 1] (the KV-cache write path, e.g.
