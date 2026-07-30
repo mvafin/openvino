@@ -3,13 +3,13 @@
 //
 
 #include <memory>
-#include <openvino/op/constant.hpp>
-#include <openvino/op/convert.hpp>
-#include <openvino/op/topk.hpp>
 
-#include "../node_context.hpp"
-#include "../op_table.hpp"
-#include "../utils.hpp"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/topk.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

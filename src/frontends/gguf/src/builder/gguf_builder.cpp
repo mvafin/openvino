@@ -34,14 +34,14 @@
 #include <memory>
 #include <set>
 
-#include "../quant/gguf.hpp"
-#include "../quant/weights.hpp"
 #include "gguf_graph.hpp"
 #include "openvino/core/except.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/convert.hpp"
 #include "openvino/op/parameter.hpp"
 #include "openvino/util/log.hpp"
+#include "quant/gguf.hpp"
+#include "quant/weights.hpp"
 
 namespace ov {
 namespace frontend {
@@ -141,11 +141,11 @@ public:
         // Rule: post_attention_norm is a true POST-attn norm only when both attn_norm.weight
         // AND ffn_norm.weight also exist.  Same for post_ffw_norm as a true POST-FFN norm.
         {
-            const bool has_attn_norm_w  = m_weights.count("blk.0.attn_norm.weight") > 0;
-            const bool has_ffn_norm_w   = m_weights.count("blk.0.ffn_norm.weight") > 0;
-            m_has_attn_post_norm = m_weights.count("blk.0.post_attention_norm.weight") > 0
-                                   && has_attn_norm_w && has_ffn_norm_w;
-            m_has_ffn_post_norm  = m_weights.count("blk.0.post_ffw_norm.weight") > 0 && has_ffn_norm_w;
+            const bool has_attn_norm_w = m_weights.count("blk.0.attn_norm.weight") > 0;
+            const bool has_ffn_norm_w = m_weights.count("blk.0.ffn_norm.weight") > 0;
+            m_has_attn_post_norm =
+                m_weights.count("blk.0.post_attention_norm.weight") > 0 && has_attn_norm_w && has_ffn_norm_w;
+            m_has_ffn_post_norm = m_weights.count("blk.0.post_ffw_norm.weight") > 0 && has_ffn_norm_w;
 
             // Compute effective pre-attn and pre-FFN norm key suffixes.
             // Standard: "attn_norm.weight" / "ffn_norm.weight".
@@ -156,7 +156,7 @@ public:
             }
             if (!has_ffn_norm_w) {
                 if (m_weights.count("blk.0.post_ffw_norm.weight") > 0) {
-                    m_ffn_norm_key = "post_ffw_norm.weight";        // exaone4
+                    m_ffn_norm_key = "post_ffw_norm.weight";  // exaone4
                 } else if (m_weights.count("blk.0.post_attention_norm.weight") > 0) {
                     m_ffn_norm_key = "post_attention_norm.weight";  // gpt-oss
                 }
@@ -491,8 +491,7 @@ private:
                          0,
                          {{"swapped", false}});
         }
-        auto out =
-            add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu}, ps({1, 1, T, m_n_embd}), f32);
+        auto out = add_op("GGML_OP_MUL_MAT", p + "ffn_out", {p + "ffn_down.weight", glu}, ps({1, 1, T, m_n_embd}), f32);
         if (has_ffn_bias) {
             out = add_bias(out, p + "ffn_down.bias", p + "ffn_out_b");
         }
@@ -631,8 +630,7 @@ private:
             add_weight(p + "ffn_gate_shexp.weight");
             add_weight(p + "ffn_up_shexp.weight");
             add_weight(p + "ffn_down_shexp.weight");
-            const int n_ff_s =
-                static_cast<int>(weight_tensor(p + "ffn_gate_shexp.weight").get_shape()[0]);
+            const int n_ff_s = static_cast<int>(weight_tensor(p + "ffn_gate_shexp.weight").get_shape()[0]);
             auto s_gate = add_op("GGML_OP_MUL_MAT",
                                  p + "shexp_gate",
                                  {p + "ffn_gate_shexp.weight", ffn_norm},
@@ -754,8 +752,7 @@ private:
     // Attention (softmax) scale for layer `il`. An explicit metadata scale wins; otherwise use
     // 1/sqrt(head_size(il)) so SWA and global layers each get the head-size-correct scale.
     float kq_scale(int il) const {
-        return m_attention_scale != 0.0f ? m_attention_scale
-                                         : 1.0f / std::sqrt(static_cast<float>(head_size(il)));
+        return m_attention_scale != 0.0f ? m_attention_scale : 1.0f / std::sqrt(static_cast<float>(head_size(il)));
     }
 
     // RoPE config for layer `il` (gemma4 SWA layers rope with a different freq_base / n_dims).
@@ -789,10 +786,10 @@ private:
     float m_rope_freq_base_swa = 0.0f;
     int m_swa_layer_pattern = 2;
     std::vector<int32_t> m_swa_layer_flags;  // gemma4: per-layer SWA flags (1=SWA, 0=global)
-    int m_n_embd_per_layer = 0;   // gemma4: per-layer embedding projection dimension
-    int m_shared_kv_layers = 0;   // gemma4: N trailing layers that share KV from earlier layers
-    int m_head_size_swa = 0;      // gemma4: head size for SWA layers (differs from global)
-    int m_rope_dim_swa = 0;       // gemma4: rope dims for SWA layers
+    int m_n_embd_per_layer = 0;              // gemma4: per-layer embedding projection dimension
+    int m_shared_kv_layers = 0;              // gemma4: N trailing layers that share KV from earlier layers
+    int m_head_size_swa = 0;                 // gemma4: head size for SWA layers (differs from global)
+    int m_rope_dim_swa = 0;                  // gemma4: rope dims for SWA layers
     RopeConfig m_rope_config_swa{};
     int m_rope_op_case = ROPE_OP_CASE_NEOX;
 
@@ -931,11 +928,8 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
                                   f32);
 
         // Sum token embd + projection, scale by 1/sqrt(2)
-        auto pe_sum = add_op("GGML_OP_ADD",
-                             "pe_sum",
-                             {proj_normed, pe_tok},
-                             ps({1, m_n_layer, T, m_n_embd_per_layer}),
-                             f32);
+        auto pe_sum =
+            add_op("GGML_OP_ADD", "pe_sum", {proj_normed, pe_tok}, ps({1, m_n_layer, T, m_n_embd_per_layer}), f32);
         const float inv_sqrt2 = 1.0f / std::sqrt(2.0f);
         add_op("GGML_OP_SCALE",
                "per_layer_embd",
@@ -953,9 +947,12 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
     if (m_shared_kv_layers > 0) {
         for (int i = n_own_kv - 1; i >= 0; --i) {
             bool i_is_swa = layer_is_swa(i);
-            if (anchor_swa < 0 && i_is_swa)   anchor_swa    = i;
-            if (anchor_global < 0 && !i_is_swa) anchor_global = i;
-            if (anchor_swa >= 0 && anchor_global >= 0) break;
+            if (anchor_swa < 0 && i_is_swa)
+                anchor_swa = i;
+            if (anchor_global < 0 && !i_is_swa)
+                anchor_global = i;
+            if (anchor_swa >= 0 && anchor_global >= 0)
+                break;
         }
     }
 
@@ -1074,7 +1071,8 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         int anchor_il = il;
         if (!has_own_kv) {
             anchor_il = is_swa_layer ? anchor_swa : anchor_global;
-            if (anchor_il < 0) anchor_il = n_own_kv - 1;  // fallback
+            if (anchor_il < 0)
+                anchor_il = n_own_kv - 1;  // fallback
         }
         const std::string kc = "cache_k_l" + std::to_string(anchor_il);
         const std::string vc = "cache_v_l" + std::to_string(anchor_il);
@@ -1121,9 +1119,19 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
                 // Slice the head-size dimension to head_size_l (op_case=105).
                 const ov::PartialShape k_slice_shape = ps({1, T, n_head_kv_l, head_size_l});
                 const ov::PartialShape v_slice_shape = ps({1, T, n_head_kv_l, head_size_l});
-                k = add_op("GGML_OP_VIEW", p + "k_hslice", {kc}, k_slice_shape, ov::element::f16, 105,
+                k = add_op("GGML_OP_VIEW",
+                           p + "k_hslice",
+                           {kc},
+                           k_slice_shape,
+                           ov::element::f16,
+                           105,
                            {{"head_size", int64_t(head_size_l)}});
-                v = add_op("GGML_OP_VIEW", p + "v_hslice", {vc}, v_slice_shape, ov::element::f16, 105,
+                v = add_op("GGML_OP_VIEW",
+                           p + "v_hslice",
+                           {vc},
+                           v_slice_shape,
+                           ov::element::f16,
+                           105,
                            {{"head_size", int64_t(head_size_l)}});
             } else {
                 k = kc;
@@ -1196,9 +1204,9 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
 
         // Hybrid MoE: lead layers (il < m_n_dense_lead) are always dense regardless of m_is_moe.
         const bool is_moe_layer = m_is_moe && (il >= m_n_dense_lead);
-        std::string down = is_moe_layer  ? build_moe_ffn(p, ffn_norm, T)
-                           : m_is_geglu  ? build_geglu_ffn(p, ffn_norm, T)
-                                         : build_dense_ffn(p, ffn_norm, T);
+        std::string down = is_moe_layer ? build_moe_ffn(p, ffn_norm, T)
+                           : m_is_geglu ? build_geglu_ffn(p, ffn_norm, T)
+                                        : build_dense_ffn(p, ffn_norm, T);
         // MiniCPM scales the FFN sublayer output before the residual add.
         if (m_residual_scale != 1.0f) {
             down = scale(down, m_residual_scale, p + "ffn_out_scaled");
@@ -1254,15 +1262,13 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
             gated = add_op("GGML_UNARY_OP_GELU", p + "inp_gate_gelu", {gated}, ps({1, 1, T, m_n_embd_per_layer}), f32);
 
             // elementwise multiply by per-layer slice
-            auto mul_pe = add_op("GGML_OP_MUL", p + "pe_mul", {gated, pl_slice_used}, ps({1, 1, T, m_n_embd_per_layer}), f32);
+            auto mul_pe =
+                add_op("GGML_OP_MUL", p + "pe_mul", {gated, pl_slice_used}, ps({1, 1, T, m_n_embd_per_layer}), f32);
 
             // project back to n_embd
             add_weight(p + "proj.weight");
-            auto pe_proj = add_op("GGML_OP_MUL_MAT",
-                                  p + "pe_proj",
-                                  {p + "proj.weight", mul_pe},
-                                  ps({1, 1, T, m_n_embd}),
-                                  f32);
+            auto pe_proj =
+                add_op("GGML_OP_MUL_MAT", p + "pe_proj", {p + "proj.weight", mul_pe}, ps({1, 1, T, m_n_embd}), f32);
 
             // post-norm + residual add
             pe_proj = rms_norm(pe_proj, p + "post_norm.weight", p + "pe_post_norm");
@@ -1272,7 +1278,11 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         // Gemma4: per-layer output scale (layer_output_scale.weight is a scalar [1]).
         if (m_weights.count(p + "layer_output_scale.weight")) {
             add_named_weight(p + "layer_output_scale.weight");
-            cur = add_op("GGML_OP_MUL", p + "scaled_out", {cur, p + "layer_output_scale.weight"}, m_tensor_shapes.at(cur), f32);
+            cur = add_op("GGML_OP_MUL",
+                         p + "scaled_out",
+                         {cur, p + "layer_output_scale.weight"},
+                         m_tensor_shapes.at(cur),
+                         f32);
         }
     }
 
@@ -1306,19 +1316,19 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
 // checked against the reference (native llama.cpp / HF) on a real checkpoint. Safe to rely on.
 const std::set<std::string>& verified_archs() {
     static const std::set<std::string> archs = {
-        "llama",          // llama-2 / llama-3
-        "qwen2",          // qwen2 / qwen2.5
+        "llama",  // llama-2 / llama-3
+        "qwen2",  // qwen2 / qwen2.5
         "qwen3",
-        "phi3",           // phi-3 (fused QKV)
-        "minicpm",        // NORMAL rope + scalar scales
+        "phi3",     // phi-3 (fused QKV)
+        "minicpm",  // NORMAL rope + scalar scales
         "hunyuan-dense",
-        "olmoe",          // OLMoE 1B-7B (MoE)
-        "qwen3moe",       // Qwen3 MoE: same topology as olmoe
-        "gpt-oss",        // MoE + sinks + SWA
-        "gemma",          // Gemma 2B / 7B
-        "gemma2",         // Gemma 2: post-norms + attention soft-cap
-        "gemma3",         // Gemma 3: post-norms + final logit soft-cap
-        "gemma4",         // Gemma 4: SWA, per-layer embeddings, shared KV
+        "olmoe",     // OLMoE 1B-7B (MoE)
+        "qwen3moe",  // Qwen3 MoE: same topology as olmoe
+        "gpt-oss",   // MoE + sinks + SWA
+        "gemma",     // Gemma 2B / 7B
+        "gemma2",    // Gemma 2: post-norms + attention soft-cap
+        "gemma3",    // Gemma 3: post-norms + final logit soft-cap
+        "gemma4",    // Gemma 4: SWA, per-layer embeddings, shared KV
     };
     return archs;
 }
@@ -1330,20 +1340,20 @@ const std::set<std::string>& verified_archs() {
 const std::set<std::string>& experimental_archs() {
     static const std::set<std::string> archs = {
         // H2 2025: dense
-        "llama-embed",    // Bidirectional LLaMA (embedding, no causal mask)
-        "exaone4",        // EXAONE 4.0: NEOX rope, post-norms (attn+ffn)
-        "plamo3",         // PLaMo-3: NEOX rope, post-norms (attn+ffn)
-        "smollm3",        // SmolLM3: NORMAL rope + SWA
+        "llama-embed",  // Bidirectional LLaMA (embedding, no causal mask)
+        "exaone4",      // EXAONE 4.0: NEOX rope, post-norms (attn+ffn)
+        "plamo3",       // PLaMo-3: NEOX rope, post-norms (attn+ffn)
+        "smollm3",      // SmolLM3: NORMAL rope + SWA
         // H2 2025: MoE
-        "hunyuan-moe",    // Hunyuan MoE: NEOX rope, MoE routing, QK-norm
-        "glm4moe",        // GLM 4.5 MoE: NEOX rope, 1 dense lead layer, MoE + attn post-norm
-        "exaone-moe",     // EXAONE MoE: NEOX rope, SWA + MoE, shared expert
-        "minimax-m2",     // Minimax M2: NEOX rope, pure MoE
-        "ernie4_5-moe",   // Ernie 4.5 MoE: NORMAL rope, dense lead layers + MoE stride
-        "bailingmoe2",    // BailingMoe V2: NEOX rope, MoE + shared expert + QK-norm
+        "hunyuan-moe",   // Hunyuan MoE: NEOX rope, MoE routing, QK-norm
+        "glm4moe",       // GLM 4.5 MoE: NEOX rope, 1 dense lead layer, MoE + attn post-norm
+        "exaone-moe",    // EXAONE MoE: NEOX rope, SWA + MoE, shared expert
+        "minimax-m2",    // Minimax M2: NEOX rope, pure MoE
+        "ernie4_5-moe",  // Ernie 4.5 MoE: NORMAL rope, dense lead layers + MoE stride
+        "bailingmoe2",   // BailingMoe V2: NEOX rope, MoE + shared expert + QK-norm
         // 2026: dense
-        "maincoder",      // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
-        "mistral3",       // Ministral-3B: NORMAL rope, dense
+        "maincoder",  // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
+        "mistral3",   // Ministral-3B: NORMAL rope, dense
         // 2026: MoE
         "mellum",         // JetBrains Mellum: NEOX rope, pure MoE
         "deepseek2-ocr",  // DeepSeekOCR: NEOX rope, dense lead layers + MoE

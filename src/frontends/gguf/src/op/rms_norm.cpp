@@ -1,13 +1,13 @@
+#include "openvino/decompositions/rms_norm.hpp"
+
 #include <memory>
 
+#include "node_context.hpp"
+#include "op_table.hpp"
 #include "openvino/core/node_output.hpp"
-#include "openvino/decompositions/rms_norm.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/pass/node_registry.hpp"
-
-#include "../node_context.hpp"
-#include "../op_table.hpp"
-#include "../utils.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

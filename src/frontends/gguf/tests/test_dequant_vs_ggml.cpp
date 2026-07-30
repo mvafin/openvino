@@ -15,14 +15,13 @@
 // Tolerance: ggml stores K-quant scales as f16 and the dequant subgraph runs in f16,
 // so allow ~3e-3 (matching llama.cpp's MAX_QUANTIZATION_TOTAL_ERROR-class thresholds).
 
-#include <gtest/gtest.h>
-
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "gtest/gtest.h"
 #include "op_test_utils.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/result.hpp"
@@ -156,16 +155,18 @@ TEST_P(FaithfulDequantVsGGML, MatchesGgmlToFloat) {
     for (size_t r = 0; r < kRows; ++r) {
         c.dq(qbytes.data() + r * bytes_per_row, kCols, ours.data() + r * kCols);
     }
-    EXPECT_LE(max_abs_diff(ours, ref), 3e-3f)
-        << c.stem << ": faithful per-row dequant diverges from ggml to_float";
+    EXPECT_LE(max_abs_diff(ours, ref), 3e-3f) << c.stem << ": faithful per-row dequant diverges from ggml to_float";
 }
 
-INSTANTIATE_TEST_SUITE_P(FaithfulKQuant,
-                         FaithfulDequantVsGGML,
-                         ::testing::Values(FaithfulCase{"q4_k", GGUF_TYPE_Q4_K, ov::frontend::gguf::dequant_row_q4_k_f32_for_test},
-                                           FaithfulCase{"q5_k", GGUF_TYPE_Q5_K, ov::frontend::gguf::dequant_row_q5_k_f32_for_test},
-                                           FaithfulCase{"q6_k", GGUF_TYPE_Q6_K, ov::frontend::gguf::dequant_row_q6_k_f32_for_test}),
-                         [](const ::testing::TestParamInfo<FaithfulCase>& i) { return std::string(i.param.stem); });
+INSTANTIATE_TEST_SUITE_P(
+    FaithfulKQuant,
+    FaithfulDequantVsGGML,
+    ::testing::Values(FaithfulCase{"q4_k", GGUF_TYPE_Q4_K, ov::frontend::gguf::dequant_row_q4_k_f32_for_test},
+                      FaithfulCase{"q5_k", GGUF_TYPE_Q5_K, ov::frontend::gguf::dequant_row_q5_k_f32_for_test},
+                      FaithfulCase{"q6_k", GGUF_TYPE_Q6_K, ov::frontend::gguf::dequant_row_q6_k_f32_for_test}),
+    [](const ::testing::TestParamInfo<FaithfulCase>& i) {
+        return std::string(i.param.stem);
+    });
 
 INSTANTIATE_TEST_SUITE_P(AllQuantTypes,
                          DequantVsGGML,

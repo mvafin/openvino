@@ -16,9 +16,6 @@
 
 #pragma once
 
-#include <cnpy.h>
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -28,7 +25,9 @@
 #include <string>
 #include <vector>
 
+#include "cnpy.h"
 #include "common_test_utils/file_utils.hpp"
+#include "gtest/gtest.h"
 #include "op_table.hpp"
 #include "openvino/core/model.hpp"
 #include "openvino/core/partial_shape.hpp"

@@ -3,15 +3,15 @@
 //
 
 #include <memory>
-#include <openvino/core/node_output.hpp>
-#include <openvino/op/elu.hpp>
-#include <openvino/op/relu.hpp>
-#include <openvino/op/sigmoid.hpp>
-#include <openvino/op/tanh.hpp>
 
-#include "../node_context.hpp"
-#include "../op_table.hpp"
-#include "../utils.hpp"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "openvino/core/node_output.hpp"
+#include "openvino/op/elu.hpp"
+#include "openvino/op/relu.hpp"
+#include "openvino/op/sigmoid.hpp"
+#include "openvino/op/tanh.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

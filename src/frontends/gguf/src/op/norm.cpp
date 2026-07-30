@@ -3,13 +3,13 @@
 //
 
 #include <memory>
-#include <openvino/core/node_output.hpp>
-#include <openvino/op/constant.hpp>
-#include <openvino/op/mvn.hpp>
 
-#include "../node_context.hpp"
-#include "../op_table.hpp"
-#include "../utils.hpp"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "openvino/core/node_output.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/mvn.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

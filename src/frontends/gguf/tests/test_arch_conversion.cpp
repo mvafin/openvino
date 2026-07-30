@@ -32,8 +32,6 @@
 // at build or test time, and a CI-time generator would make OV precommit red for upstream churn
 // unrelated to the PR under test.  See docs/testing_architecture.md.
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -46,9 +44,10 @@
 
 #include "common_test_utils/common_utils.hpp"
 #include "common_test_utils/file_utils.hpp"
+#include "gtest/gtest.h"
+#include "op_test_utils.hpp"
 #include "openvino/frontend/gguf/frontend.hpp"
 #include "openvino/util/file_util.hpp"
-#include "op_test_utils.hpp"
 
 using namespace ov_gguf_test;
 
@@ -153,28 +152,17 @@ struct Fingerprint {
 
 const std::map<std::string, Fingerprint>& fingerprints() {
     static const std::map<std::string, Fingerprint> fp{
-        {"bailingmoe2-moe.gguf.hdr", {457, 10}},
-        {"ernie4_5-moe-moe.gguf.hdr", {431, 10}},
-        {"exaone4-dense.gguf.hdr", {406, 11}},
-        {"gemma-dense.gguf.hdr", {349, 10}},
-        {"gemma2-dense.gguf.hdr", {403, 11}},
-        {"glm4moe-moe.gguf.hdr", {469, 10}},
-        {"gpt-oss-moe.gguf.hdr", {562, 11}},
-        {"hunyuan-dense-dense.gguf.hdr", {400, 10}},
-        {"hunyuan-moe-moe.gguf.hdr", {518, 10}},
-        {"llama-dense.gguf.hdr", {384, 10}},
-        {"llama-moe.gguf.hdr", {490, 10}},
-        {"maincoder-dense.gguf.hdr", {416, 10}},
-        {"minicpm-dense.gguf.hdr", {382, 10}},
-        {"minicpm-moe.gguf.hdr", {488, 10}},
-        {"minimax-m2-moe.gguf.hdr", {518, 10}},
-        {"mistral3-dense.gguf.hdr", {384, 10}},
-        {"mistral3-moe.gguf.hdr", {490, 10}},
-        {"olmoe-moe.gguf.hdr", {518, 10}},
-        {"phi3-dense.gguf.hdr", {364, 10}},
-        {"qwen2-dense.gguf.hdr", {352, 10}},
-        {"qwen3-dense.gguf.hdr", {400, 10}},
-        {"qwen3moe-moe.gguf.hdr", {534, 10}},
+        {"bailingmoe2-moe.gguf.hdr", {457, 10}}, {"ernie4_5-moe-moe.gguf.hdr", {431, 10}},
+        {"exaone4-dense.gguf.hdr", {406, 11}},   {"gemma-dense.gguf.hdr", {349, 10}},
+        {"gemma2-dense.gguf.hdr", {403, 11}},    {"glm4moe-moe.gguf.hdr", {469, 10}},
+        {"gpt-oss-moe.gguf.hdr", {562, 11}},     {"hunyuan-dense-dense.gguf.hdr", {400, 10}},
+        {"hunyuan-moe-moe.gguf.hdr", {518, 10}}, {"llama-dense.gguf.hdr", {384, 10}},
+        {"llama-moe.gguf.hdr", {490, 10}},       {"maincoder-dense.gguf.hdr", {416, 10}},
+        {"minicpm-dense.gguf.hdr", {382, 10}},   {"minicpm-moe.gguf.hdr", {488, 10}},
+        {"minimax-m2-moe.gguf.hdr", {518, 10}},  {"mistral3-dense.gguf.hdr", {384, 10}},
+        {"mistral3-moe.gguf.hdr", {490, 10}},    {"olmoe-moe.gguf.hdr", {518, 10}},
+        {"phi3-dense.gguf.hdr", {364, 10}},      {"qwen2-dense.gguf.hdr", {352, 10}},
+        {"qwen3-dense.gguf.hdr", {400, 10}},     {"qwen3moe-moe.gguf.hdr", {534, 10}},
         {"smollm3-dense.gguf.hdr", {368, 10}},
     };
     return fp;
@@ -246,7 +234,7 @@ TEST_P(GGUFArchConversion, MatchesManifestExpectation) {
         // XPASS is a failure on purpose: a `broken` entry that starts converting must be promoted,
         // not left to accumulate as a permanent excuse.
         ASSERT_FALSE(model) << fixture.header_file << " is marked `broken` but now converts. The defect is fixed: "
-                           << "change its manifest line to `convert` and add its fingerprint to fingerprints().";
+                            << "change its manifest line to `convert` and add its fingerprint to fingerprints().";
         // Not an accept-list rejection -- that is what makes it a defect rather than an unsupported
         // architecture.
         EXPECT_EQ(error.find("native GGUF builder does not support architecture"), std::string::npos)

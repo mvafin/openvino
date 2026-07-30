@@ -4,17 +4,17 @@
 // Element-wise unary math ops: LOG, SIN, COS, GELU_QUICK.
 
 #include <memory>
-#include <openvino/core/node_output.hpp>
-#include <openvino/op/constant.hpp>
-#include <openvino/op/cos.hpp>
-#include <openvino/op/log.hpp>
-#include <openvino/op/multiply.hpp>
-#include <openvino/op/sigmoid.hpp>
-#include <openvino/op/sin.hpp>
 
-#include "../node_context.hpp"
-#include "../op_table.hpp"
-#include "../utils.hpp"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "openvino/core/node_output.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/cos.hpp"
+#include "openvino/op/log.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/sigmoid.hpp"
+#include "openvino/op/sin.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {

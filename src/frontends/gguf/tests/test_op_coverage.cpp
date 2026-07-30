@@ -18,13 +18,12 @@
 // A gtest --gtest_filter that excludes op tests would leave the record incomplete and the gate would
 // fire spuriously, so it only asserts when the full suite ran (no filter narrowing in effect).
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <set>
 #include <string>
 #include <vector>
 
+#include "gtest/gtest.h"
 #include "op_table.hpp"
 #include "op_test_utils.hpp"
 
@@ -91,7 +90,11 @@ const auto* const op_coverage_env = ::testing::AddGlobalTestEnvironment(new OpCo
 // for an empty op table and fail confusingly otherwise; this makes the wiring itself testable.
 TEST(GGUFOpCoverage, RecordIsPopulated) {
     // This test's own decoder construction guarantees at least one entry regardless of test order.
-    SingleOpBuilder().op("GGML_OP_ADD").input("a", ov::element::f32, {1}).output("out", ov::element::f32, {1}).decoder();
+    SingleOpBuilder()
+        .op("GGML_OP_ADD")
+        .input("a", ov::element::f32, {1})
+        .output("out", ov::element::f32, {1})
+        .decoder();
     EXPECT_NE(converted_op_types().count("GGML_OP_ADD"), 0u);
 }
 

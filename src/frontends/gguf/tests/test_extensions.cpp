@@ -20,18 +20,18 @@
 #include <algorithm>
 #include <set>
 #include <stdexcept>
-#include <openvino/op/abs.hpp>
-#include <openvino/op/multiply.hpp>
-#include <openvino/op/negative.hpp>
 
 #include "op_test_utils.hpp"
 #include "openvino/frontend/extension/conversion.hpp"
 #include "openvino/frontend/extension/decoder_transformation.hpp"
 #include "openvino/frontend/gguf/make_stateful.hpp"
 #include "openvino/frontend/gguf/set_rows_op.hpp"
+#include "openvino/op/abs.hpp"
 #include "openvino/op/assign.hpp"
 #include "openvino/op/concat.hpp"
 #include "openvino/op/gather.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/negative.hpp"
 #include "openvino/op/read_value.hpp"
 #include "openvino/op/scatter_update.hpp"
 
@@ -230,8 +230,7 @@ namespace {
 // converting either way must yield the same stateless inputs.
 class SplitIoDecoder : public SingleOpDecoder {
 public:
-    SplitIoDecoder(const SingleOpDecoder& base, const std::set<std::string>& as_extra)
-        : SingleOpDecoder(base) {
+    SplitIoDecoder(const SingleOpDecoder& base, const std::set<std::string>& as_extra) : SingleOpDecoder(base) {
         for (const auto& name : as_extra) {
             auto it = m_split_main.find(name);
             if (it == m_split_main.end()) {
@@ -282,8 +281,8 @@ TEST(GGUFExtensions, StatelessIoIsExactlyTheDecoderInputs) {
     // The same op, with "cache" and "idx" presented as auxiliary inputs the way the cgraph decoder
     // presents its extras. Same graph inputs -> the two decoders agree.
     FrontEnd fe;
-    auto split = std::make_shared<SplitIoDecoder>(
-        *std::dynamic_pointer_cast<SingleOpDecoder>(base.decoder()), std::set<std::string>{"cache", "idx"});
+    auto split = std::make_shared<SplitIoDecoder>(*std::dynamic_pointer_cast<SingleOpDecoder>(base.decoder()),
+                                                  std::set<std::string>{"cache", "idx"});
     auto via_extra = fe.convert(fe.load(std::static_pointer_cast<GgufDecoder>(split)));
     EXPECT_EQ(input_names(via_extra), declared);
 }

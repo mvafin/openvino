@@ -1,31 +1,31 @@
 #include <cstdint>
 #include <memory>
-#include <openvino/op/add.hpp>
-#include <openvino/op/broadcast.hpp>
-#include <openvino/op/concat.hpp>
-#include <openvino/op/constant.hpp>
-#include <openvino/op/convert.hpp>
-#include <openvino/op/convert_like.hpp>
-#include <openvino/op/divide.hpp>
-#include <openvino/op/exp.hpp>
-#include <openvino/op/matmul.hpp>
-#include <openvino/op/maximum.hpp>
-#include <openvino/op/multiply.hpp>
-#include <openvino/op/reduce_max.hpp>
-#include <openvino/op/reduce_sum.hpp>
-#include <openvino/op/reshape.hpp>
-#include <openvino/op/scaled_dot_product_attention.hpp>
-#include <openvino/op/slice.hpp>
-#include <openvino/op/softmax.hpp>
-#include <openvino/op/subtract.hpp>
-#include <openvino/op/tanh.hpp>
-#include <openvino/op/transpose.hpp>
-#include <openvino/op/unsqueeze.hpp>
 #include <string>
 
-#include "../node_context.hpp"
-#include "../op_table.hpp"
-#include "../utils.hpp"
+#include "node_context.hpp"
+#include "op_table.hpp"
+#include "openvino/op/add.hpp"
+#include "openvino/op/broadcast.hpp"
+#include "openvino/op/concat.hpp"
+#include "openvino/op/constant.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/convert_like.hpp"
+#include "openvino/op/divide.hpp"
+#include "openvino/op/exp.hpp"
+#include "openvino/op/matmul.hpp"
+#include "openvino/op/maximum.hpp"
+#include "openvino/op/multiply.hpp"
+#include "openvino/op/reduce_max.hpp"
+#include "openvino/op/reduce_sum.hpp"
+#include "openvino/op/reshape.hpp"
+#include "openvino/op/scaled_dot_product_attention.hpp"
+#include "openvino/op/slice.hpp"
+#include "openvino/op/softmax.hpp"
+#include "openvino/op/subtract.hpp"
+#include "openvino/op/tanh.hpp"
+#include "openvino/op/transpose.hpp"
+#include "openvino/op/unsqueeze.hpp"
+#include "utils.hpp"
 
 namespace ov {
 namespace frontend {
@@ -51,8 +51,8 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
     ov::Output<ov::Node> mask_sliced, res;
     // Pick the layer flavor's mask. The cgraph decoder answers the "is_swa" attribute directly; the
     // builder identifies it by the mask input's name (self_kq_mask_swa).
-    const bool is_swa = context.get_attribute<bool>("is_swa", false) ||
-                        context.get_input_names()[3].find("swa") != std::string::npos;
+    const bool is_swa =
+        context.get_attribute<bool>("is_swa", false) || context.get_input_names()[3].find("swa") != std::string::npos;
     const std::string mask_name = is_swa ? "KQ_mask_swa_sliced" : "KQ_mask_sliced";
     if (context.has_input(mask_name)) {
         mask_sliced = context.get_input(mask_name);
@@ -88,16 +88,14 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
         if (factor > 1 && num_heads_kv > 1) {
             // Insert the repeat axis right after the head axis, broadcast it to `factor`, then fold
             // it back into the head axis: [.., n_head_kv, ..] -> [.., n_head_kv * factor, ..].
-            auto unsqueeze_axes =
-                ov::op::v0::Constant::create(ov::element::i64, Shape{}, {(int64_t)head_axis + 1});
+            auto unsqueeze_axes = ov::op::v0::Constant::create(ov::element::i64, Shape{}, {(int64_t)head_axis + 1});
             auto kv_unsqueezed = std::make_shared<ov::op::v0::Unsqueeze>(kv, unsqueeze_axes);
             std::vector<int64_t> bcast(5, 1);
             bcast[head_axis + 1] = factor;
             auto kv_broadcast_shape = ov::op::v0::Constant::create(ov::element::i64, {5}, bcast);
             // special_zero keeps the leading dims (incl. the dynamic token axis) as-is.
-            std::vector<int64_t> new_shape = ggml_natural
-                                                 ? std::vector<int64_t>{0, 0, num_heads, head_size}
-                                                 : std::vector<int64_t>{0, num_heads, -1, head_size};
+            std::vector<int64_t> new_shape = ggml_natural ? std::vector<int64_t>{0, 0, num_heads, head_size}
+                                                          : std::vector<int64_t>{0, num_heads, -1, head_size};
             auto new_kv_shape = ov::op::v0::Constant::create(ov::element::i64, {4}, new_shape);
             kv = std::make_shared<ov::op::v3::Broadcast>(kv_unsqueezed,
                                                          kv_broadcast_shape,
