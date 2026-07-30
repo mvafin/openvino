@@ -71,6 +71,9 @@
 - 'src/frontends/common/include/openvino/frontend/extension.hpp'
 - 'src/frontends/common/include/openvino/frontend/extension/**/*'
 
+'category: GGUF FE':
+- 'src/frontends/gguf/**/*'
+
 'category: GPU':
 - 'src/plugins/intel_gpu/**/*'
 - 'thirdparty/ocl/**/*'

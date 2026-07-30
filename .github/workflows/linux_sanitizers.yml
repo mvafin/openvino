@@ -349,6 +349,13 @@ jobs:
           ${INSTALL_TEST_DIR}/ov_conditional_compilation_tests --gtest_print_time=1 \
                 --gtest_output=xml:${INSTALL_TEST_DIR}/TEST-ConditionalCompilation.xml
 
+      - name: GGUF frontend tests
+        if: ${{ !cancelled() }}
+        run: |
+          source ${INSTALL_DIR}/setupvars.sh
+          ${INSTALL_TEST_DIR}/ov_gguf_frontend_tests --gtest_print_time=1 \
+                --gtest_output=xml:${INSTALL_TEST_DIR}/TEST-GGUFFrontend.xml
+
       - name: IR frontend tests
         if: ${{ !cancelled() }}
         run: |
