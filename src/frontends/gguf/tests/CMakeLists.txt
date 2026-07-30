@@ -68,8 +68,10 @@ set(FRONTEND_SRCS
 )
 
 set(TEST_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_arch_conversion.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_dequant_vs_ggml.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_extensions.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_op_coverage.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_ops.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_weights.cpp"
 )
@@ -99,12 +101,16 @@ ov_add_test_target(
         OV UNIT GGUF_FE
 )
 
-# Install the .npy reference data next to the test binary (found via getExecutableDirectory()).
+# Install the reference data next to the test binary (found via getExecutableDirectory()):
+# *.npy op/dequant references, plus the per-architecture GGUF header fixtures and their manifest.
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/test_data"
         DESTINATION tests
         COMPONENT tests
         EXCLUDE_FROM_ALL
-        FILES_MATCHING PATTERN "*.npy")
+        FILES_MATCHING
+            PATTERN "*.npy"
+            PATTERN "*.gguf.hdr"
+            PATTERN "manifest.txt")
 
 # Sources compiled into the binary: resolve the visibility macros to local definitions, not dllimport.
 target_compile_definitions(${TARGET_NAME} PRIVATE openvino_gguf_frontend_EXPORTS)
