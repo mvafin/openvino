@@ -17,6 +17,9 @@
 //   ov::frontend::gguf::pass::MakeStateful here, which consumes those SetRows ops before the
 //   default stateless lowering ever sees them.
 
+#include <algorithm>
+#include <set>
+#include <stdexcept>
 #include <openvino/op/abs.hpp>
 #include <openvino/op/multiply.hpp>
 #include <openvino/op/negative.hpp>
@@ -28,6 +31,7 @@
 #include "openvino/frontend/gguf/set_rows_op.hpp"
 #include "openvino/op/assign.hpp"
 #include "openvino/op/concat.hpp"
+#include "openvino/op/gather.hpp"
 #include "openvino/op/read_value.hpp"
 #include "openvino/op/scatter_update.hpp"
 
@@ -152,6 +156,13 @@ TEST(GGUFExtensions, NoExtensionYieldsStatelessCache) {
     // cache is still an input, cache_out still an output.
     EXPECT_EQ(model->get_parameters().size(), 3);
     EXPECT_EQ(model->get_results().size(), 1);
+
+    // No beam_idx: it is a stateful-cache concept, so the stateless graph must not carry one. This is
+    // what lets the native builder and a llama.cpp cgraph decoder agree on their stateless IO -- a
+    // decoder-declared beam_idx would be an input with no consumer here.
+    for (const auto& p : model->get_parameters()) {
+        EXPECT_NE(p->get_friendly_name(), "beam_idx");
+    }
 }
 
 // Registering MakeStateful as a DecoderTransformationExtension swaps the execution mode: the same
@@ -169,10 +180,22 @@ TEST(GGUFExtensions, MakeStatefulExtensionYieldsStatefulCache) {
     EXPECT_EQ(count_ops_of_type(model, ov::op::v3::ScatterUpdate::get_type_info_static()), 0);
     EXPECT_EQ(count_ops_of_type(model, SetRows::get_type_info_static()), 0);
 
-    // The cache left the model's IO entirely: only data + idx remain as inputs, and the cache
-    // Result became the Assign sink.
-    EXPECT_EQ(model->get_parameters().size(), 2);
+    // The cache left the model's IO entirely: data + idx remain, and beam_idx was ADDED by the pass
+    // (see below). The cache Result became the Assign sink.
+    EXPECT_EQ(model->get_parameters().size(), 3);
     EXPECT_EQ(model->get_results().size(), 0);
+
+    // beam_idx belongs to the state, so the pass creates it -- no decoder declares it. Its Gather on
+    // the past is what CPU's stateful_sdpa_fusion matches.
+    auto beam_idx = std::find_if(model->get_parameters().begin(),
+                                 model->get_parameters().end(),
+                                 [](const std::shared_ptr<ov::op::v0::Parameter>& p) {
+                                     return p->get_friendly_name() == "beam_idx";
+                                 });
+    ASSERT_NE(beam_idx, model->get_parameters().end());
+    EXPECT_EQ((*beam_idx)->get_element_type(), ov::element::i32);
+    EXPECT_EQ((*beam_idx)->get_partial_shape(), ov::PartialShape({-1}));
+    EXPECT_EQ(count_ops_of_type(model, ov::op::v8::Gather::get_type_info_static()), 1);
 
     // The Variable is named after the cache input and its append axis is dynamic (the state grows
     // by this step's rows on every inference), the rest keeping the cache's declared dims.
@@ -195,6 +218,87 @@ TEST(GGUFExtensions, MakeStatefulSkipsNamedCache) {
     EXPECT_EQ(count_ops_of_type(model, ov::op::v3::ScatterUpdate::get_type_info_static()), 1);
     EXPECT_EQ(model->get_parameters().size(), 3);
     EXPECT_EQ(model->get_results().size(), 1);
+}
+
+// ── the stateless IO contract: two decoders of one model must agree ──────────────────────────────
+
+namespace {
+
+// A decoder that routes a named subset of its inputs through get_model_extra_inputs() instead of
+// get_model_inputs(), which is the one structural difference between how the native .gguf builder
+// and the llama.cpp cgraph decoder present a model's IO. Both halves land in the same graph, so
+// converting either way must yield the same stateless inputs.
+class SplitIoDecoder : public SingleOpDecoder {
+public:
+    SplitIoDecoder(const SingleOpDecoder& base, const std::set<std::string>& as_extra)
+        : SingleOpDecoder(base) {
+        for (const auto& name : as_extra) {
+            auto it = m_split_main.find(name);
+            if (it == m_split_main.end()) {
+                throw std::runtime_error("SplitIoDecoder: no such input '" + name + "'");
+            }
+            m_split_extra[name] = it->second;
+            m_split_main.erase(it);
+        }
+    }
+
+    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const override {
+        return m_split_main;
+    }
+    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const override {
+        return m_split_extra;
+    }
+
+private:
+    // Seeded from the base decoder's inputs (member initializers run before the constructor body),
+    // then partitioned by that body.
+    std::map<std::string, std::shared_ptr<ov::Node>> m_split_main = SingleOpDecoder::get_model_inputs();
+    std::map<std::string, std::shared_ptr<ov::Node>> m_split_extra;
+};
+
+std::set<std::string> input_names(const std::shared_ptr<ov::Model>& model) {
+    std::set<std::string> names;
+    for (const auto& p : model->get_parameters()) {
+        names.insert(p->get_friendly_name());
+    }
+    return names;
+}
+
+}  // namespace
+
+// The frontend invents no inputs of its own: the stateless graph's inputs are exactly what the
+// decoder declared, however the decoder chose to split them between get_model_inputs() and
+// get_model_extra_inputs(). That split is the one structural difference between the native builder
+// and the llama.cpp cgraph decoder, so pinning it down here is half of "the two decoders produce the
+// same graph"; the other half -- that neither decoder declares an input the other cannot, beam_idx
+// being the case that got this wrong -- needs a real .gguf and lives in the model-level checks.
+TEST(GGUFExtensions, StatelessIoIsExactlyTheDecoderInputs) {
+    const std::set<std::string> declared{"data", "idx", "cache"};
+
+    auto base = kv_cache_write_builder();
+    auto via_main = base.build();
+    EXPECT_EQ(input_names(via_main), declared);
+
+    // The same op, with "cache" and "idx" presented as auxiliary inputs the way the cgraph decoder
+    // presents its extras. Same graph inputs -> the two decoders agree.
+    FrontEnd fe;
+    auto split = std::make_shared<SplitIoDecoder>(
+        *std::dynamic_pointer_cast<SingleOpDecoder>(base.decoder()), std::set<std::string>{"cache", "idx"});
+    auto via_extra = fe.convert(fe.load(std::static_pointer_cast<GgufDecoder>(split)));
+    EXPECT_EQ(input_names(via_extra), declared);
+}
+
+// And making the model stateful adds exactly one input, beam_idx, on top of that contract -- so the
+// stateful IO is a function of the pass, not of which decoder produced the stateless graph.
+TEST(GGUFExtensions, MakeStatefulAddsOnlyBeamIdx) {
+    auto stateless = input_names(kv_cache_write_builder().build());
+    auto stateful = input_names(kv_cache_write_builder().build_with_extensions(
+        {std::make_shared<ov::frontend::DecoderTransformationExtension>(pass::MakeStateful())}));
+
+    // The cache Parameter became a Variable, and beam_idx appeared.
+    stateless.erase("cache");
+    stateless.insert("beam_idx");
+    EXPECT_EQ(stateful, stateless);
 }
 
 // A DecoderTransformationExtension can hold any pass, not only the ones the frontend ships: here a

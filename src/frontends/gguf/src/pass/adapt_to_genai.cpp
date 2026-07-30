@@ -105,10 +105,14 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
     auto position_ids = make_shared<ov::op::v0::Parameter>(ov::element::i64, ov::PartialShape{-1, -1});
     name_output(position_ids, "position_ids");
 
-    // beam_idx already exists on the frontend model (i32 [D]); genai sets it via
-    // set_tensor("beam_idx"). Keep the existing Parameter so its wiring (if any) is preserved.
+    // beam_idx (i32 [D]) is added by the make-stateful pass, next to the Gather that reads it; genai
+    // sets it via set_tensor("beam_idx"). Keep that Parameter so its wiring is preserved. Its absence
+    // means the model is not stateful, which the genai contract requires.
     auto beam_idx = find_param(model, "beam_idx");
-    OPENVINO_ASSERT(beam_idx, "[gguf] AdaptToGenAI: frontend model is missing the 'beam_idx' input.");
+    OPENVINO_ASSERT(beam_idx,
+                    "[gguf] AdaptToGenAI: model has no 'beam_idx' input, so it is not stateful. "
+                    "Register a make-stateful transformation extension (e.g. "
+                    "ov::frontend::gguf::pass::MakeStateful) before converting.");
 
     // ---- token_len_per_seq = number of tokens in input_ids -> [1] ----
     // The token count is the ELEMENT COUNT of input_ids, not any single dimension of it. genai feeds

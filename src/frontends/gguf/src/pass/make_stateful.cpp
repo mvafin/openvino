@@ -75,8 +75,20 @@ int64_t resolve_append_axis(const ov::PartialShape& ps, const std::string& cache
 bool MakeStateful::run_on_model(const std::shared_ptr<ov::Model>& model) {
     // beam_idx reorders the past cache along the batch axis for beam search. With batch 1 /
     // beam_idx [0] the Gather is an identity, but emitting it is what lets CPU's
-    // stateful_sdpa_fusion match. Absent from the model -> no Gather (plain greedy decode).
+    // stateful_sdpa_fusion match.
+    //
+    // It belongs to the STATE, so this pass owns it: it is a beam-search index into an OpenVINO
+    // cache, which ggml has no equivalent of, so no decoder should declare it -- a decoder that did
+    // would give the stateless graph an input with no consumer, and the two decoders different
+    // stateless IO. Created here, next to its only consumer (the Gather below). A model that
+    // already has one (a caller that declared it, or a second run of this pass) keeps it.
     auto beam_idx = find_param(model, m_beam_idx_name);
+    const bool created_beam_idx = beam_idx == nullptr;
+    if (created_beam_idx) {
+        beam_idx = std::make_shared<ov::op::v0::Parameter>(ov::element::i32, ov::PartialShape{ov::Dimension()});
+        beam_idx->set_friendly_name(m_beam_idx_name);
+        beam_idx->output(0).set_names({m_beam_idx_name});
+    }
 
     // Only a SetRows writing into a model Parameter is a cache write; the rest (e.g. MoE routing
     // writes) are left to the default stateless lowering that runs after this pass. Collect first,
@@ -157,11 +169,8 @@ bool MakeStateful::run_on_model(const std::shared_ptr<ov::Model>& model) {
             true);
 
         // Reorder the past by beam_idx before appending, so each beam continues its own history.
-        ov::Output<ov::Node> past = read_value;
-        if (beam_idx) {
-            auto axis0 = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
-            past = std::make_shared<ov::op::v8::Gather>(read_value, beam_idx, axis0);
-        }
+        auto axis0 = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {0});
+        auto past = std::make_shared<ov::op::v8::Gather>(read_value, beam_idx, axis0);
         auto concat = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{past, new_rows}, axis);
         concat->set_friendly_name(set_rows->get_friendly_name());
         new_sinks.push_back(std::make_shared<ov::op::v6::Assign>(concat, var));
@@ -191,6 +200,11 @@ bool MakeStateful::run_on_model(const std::shared_ptr<ov::Model>& model) {
         model->remove_result(r);
     }
     model->add_sinks(new_sinks);
+    // Only now, having actually built the Gathers that read it -- so a pass that converted nothing
+    // adds no input.
+    if (created_beam_idx) {
+        model->add_parameters({beam_idx});
+    }
     for (const auto& p : params_to_remove) {
         model->remove_parameter(p);
     }

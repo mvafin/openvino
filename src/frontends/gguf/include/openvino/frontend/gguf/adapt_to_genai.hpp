@@ -18,7 +18,7 @@ namespace pass {
 /// The GGUF frontend emits a stateful decoder with the gguf IO contract:
 ///   inputs : inp_tokens [1,1,1,D] i32, inp_pos [1,1,1,D] i32, inp_out_ids [1,1,1,D] i32,
 ///            self_kq_mask [1,1,D,D] f32 (+ self_kq_mask_swa for gpt-oss SWA),
-///            token_len_per_seq [1] i64, beam_idx [D] i32
+///            token_len_per_seq [1] i64, plus beam_idx [D] i32 from the make-stateful pass
 ///   output : logits [1,1,seq,vocab]
 ///
 /// genai's StatefulLLMPipeline instead feeds:
@@ -29,8 +29,9 @@ namespace pass {
 /// This pass prepends a small subgraph that derives the gguf inputs from the genai inputs
 /// (the graph-level equivalent of the python prototype tests/genai_io_adapter.py), rewires
 /// the gguf Parameters to it, and reshapes the [1,1,seq,vocab] logits to [b,seq,vocab].
-/// The stateful KV cache (sinks) is preserved. beam_idx is kept as a live input (genai sets
-/// it) but is unused by the batch-1 stateful cache.
+/// The stateful KV cache (sinks) is preserved, as is beam_idx: this pass requires the model to
+/// already be stateful, and takes its beam_idx input (created by the make-stateful pass, next to
+/// the Gather that reads it) through unchanged, since genai sets that tensor itself.
 ///
 /// If the required gguf inputs are absent (e.g. the model is already in genai form), the
 /// pass is a no-op and returns false.

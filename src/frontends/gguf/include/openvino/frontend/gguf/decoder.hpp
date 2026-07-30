@@ -125,8 +125,10 @@ public:
     // yields a stateless graph; a caller that wants an OpenVINO KV cache registers
     // ov::frontend::gguf::pass::MakeStateful as a DecoderTransformationExtension.
 
-    // Auxiliary model-scope inputs (position IDs, KV-cache lengths, attention masks, beam_idx).
-    // A decoder that folds these into get_model_inputs() leaves this empty.
+    // Auxiliary model-scope inputs (position IDs, KV-cache lengths, attention masks). A decoder that
+    // folds these into get_model_inputs() leaves this empty. Note that beam_idx is not among them:
+    // it is a beam-search index into an OpenVINO state, which ggml has no counterpart for, so
+    // MakeStateful creates it rather than any decoder declaring it.
     virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const {
         return empty_node_map();
     }

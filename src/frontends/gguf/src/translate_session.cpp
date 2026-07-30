@@ -135,19 +135,14 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     const auto& gguf_model = std::dynamic_pointer_cast<InputModel>(input_model);
     std::shared_ptr<GgufDecoder> gguf_model_decoder = gguf_model->get_model_decoder();
 
-    // A declared input Parameter whose only consumer is created by a later normalization pass -- e.g.
-    // beam_idx, whose Gather a caller-registered stateful lowering emits in apply_transformations,
+    // An auxiliary input Parameter whose only consumer may be created by a later normalization pass,
     // after the unused-Parameter pruning below. Track them so pruning never drops one for lack of a
     // consumer at translate time. A pass that ends up not consuming one leaves it as a dangling
     // input, which later constant folding removes.
     std::set<ov::Node*> deferred_use_params;
 
     for (const auto& it : gguf_model_decoder->get_model_inputs()) {
-        auto p = std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second);
-        params.push_back(p);
-        if (p && it.first == "beam_idx") {
-            deferred_use_params.insert(p.get());
-        }
+        params.push_back(std::dynamic_pointer_cast<ov::op::v0::Parameter>(it.second));
         (*tensor_map)[it.first] = it.second;
     }
 
@@ -231,7 +226,7 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     ov::ParameterVector used_params;
     for (const auto& param : params) {
         // Keep a Parameter if it currently feeds something, OR if its consumer is created by a
-        // later normalization pass (e.g. beam_idx -> Gather in a stateful-lowering extension).
+        // later normalization pass.
         if (!param->output(0).get_target_inputs().empty() || deferred_use_params.count(param.get())) {
             used_params.push_back(param);
         }

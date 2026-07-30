@@ -826,12 +826,11 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
     if (m_has_swa) {
         add_input("self_kq_mask_swa", ov::element::f32, ps({1, 1, D, D}));
     }
-    // beam_idx: per-batch beam reorder index for the stateful KV cache. Used to gather the
-    // cache along the batch axis before the SET_ROWS concat, which is the exact
-    // ReadValue->Gather(beam_idx)->Concat->SDPA shape the CPU plugin's stateful_sdpa_fusion
-    // matches (so SDPA becomes the fused ScaledDotProductAttentionWithKVCache). With batch=1
-    // and beam_idx=[0] this is an identity reorder. Matches genai's create_cache.
-    add_input("beam_idx", i32, ps({D}));
+    // No beam_idx here. It is a beam-search cache-reorder index for an OpenVINO STATEFUL cache,
+    // which ggml has no equivalent of -- so the cgraph decoder does not produce one either, and a
+    // builder that declared it would give the two decoders different stateless IO. The pass that
+    // creates the state creates it (MakeStateful), because that is where its only consumer, the
+    // Gather on the past, is emitted.
 
     // KV-cache update index (consumed by SET_ROWS; unused in the stateful Concat branch).
     add_input("inp_kv_idx", i32, ps({1, 1, 1, D}));
