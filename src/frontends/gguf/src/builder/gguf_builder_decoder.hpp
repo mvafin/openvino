@@ -41,7 +41,6 @@ public:
     // Model-level I/O.
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const override;
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const override;
-    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const override;
     std::vector<std::string> get_model_output_names() const override;
     const ov::AnyMap& get_tokenizer_config() const override;
 

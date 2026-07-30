@@ -51,11 +51,11 @@ struct GgufOp {
 struct GgufGraph {
     std::vector<GgufOp> nodes;
 
-    // Model inputs (Parameters), extra inputs (e.g. attention_size; Parameter or Constant),
-    // and weights (Constants). Same semantics as the corresponding GgufDecoder getters.
+    // Model inputs (Parameters) and extra inputs (e.g. attention_size; Parameter or Constant).
+    // Same semantics as the corresponding GgufDecoder getters. Weights are not here: they are
+    // emitted into `nodes` as GGML_OP_NONE leaves (see emit_weight_op).
     std::map<std::string, std::shared_ptr<ov::Node>> model_inputs;
     std::map<std::string, std::shared_ptr<ov::Node>> model_extra_inputs;
-    std::map<std::string, std::shared_ptr<ov::Node>> model_weights;
     std::vector<std::string> model_output_names;
 
     bool has_rope = false;

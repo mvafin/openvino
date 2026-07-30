@@ -139,10 +139,9 @@ public:
         return {m_output.name};
     }
 
-    // The optional model-scope accessors (get_model_extra_inputs, get_model_weights,
-    // get_tokenizer_config) all default to empty on GgufDecoder, which is exactly right for a
-    // single-op test decoder: no auxiliary inputs, no pre-built weights (weights are
-    // GGML_OP_NONE + "data" leaves) and no tokenizer metadata. So none are overridden here.
+    // The optional model-scope accessors (get_model_extra_inputs, get_tokenizer_config) both
+    // default to empty on GgufDecoder, which is exactly right for a single-op test decoder: no
+    // auxiliary inputs and no tokenizer metadata. So neither is overridden here.
 
 private:
     const TensorDesc& find_input(const std::string& name) const {

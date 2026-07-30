@@ -263,11 +263,11 @@ private:
     // Emit a weight as a GGML_OP_NONE leaf node carrying the parser's already-extracted tensors
     // (`<base>.weight` [+ `.scales` [+ `.zp`]] + qtype) as node attributes. translate_weight
     // rebuilds the weights/qtypes maps from these attributes and calls make_weight_node(base,
-    // weights, qtypes) -- the same dequant path this builder used before, so numerics are
-    // unchanged. Routing weights through GGML_OP_NONE makes it the single weight-loading API
-    // (shared with the llama.cpp cgraph decoder), and keeps the compressed decompression subgraph
-    // (built lazily in translate_weight during the walk) rather than materializing an ov::Node
-    // eagerly here. `node_name` is the tensor name translators reference (the GGML_OP_NONE output);
+    // weights, qtypes). Routing weights through GGML_OP_NONE makes that the single weight-loading
+    // API, shared with the llama.cpp cgraph decoder (which marks the same leaf with raw ggml bytes
+    // instead), and keeps the compressed decompression subgraph -- built lazily in translate_weight
+    // during the walk -- rather than materializing an ov::Node eagerly here.
+    // `node_name` is the tensor name translators reference (the GGML_OP_NONE output);
     // `base` is that name without the trailing ".weight". `extracted` maps
     // "<base>.weight"/".scales"/".zp" -> tensor; `qtype` is the ggml type of `<base>`.
     void emit_weight_op(const std::string& node_name,
@@ -795,8 +795,8 @@ private:
 
     std::map<std::string, ov::PartialShape> m_tensor_shapes;
     std::map<std::string, ov::element::Type> m_tensor_types;
-    // Names of weights already emitted as GGML_OP_NONE leaves (dedup; replaces the old
-    // model_weights.count() guard now that weights are graph nodes, not pre-built ov::Nodes).
+    // Names of weights already emitted as GGML_OP_NONE leaves, so a weight referenced by several
+    // ops (or tied, e.g. MQA tie-V) is emitted once.
     std::set<std::string> m_emitted_weights;
 };
 

@@ -31,10 +31,11 @@ GGUF itself instead of depending on llama.cpp, and the memory-consumption model.
 The **`GgufDecoder` interface** is the single seam. It is node-scoped: `visit_subgraph` hands the
 translator a decoder bound to one node, and per-node accessors (`get_op_type`, `get_input_shape`,
 `get_attribute`, `get_op_case`, ...) refer to that node; model-scope accessors (`get_model_inputs`,
-`get_model_output_names`, and the optional `get_model_extra_inputs` / `get_model_weights` /
-`get_tokenizer_config`) answer whole-model questions. The optional ones have do-nothing defaults, so
-a decoder implements only what it actually knows — which is what lets two very different decoders
-satisfy one interface (the native builder answers all of them, the cgraph decoder none).
+`get_model_output_names`, and the optional `get_model_extra_inputs` / `get_tokenizer_config`) answer
+whole-model questions. The optional ones have do-nothing defaults, so a decoder implements only what
+it actually knows — which is what lets two very different decoders satisfy one interface (the native
+builder answers all of them, the cgraph decoder none). Note there is no weight accessor: weights are
+nodes, see "Weights: the GGML_OP_NONE convention".
 
 Note what the interface deliberately does *not* have: anything describing the **execution mode**.
 A decoder describes ggml *operations*, not a deployment, so there is no `is_stateful` / `is_static`.

@@ -181,10 +181,6 @@ const std::map<std::string, std::shared_ptr<ov::Node>>& GgufBuilderDecoder::get_
     return m_graph->model_extra_inputs;
 }
 
-const std::map<std::string, std::shared_ptr<ov::Node>>& GgufBuilderDecoder::get_model_weights() const {
-    return m_graph->model_weights;
-}
-
 std::vector<std::string> GgufBuilderDecoder::get_model_output_names() const {
     return m_graph->model_output_names;
 }

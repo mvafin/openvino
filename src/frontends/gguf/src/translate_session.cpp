@@ -154,14 +154,9 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
         (*tensor_map)[it.first] = it.second;
     }
 
-    // The native .gguf builder path dequantizes weights up front and exposes them via
-    // get_model_weights(); seed them into the tensor map before the walk. The llama.cpp cgraph
-    // path returns an empty map and instead surfaces each weight as a "GGML_OP_NONE" leaf carrying
-    // a "data" attribute, translated by translate_weight during visit_subgraph (below). The two
-    // paths are mutually exclusive, so seeding here is a no-op for the cgraph decoder.
-    for (const auto& it : gguf_model_decoder->get_model_weights()) {
-        (*tensor_map)[it.first] = it.second;
-    }
+    // Weights are not seeded here: every decoder surfaces them as "GGML_OP_NONE" leaves that
+    // translate_weight turns into a compressed subgraph during the walk below, which keeps them
+    // lazy (never materialized to f32) and keeps one weight-loading path for both ingest paths.
 
     auto node_visitor = [&](std::shared_ptr<GgufDecoder> decoder) {
         auto operation_type = decoder->get_op_type();

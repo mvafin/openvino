@@ -133,15 +133,6 @@ public:
         return empty_node_map();
     }
 
-    // Pre-built OpenVINO weight nodes, keyed by ggml tensor name (e.g. "blk.0.attn_q.weight").
-    // The native .gguf builder path dequantizes weights up front and returns them here; the
-    // TranslateSession seeds them into the tensor map before the graph walk. A decoder that
-    // instead surfaces each weight as a GGML_OP_NONE leaf carrying a "data" attribute (the
-    // llama.cpp cgraph path) returns an empty map -- translate_weight then builds the node.
-    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const {
-        return empty_node_map();
-    }
-
     // GGUF tokenizer metadata (the file's `tokenizer.*` keys), attached to the converted model's
     // rt_info so a downstream consumer (OpenVINO GenAI) can build the tokenizer without reopening
     // the .gguf. Empty when the decoder carries no tokenizer metadata.
@@ -156,10 +147,13 @@ public:
     //     no RoPE, or per_op == true);
     //   - at node scope, the ROPE translator reads the same key for the op's own config.
     //
-    // NOTE: weights may also be surfaced as GGML_OP_NONE leaves (the cgraph path): the decoder
-    // marks such a leaf via get_attribute<ov::Tensor>("data") + get_attribute<std::string>(
-    // "quant_type") + get_output_shape(), and translate_weight builds the node. The native .gguf
-    // builder path uses get_model_weights() instead and returns those leaves' data pre-dequantized.
+    // NOTE: weights are surfaced as GGML_OP_NONE leaves, by every decoder -- there is no separate
+    // weight accessor. A decoder marks such a leaf either with the raw ggml bytes
+    // (get_attribute<ov::Tensor>("data") + get_attribute<std::string>("quant_type") +
+    // get_output_shape(), the llama.cpp cgraph path) or with already-extracted weight/scales/zp
+    // tensors (get_attribute<bool>("gguf_weight") + "gguf.blob.<sub>" + "gguf_qtype", the native
+    // .gguf builder path). translate_weight accepts both payloads and builds the same compressed
+    // decompression subgraph from either.
 
 protected:
     // Shared empty map backing the optional accessors above, which return by const reference.
