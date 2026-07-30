@@ -119,11 +119,15 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
 
     ov::Output<ov::Node> q_t = q, k_t = k, v_t = v;
     if (ggml_natural) {
-        // [B, L, H, S] -> [B, H, L, S] (canonical SDPA layout).
-        auto to_bhls = ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3});
-        q_t = std::make_shared<ov::op::v1::Transpose>(q, to_bhls);
-        k_t = std::make_shared<ov::op::v1::Transpose>(k, to_bhls);
-        v_t = std::make_shared<ov::op::v1::Transpose>(v, to_bhls);
+        // [B, L, H, S] -> [B, H, L, S] (canonical SDPA layout). Each transpose gets its OWN order
+        // constant: the GPU plugin's TransposeSDPAMatcher requires consumers_count(1) on it, and a
+        // shared one leaves the permutes in the decode path and blocks the broadcast-into-SDPA fusion.
+        auto to_bhls = [] {
+            return ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3});
+        };
+        q_t = std::make_shared<ov::op::v1::Transpose>(q, to_bhls());
+        k_t = std::make_shared<ov::op::v1::Transpose>(k, to_bhls());
+        v_t = std::make_shared<ov::op::v1::Transpose>(v, to_bhls());
     }
 
     ov::Output<ov::Node> sdpa;
