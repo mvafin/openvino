@@ -33,22 +33,33 @@ OutputVector translate_permute(const NodeContext& context) {
         res = std::make_shared<ov::op::v1::Transpose>(src, perm);
     } else if (op_case == 4) {
         auto output_shape = context.get_output_shape().to_shape();
-        auto n_heads = ov::op::v0::Constant::create(ov::element::i64, {1}, {output_shape[1]});
-        auto head_size = ov::op::v0::Constant::create(ov::element::i64, {1}, {output_shape[3]});
-        auto n_seq_active = context.has_input("n_seq_active")
-                                ? context.get_input("n_seq_active")
-                                : ov::op::v0::Constant::create(ov::element::i64, {1}, {output_shape[0]});
-        auto neg_one = ov::op::v0::Constant::create(ov::element::i64, {1}, {-1});
+        const auto n_heads = static_cast<int64_t>(output_shape[1]);
+        const auto head_size = static_cast<int64_t>(output_shape[3]);
 
-        auto new_shape =
-            std::make_shared<ov::op::v0::Concat>(ov::OutputVector{n_seq_active, neg_one, n_heads, head_size}, 0);
+        ov::Output<Node> reshaped;
+        if (context.has_input("n_seq_active")) {
+            // Reshape shape inference can only use a pattern whose value bounds are known, and
+            // `n_seq_active` is a Parameter, so it has none. Building the whole pattern with a single
+            // Concat therefore discards the statically known n_heads/head_size as well, and Q reaches
+            // SDPA with a dynamic head size, which makes the GPU plugin decompose SDPA into
+            // Gemm+SoftMax. Splitting the reshape keeps the head layout in an all-constant pattern, so
+            // it survives shape inference. Both reshapes are metadata-only, so this costs no extra
+            // data movement.
+            auto neg_one = ov::op::v0::Constant::create(ov::element::i64, {1}, {-1});
+            auto seq_pattern =
+                std::make_shared<ov::op::v0::Concat>(ov::OutputVector{context.get_input("n_seq_active"), neg_one}, 0);
+            auto by_seq = std::make_shared<ov::op::v1::Reshape>(src, seq_pattern, false);
 
-        // // Alternative
-        // auto zero = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
-        // auto new_shape = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{n_seq_active, neg_one, zero, zero},
-        // 0);
-
-        auto reshaped = std::make_shared<ov::op::v1::Reshape>(src, new_shape, true);
+            auto head_pattern =
+                ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, -1, n_heads, head_size});
+            reshaped = std::make_shared<ov::op::v1::Reshape>(by_seq, head_pattern, true);
+        } else {
+            auto new_shape = ov::op::v0::Constant::create(
+                ov::element::i64,
+                {4},
+                std::vector<int64_t>{static_cast<int64_t>(output_shape[0]), -1, n_heads, head_size});
+            reshaped = std::make_shared<ov::op::v1::Reshape>(src, new_shape, true);
+        }
         res = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
     } else {
         auto cache_shape = src.get_partial_shape();
