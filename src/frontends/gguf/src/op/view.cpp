@@ -57,9 +57,12 @@ void place_dynamic_token_axis(std::vector<int64_t> & tgt, const ov::PartialShape
 }
 }  // namespace
 
-// Cases 2-5 are emitted by the llama.cpp cgraph decoder (see ggml-decoder.cpp::compute_op_case);
-// cases >= 100 are emitted only by the native .gguf builder decoder, which owns its own numbering
-// so the two decoders never collide.
+// Cases 2-5 are shared by both ingest paths: the llama.cpp cgraph decoder classifies a ggml view
+// into them (see ggml-decoder.cpp::compute_op_case) and the native .gguf builder describes its own
+// views the same way. Case 104 is the only VIEW case that is builder-only, and not for numbering
+// reasons: it takes a second (shape-reference) input the cgraph path does not supply, so it has a
+// different arity than the shared cases. See its comment below, and docs/frontend_design.md for the
+// other two builder-only cases in the frontend.
 OutputVector translate_view(const NodeContext & context) {
     num_inputs_check(context, 1, 2);
 
@@ -255,19 +258,6 @@ OutputVector translate_view(const NodeContext & context) {
             sliced = std::make_shared<ov::op::v1::Reshape>(sliced, target, false);
         }
         return rename_outputs_with_suffix({sliced.get_node_shared_ptr()}, context.get_name());
-    }
-    // op_case 105 (builder): head-size slice. Slices the last dimension to "head_size" (an attribute).
-    // Used for gemma4 shared SWA layers that reuse the global anchor's K/V but need only the
-    // first head_size elements: [1, T, n_kv, anchor_hs] -> [1, T, n_kv, head_size].
-    if (context.get_op_case() == 105) {
-        const int64_t head_size = context.get_attribute<int64_t>("head_size");
-        auto input = context.get_input(0);
-        auto start = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
-        auto stop = ov::op::v0::Constant::create(ov::element::i64, {1}, {head_size});
-        auto step = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
-        auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {-1});  // last axis
-        auto sliced = std::make_shared<ov::op::v8::Slice>(input, start, stop, step, axes);
-        return rename_outputs_with_suffix({sliced}, context.get_name());
     }
     return {context.get_input(0)};
 }

@@ -102,6 +102,32 @@ Both build the *identical* compressed OpenVINO subgraph, so **inference speed an
 are independent of which path/payload was used** (verified: OLMoE compile peak 8673 MB via
 GGML_OP_NONE vs 8672 MB via the older eager path).
 
+## op_case: one numbering for both ingest paths
+
+Several ggml ops cover structurally different uses that need different OpenVINO subgraphs — a
+`GGML_OP_RESHAPE` splitting a projection into heads is not the reshape that merges them back. The
+decoder disambiguates with an `op_case` attribute, read via `NodeContext::get_op_case()`.
+
+**`op_case` describes the tensor operation, not which decoder produced it.** The cgraph decoder
+derives it by inspecting the ggml node (`ggml-decoder.cpp::compute_op_case`); the native builder
+sets it when it emits a node, choosing the case that matches what it is doing. Both therefore land
+on the *same* case for the same operation, which is what keeps one translator body serving both
+paths — and what makes the two graphs comparable node-for-node.
+
+A case that exists only to mean "this came from the builder" is a defect: it splits a shared
+translator into two bodies that then drift apart. Three cases are legitimately builder-only, each
+because the operation itself genuinely differs rather than for numbering reasons:
+
+| case | op | why |
+| --- | --- | --- |
+| 100 | `FLASH_ATTN_EXT` | The builder keeps q/k/v ggml-natural so the order is Concat -> GQA tile -> one Transpose -> SDPA, which is what the CPU plugin's `stateful_sdpa_fusion` matches; permuting first blocks the fuse into `ScaledDotProductAttentionWithKVCache`. A deliberately *better* graph, not an equivalent one. |
+| 104 | `VIEW` | Takes a second (shape-reference) input the cgraph path does not supply, so it has a different arity than the shared cases. |
+| 10 | `GET_ROWS` | llama.cpp reshapes `probs` before the MoE gating gather, so the cgraph decoder sees a different input shape that the generic path already handles. |
+
+Anything else should reuse a shared case, which usually means the builder describing its node the
+way the shared translator expects (e.g. supplying `view_slice` for a plain single-axis shrink rather
+than a bespoke attribute) or emitting the same node *count* ggml does instead of fusing steps.
+
 ## Memory model
 
 Understanding where memory goes matters for large models (MoE especially).

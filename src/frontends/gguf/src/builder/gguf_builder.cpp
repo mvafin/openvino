@@ -245,6 +245,22 @@ private:
         return ov::PartialShape(dims);
     }
 
+    // Static shape of an already-emitted tensor, for ops whose translator needs its input's own
+    // layout (VIEW op_case 3's "input_ggml_shape", which it uses to restore that layout before
+    // slicing). The builder's per-node shapes are static except for the model-input Parameters,
+    // so a dynamic dim here means the caller asked about a tensor this cannot describe.
+    ov::Shape shape_of(const std::string& tensor_name) const {
+        auto it = m_tensor_shapes.find(tensor_name);
+        OPENVINO_ASSERT(it != m_tensor_shapes.end(), "[GGUF] internal: no shape recorded for '", tensor_name, "'");
+        OPENVINO_ASSERT(it->second.is_static(),
+                        "[GGUF] internal: shape of '",
+                        tensor_name,
+                        "' is dynamic (",
+                        it->second,
+                        "), cannot be used as a static input shape");
+        return it->second.to_shape();
+    }
+
     // Look up a weight tensor by GGUF name, failing with the tensor NAME if the GGUF is missing it
     // (a bare m_weights.at(name) throws std::out_of_range with no context). Used wherever the
     // builder reads a weight's shape to size an op; a missing expected tensor means the file does
@@ -618,10 +634,14 @@ private:
         //   experts [1,T,K,n_embd] * weights -> [1,T,K,n_embd]
         //   TRANSPOSE last two axes -> [1,T,n_embd,K]; SUM_ROWS over K -> [1,T,n_embd,1]
         //   RESHAPE (dynamic) -> [1,1,T,n_embd].
+        // The reshape is op_case 5: collapse to [1, 1, -1, n_embd], the token axis staying dynamic.
+        // That is the case the cgraph decoder would assign to this same reshape too -- ggml ne
+        // [1,n_embd,T,1] -> [n_embd,T,1,1] satisfies both of its case-5 predicates -- so the shared
+        // case applies as-is and needs no builder-specific numbering.
         auto weighted = add_op("GGML_OP_MUL", p + "moe_weighted", {experts, weights}, ps({1, T, K, m_n_embd}), f32);
         auto tr = add_op("GGML_OP_TRANSPOSE", p + "moe_tr", {weighted}, ps({1, T, m_n_embd, K}), f32);
         auto summed = add_op("GGML_OP_SUM_ROWS", p + "moe_sum", {tr}, ps({1, T, m_n_embd, 1}), f32);
-        auto moe_out = add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 107);
+        auto moe_out = add_op("GGML_OP_RESHAPE", p + "moe_out", {summed}, ps({1, 1, T, m_n_embd}), f32, 5);
 
         // Shared experts (deepseek2-ocr, bailingmoe2, exaone-moe): always-active experts whose
         // output is added to the routed experts' weighted sum. Uses plain SwiGLU dense FFN with
@@ -720,6 +740,26 @@ private:
                       ov::element::f32,
                       0,
                       {{"scale", factor}, {"bias", 0.0f}});
+    }
+
+    // Turn a flat per-token per-layer embedding [1, 1, T, n_layer * n_embd_per_layer] into the
+    // layer-major [1, n_layer, T, n_embd_per_layer] the per-layer VIEW slices from.
+    //
+    // The data is contiguous as [T, n_layer, pe] (one row per token), so this is a reshape that
+    // splits the last axis followed by a transpose of the two middle axes -- a single reshape
+    // straight to the target would be wrong for T > 1. Emitted as the same two steps ggml uses
+    // (ggml_reshape_3d, then ggml_cont(ggml_permute)), so both reach the shared op cases: RESHAPE
+    // case 1 splits the last dim into [.., n_layer, pe] and PERMUTE case 1 is the {0,2,1,3}
+    // transpose. Fusing them into one node would need a builder-only case for the transpose. No
+    // CONT node: translate_cont's PERMUTE case is a pass-through, since translate_permute already
+    // emitted a real Transpose, so ggml's ggml_cont would convert to nothing here.
+    std::string reshape_to_layer_major(const std::string& flat, const std::string& name) {
+        const auto& flat_shape = m_tensor_shapes.at(flat);
+        const int64_t T = flat_shape[2].is_static() ? flat_shape[2].get_length() : 1;
+        const auto f32 = ov::element::f32;
+        auto split =
+            add_op("GGML_OP_RESHAPE", name + "_split", {flat}, ps({1, T, m_n_layer, m_n_embd_per_layer}), f32, 1);
+        return add_op("GGML_OP_PERMUTE", name, {split}, ps({1, m_n_layer, T, m_n_embd_per_layer}), f32, 1);
     }
 
     // ---- Per-layer hyperparameter accessors ----
@@ -887,12 +927,7 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
                               f32);
         const float pe_scale = std::sqrt(static_cast<float>(m_n_embd_per_layer));
         pe_flat = scale(pe_flat, pe_scale, "pe_tok_flat_scaled");
-        auto pe_tok = add_op("GGML_OP_RESHAPE",
-                             "pe_tok",
-                             {pe_flat},
-                             ps({1, m_n_layer, T, m_n_embd_per_layer}),
-                             f32,
-                             108);  // [T,n_layer*pe] -> [n_layer,-1,pe] (stateful) or [1,n_layer,-1,pe]
+        auto pe_tok = reshape_to_layer_major(pe_flat, "pe_tok");
 
         // Model projection: MUL_MAT(per_layer_model_proj, embd) -> [1,1,T, pe_total]
         // per_layer_model_proj is [n_embd, pe_total] -> output [pe_total] per token
@@ -905,12 +940,7 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         proj_flat = scale(proj_flat, proj_scale, "pe_proj_flat_scaled");
 
         // Reshape to [1, n_layer, T, n_embd_per_layer] for per-slice RMS_NORM
-        auto proj_4d = add_op("GGML_OP_RESHAPE",
-                              "pe_proj_4d",
-                              {proj_flat},
-                              ps({1, m_n_layer, T, m_n_embd_per_layer}),
-                              f32,
-                              108);  // [T,n_layer*pe] -> [n_layer,-1,pe] (stateful)
+        auto proj_4d = reshape_to_layer_major(proj_flat, "pe_proj_4d");
 
         // RMS_NORM + per_layer_proj_norm weight (applied over last dim = n_embd_per_layer)
         auto proj_norm = add_op("GGML_OP_RMS_NORM",
@@ -1116,23 +1146,28 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
             const ov::PartialShape& anchor_kc_shape = m_tensor_shapes.at(kc);  // [1, T, n_kv, anchor_head]
             const int64_t anchor_hs = anchor_kc_shape[3].is_static() ? anchor_kc_shape[3].get_length() : m_head_size;
             if (head_size_l < static_cast<int>(anchor_hs)) {
-                // Slice the head-size dimension to head_size_l (op_case=105).
-                const ov::PartialShape k_slice_shape = ps({1, T, n_head_kv_l, head_size_l});
-                const ov::PartialShape v_slice_shape = ps({1, T, n_head_kv_l, head_size_l});
+                // Shrink the last (head-size) axis to head_size_l. This is a plain single-axis shrink
+                // at offset 0, which is exactly what the shared VIEW op_case 3 does -- and what the
+                // cgraph decoder assigns to llama.cpp's corresponding ggml_view_4d with
+                // n_embd_head_k(il) -- so describe it the way that case expects rather than with a
+                // builder-only case: "view_slice" = {ov_axis, start, len} plus the input's own shape.
+                // No "view_reshape": the sliced shape already is this node's output shape.
+                const ov::PartialShape slice_shape = ps({1, T, n_head_kv_l, head_size_l});
+                const std::vector<int64_t> hs_slice{3, 0, int64_t(head_size_l)};
                 k = add_op("GGML_OP_VIEW",
                            p + "k_hslice",
                            {kc},
-                           k_slice_shape,
+                           slice_shape,
                            ov::element::f16,
-                           105,
-                           {{"head_size", int64_t(head_size_l)}});
+                           3,
+                           {{"view_slice", hs_slice}, {"input_ggml_shape", shape_of(kc)}});
                 v = add_op("GGML_OP_VIEW",
                            p + "v_hslice",
                            {vc},
-                           v_slice_shape,
+                           slice_shape,
                            ov::element::f16,
-                           105,
-                           {{"head_size", int64_t(head_size_l)}});
+                           3,
+                           {{"view_slice", hs_slice}, {"input_ggml_shape", shape_of(vc)}});
             } else {
                 k = kc;
                 v = vc;

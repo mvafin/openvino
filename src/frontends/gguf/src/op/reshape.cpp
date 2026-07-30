@@ -29,14 +29,13 @@ OutputVector translate_reshape(const NodeContext& context) {
         return {context.get_input(0)};
     }
 
-    // Cases 1-8 are emitted by the llama.cpp cgraph decoder (see ggml-decoder.cpp::compute_op_case);
-    // cases >= 100 are emitted only by the native .gguf builder decoder, which owns its own numbering
-    // so the two decoders never collide.
+    // One numbering for both ingest paths: every case below is reachable from the llama.cpp cgraph
+    // decoder (see ggml-decoder.cpp::compute_op_case) and from the native .gguf builder, which
+    // describes its reshapes so that the same case applies.
     int op_case = context.get_op_case();
-    FRONT_END_CHECK_IMPLEMENTED(
-        op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 || op_case == 6 ||
-            op_case == 7 || op_case == 8 || op_case == 107 || op_case == 108,
-        "Unsupported RESHAPE case");
+    FRONT_END_CHECK_IMPLEMENTED(op_case == 1 || op_case == 2 || op_case == 3 || op_case == 4 || op_case == 5 ||
+                                    op_case == 6 || op_case == 7 || op_case == 8,
+                                "Unsupported RESHAPE case");
 
     if (op_case == 8) {
         // Identity reshape (ggml src ne == node ne): a no-op. Pass the input through so any dynamic
@@ -127,28 +126,6 @@ OutputVector translate_reshape(const NodeContext& context) {
             ov::element::i64, {output_shape.size()},
             std::vector<int64_t>(output_shape.begin(), output_shape.end()));
 
-    } else if (op_case == 107) {
-        // Builder: dynamic-safe collapse to [1, 1, -1, last_dim] (MoE aggregation output): the token
-        // axis stays dynamic via -1; only the last dim (n_embd) is static.
-        int64_t last = (int64_t)output_shape[3];
-        new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, 1, -1, last});
-    } else if (op_case == 108) {
-        // Builder: per-layer embedding reshape+transpose.
-        //   [1, 1, T, n_layer*pe_dim] -> reshape [1, T, n_layer, pe_dim] -> transpose [1, n_layer, T, pe_dim]
-        // output_shape is {1, n_layer, T, pe_dim}; dim[1] (n_layer) and dim[3] (pe_dim) are static.
-        // A naive reshape directly to [1, n_layer, T, pe_dim] is WRONG for T>1: the data is
-        // contiguous as [T, n_layer, pe_dim] (one row per token), so we must reshape then
-        // transpose the two middle axes.
-        int64_t n_layer = (int64_t)output_shape[1];
-        int64_t pe_dim = (int64_t)output_shape[3];
-        // Step 1: reshape to [1, T, n_layer, pe_dim]
-        new_shape_node =
-            ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_layer, pe_dim});
-        auto reshaped = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
-        // Step 2: transpose [1, T, n_layer, pe_dim] -> [1, n_layer, T, pe_dim]
-        auto perm = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, 2, 1, 3});
-        auto transposed = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
-        return rename_outputs_with_suffix({transposed}, context.get_name());
     }
     auto res = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
     return rename_outputs_with_suffix({res}, context.get_name());
