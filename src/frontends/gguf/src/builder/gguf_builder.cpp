@@ -23,8 +23,9 @@
 // expansions in src/llama-graph.cpp, plus the KV-cache cpy_k/get_k (SET_ROWS + VIEW) in
 // src/llama-kv-cache.cpp. Op-case values follow ggml-decoder.cpp::compute_op_case.
 //
-// Targets the dynamic (non-NPU) stateful graph for non-SWA models: is_static=false,
-// is_stateful=true.
+// Builds the STATELESS graph: KV caches are plain model Parameters written by GGML_OP_SET_ROWS and
+// read back as Results, and every activation keeps ggml's rank-4 shape. A caller that wants an
+// OpenVINO KV cache registers ov::frontend::gguf::pass::MakeStateful as a transformation extension.
 
 #include "gguf_builder.hpp"
 
@@ -81,8 +82,6 @@ public:
           m_weights(weights),
           m_qtypes(qtypes) {
         m_graph = std::make_shared<GgufGraph>();
-        m_graph->is_static = false;
-        m_graph->is_stateful = true;
 
         m_n_layer = cfg_int("layer_num");
         m_n_head = cfg_int("head_num");
@@ -1068,7 +1067,7 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
                    m_rope_op_case,
                    {{"rope_config", rope_config_l}});
 
-        // ---- KV cache store (stateful) ----
+        // ---- KV cache store ----
         // Gemma4: layers with shared_kv_layers have no K/V of their own; they reuse the KV
         // from the last layer of the same SWA type that has its own KV cache. SWA layers
         // reuse the last own-KV SWA layer; global layers reuse the last own-KV global layer.
@@ -1082,23 +1081,21 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         const std::string vc = "cache_v_l" + std::to_string(anchor_il);
 
         if (has_own_kv) {
-            // Per-layer f16 KV caches, converted to ReadValue/Assign by MakeStateful. The
-            // SET_ROWS translator's stateful branch concatenates the new K/V onto the cache, so
-            // the FLASH_ATTN inputs are f16 (matching Q after its f16 convert in the translator).
+            // Per-layer f16 KV cache Parameters. The K/V read back out of a cache is f16, and so is
+            // Q after its convert in the translator, so the FLASH_ATTN inputs agree.
             const ov::PartialShape cache_shape = ps({1, D, n_head_kv_l, head_size_l});
             if (!m_graph->model_inputs.count(kc)) {
                 add_input(kc, ov::element::f16, cache_shape);
                 add_input(vc, ov::element::f16, cache_shape);
-                m_graph->kv_param_res_names[kc] = kc;
-                m_graph->kv_param_res_names[vc] = vc;
             }
             m_tensor_shapes[kc] = ps({1, T, n_head_kv_l, head_size_l});
             m_tensor_shapes[vc] = ps({1, T, n_head_kv_l, head_size_l});
             m_tensor_types[kc] = ov::element::f16;
             m_tensor_types[vc] = ov::element::f16;
 
-            // SET_ROWS(cur, idx, cache) -> combined f16 K/V. The translator (stateful branch)
-            // concatenates the new K/V onto the cache.
+            // SET_ROWS(cur, idx, cache) -> the cache with this step's rows written in. Lowered by
+            // the frontend to a stateless ScatterUpdate, or by the caller-registered MakeStateful
+            // extension to a ReadValue/Concat/Assign OpenVINO state.
             k = add_op("GGML_OP_SET_ROWS",
                        kc,
                        {k, "inp_kv_idx", kc},
@@ -1109,8 +1106,9 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
                        {v, "inp_kv_idx", vc},
                        ps({1, T, n_head_kv_l, head_size_l}),
                        ov::element::f16);
-            // These combined caches are model outputs so they become Results that MakeStateful
-            // converts into Assign sinks paired with the cache ReadValues.
+            // The written-through caches are model outputs, so the stateless graph returns each
+            // updated cache as a Result (which MakeStateful, when registered, turns into an Assign
+            // sink paired with the cache's ReadValue).
             m_graph->model_output_names.push_back(kc);
             m_graph->model_output_names.push_back(vc);
         } else {

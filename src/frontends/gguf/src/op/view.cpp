@@ -211,18 +211,14 @@ OutputVector translate_view(const NodeContext & context) {
         return {result};
     }
     // op_case 104 (builder): layer-index slice for per-layer embedding.
-    // Non-stateful: input [1, n_layer, T, D] -> slice dim 1 -> [1, 1, T, D].
-    // Stateful: input [n_layer, T, D] -> slice dim 0 -> [1, T, D].
+    // Input [1, n_layer, T, D] -> slice the layer axis (1) -> [1, 1, T, D].
     if (context.get_op_case() == 104) {
         const int64_t layer_idx = context.get_attribute<int64_t>("layer_idx");
         auto input = context.get_input(0);
         auto start = ov::op::v0::Constant::create(ov::element::i64, {1}, {layer_idx});
         auto stop = ov::op::v0::Constant::create(ov::element::i64, {1}, {layer_idx + 1});
         auto step = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
-        // In stateful mode the tensor is 3D [n_layer, T, D] -- slice dim 0;
-        // in non-stateful it is 4D [1, n_layer, T, D] -- slice dim 1.
-        const int64_t slice_axis = context.is_stateful() ? 0 : 1;
-        auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {slice_axis});
+        auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
         ov::Output<ov::Node> sliced = std::make_shared<ov::op::v8::Slice>(input, start, stop, step, axes);
 
         // The slice comes out with the token count on the axis the per-layer tensor happens to keep it

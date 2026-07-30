@@ -58,12 +58,6 @@ struct GgufGraph {
     std::map<std::string, std::shared_ptr<ov::Node>> model_weights;
     std::vector<std::string> model_output_names;
 
-    // KV-cache Parameter->Result name pairs for MakeStateful (empty when not stateful).
-    std::map<std::string, std::string> kv_param_res_names;
-
-    bool is_static = false;
-    bool is_stateful = false;
-
     bool has_rope = false;
     RopeConfig rope_config;
 

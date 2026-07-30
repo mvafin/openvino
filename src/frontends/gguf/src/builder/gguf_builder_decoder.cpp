@@ -33,8 +33,6 @@ const GgufOp& GgufBuilderDecoder::node() const {
 //   "input_view_offset[N]" -> int64_t for input N
 //   "output_shape"         -> ov::PartialShape of the node output
 //   "output_type"          -> ov::element::Type of the node output
-//   "is_static"            -> bool
-//   "is_stateful"          -> bool
 //   "rope_config"          -> RopeConfig (model-scope RoPE config; see get_attribute below)
 
 static bool parse_indexed_key(const std::string& name, const std::string& prefix, size_t& out_idx) {
@@ -114,12 +112,6 @@ ov::Any GgufBuilderDecoder::get_attribute(const std::string& name) const {
     if (name == "op_case")
         return n.op_case;
 
-    // Graph-level flags
-    if (name == "is_static")
-        return m_graph->is_static;
-    if (name == "is_stateful")
-        return m_graph->is_stateful;
-
     // Named op attributes
     auto it = n.attributes.find(name);
     return it != n.attributes.end() ? it->second : ov::Any{};
@@ -195,18 +187,6 @@ const std::map<std::string, std::shared_ptr<ov::Node>>& GgufBuilderDecoder::get_
 
 std::vector<std::string> GgufBuilderDecoder::get_model_output_names() const {
     return m_graph->model_output_names;
-}
-
-std::map<std::string, std::string> GgufBuilderDecoder::get_kv_param_res_names() const {
-    return m_graph->kv_param_res_names;
-}
-
-bool GgufBuilderDecoder::is_static() const {
-    return m_graph->is_static;
-}
-
-bool GgufBuilderDecoder::is_stateful() const {
-    return m_graph->is_stateful;
 }
 
 const ov::AnyMap& GgufBuilderDecoder::get_tokenizer_config() const {

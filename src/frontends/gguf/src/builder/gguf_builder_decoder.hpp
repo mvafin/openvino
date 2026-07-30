@@ -43,11 +43,6 @@ public:
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const override;
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const override;
     std::vector<std::string> get_model_output_names() const override;
-
-    std::map<std::string, std::string> get_kv_param_res_names() const override;
-
-    bool is_static() const override;
-    bool is_stateful() const override;
     const ov::AnyMap& get_tokenizer_config() const override;
 
 private:

@@ -128,28 +128,10 @@ public:
         return {m_output.name};
     }
 
-    // Model-scope queries added to the GgufDecoder interface for the native .gguf builder /
-    // stateful path. A single-op test decoder is a stateless decoder-replay: no auxiliary inputs,
-    // no pre-built weights (weights are GGML_OP_NONE + "data" leaves), not stateful/static, no KV
-    // cache or tokenizer metadata.
-    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const override {
-        return m_empty_nodes;
-    }
-    const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const override {
-        return m_empty_nodes;
-    }
-    std::map<std::string, std::string> get_kv_param_res_names() const override {
-        return {};
-    }
-    bool is_static() const override {
-        return false;
-    }
-    bool is_stateful() const override {
-        return false;
-    }
-    const ov::AnyMap& get_tokenizer_config() const override {
-        return m_empty_tok;
-    }
+    // The optional model-scope accessors (get_model_extra_inputs, get_model_weights,
+    // get_tokenizer_config) all default to empty on GgufDecoder, which is exactly right for a
+    // single-op test decoder: no auxiliary inputs, no pre-built weights (weights are
+    // GGML_OP_NONE + "data" leaves) and no tokenizer metadata. So none are overridden here.
 
 private:
     const TensorDesc& find_input(const std::string& name) const {
@@ -167,9 +149,6 @@ private:
     std::map<std::string, ov::Any> m_attributes;
     std::vector<std::string> m_input_names;
     std::map<std::string, std::shared_ptr<ov::Node>> m_model_inputs;
-    // Empty returns for the model-scope stubs above (returned by const-ref).
-    std::map<std::string, std::shared_ptr<ov::Node>> m_empty_nodes;
-    ov::AnyMap m_empty_tok;
 };
 
 // Fluent builder: describe a single op and convert it to an ov::Model.

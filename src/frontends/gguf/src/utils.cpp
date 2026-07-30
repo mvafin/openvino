@@ -254,9 +254,7 @@ ov::Output<ov::Node> process_view_input(const NodeContext& context, int input_in
 
     auto begin = ov::op::v0::Constant::create(ov::element::i64, {1}, {split_addr});
     auto stride = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
-    // Stateful KV-cache reads slice the token axis (2); the stateless / builder path slices the
-    // innermost view axis (3).
-    auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {context.is_stateful() ? 2 : 3});
+    auto axes = ov::op::v0::Constant::create(ov::element::i64, {1}, {3});
 
     ov::Output<ov::Node> end;
     const auto& dim3 = input.get_partial_shape()[3];

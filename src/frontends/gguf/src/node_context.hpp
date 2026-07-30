@@ -80,17 +80,6 @@ public:
         return m_decoder->get_attribute(name);
     }
 
-    // Execution-mode flags, delegated to the decoder. Op translators branch on these to emit the
-    // stateful KV-cache layout (Concat/beam_idx) vs the stateless one, and the static (fixed
-    // token length) layout for NPU.
-    bool is_stateful() const {
-        return m_decoder->is_stateful();
-    }
-
-    bool is_static() const {
-        return m_decoder->is_static();
-    }
-
 private:
     std::shared_ptr<GgufDecoder> m_decoder;
     std::shared_ptr<TensorMap>& m_tensor_map;

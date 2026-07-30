@@ -71,27 +71,17 @@ OutputVector translate_reshape(const NodeContext& context) {
         // (special_zero) rather than pinned to output_shape[0], so the token axis stays wherever the
         // active attention backend put it.
         //
-        // The output rank follows the mode's activation convention, because the very next op is the
-        // residual Add against the layer input and OV broadcasts elementwise operands from the RIGHT.
-        // Emitting rank 4 here while the residual is the rank-3 stateful activation only appears to work
-        // when dim 0 is a literal batch 1 ([1,1,T,E] right-aligns onto [1,T,E]); once the token count
-        // moves into dim 0 the same alignment silently forms a token x token outer product. So the
-        // stateful path stays rank 3, matching get_rows / rms_norm / mulmat (cf. op_case 5).
-        //   stateful,     SDPA inference: in [1, T, H, S] -> [1, T, H*S]
-        //   stateful,     PagedAttention: in [T, 1, H, S] -> [T, 1, H*S]
-        //   non-stateful (ggml is 4D throughout): in [1, T, H, S] -> [1, 1, T, H*S]
-        // Either way the last dim is the static n_head*head_size and the -1 absorbs the remaining axis,
-        // so the following MatMul against [n_embd, n_embd] is unaffected.
-        if (context.is_stateful()) {
-            new_shape_node = ov::op::v0::Constant::create(ov::element::i64,
-                                                          {3},
-                                                          std::vector<int64_t>{0, -1, (int64_t)output_shape[3]});
-        } else {
-            new_shape_node = ov::op::v0::Constant::create(
-                ov::element::i64,
-                {4},
-                std::vector<int64_t>{0, (int64_t)output_shape[1], -1, (int64_t)output_shape[3]});
-        }
+        // The rank stays 4 because the very next op is the residual Add against the layer input and OV
+        // broadcasts elementwise operands from the RIGHT: every activation in the graph is rank 4 (ggml's
+        // own convention), so mixing in a rank-3 result would right-align and silently form a
+        // token x token outer product once the token count is not on the axis one happens to expect.
+        //   in [1, T, H, S] -> [1, 1, T, H*S]
+        // The last dim is the static n_head*head_size and the -1 absorbs the remaining axis, so the
+        // following MatMul against [n_embd, n_embd] is unaffected.
+        new_shape_node = ov::op::v0::Constant::create(
+            ov::element::i64,
+            {4},
+            std::vector<int64_t>{0, (int64_t)output_shape[1], -1, (int64_t)output_shape[3]});
         return rename_outputs_with_suffix(
             {std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, /*special_zero=*/true)},
             context.get_name());
@@ -108,13 +98,8 @@ OutputVector translate_reshape(const NodeContext& context) {
         return {context.get_input(0).get_node_shared_ptr()->input_value(0)};
 
     } else if (op_case == 5) {
-        if (context.is_stateful()) {
-            std::vector<int64_t> shape_vec = {1, -1, (int64_t)context.get_output_shape().to_shape()[3]};
-            new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {3}, shape_vec);
-        } else {
-            std::vector<int64_t> shape_vec = {1, 1, -1, (int64_t)context.get_output_shape().to_shape()[3]};
-            new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, shape_vec);
-        }
+        std::vector<int64_t> shape_vec = {1, 1, -1, (int64_t)context.get_output_shape().to_shape()[3]};
+        new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, shape_vec);
 
         // // Alternative
         // auto token_len = context.get_input("token_len");
@@ -149,33 +134,21 @@ OutputVector translate_reshape(const NodeContext& context) {
         new_shape_node = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, 1, -1, last});
     } else if (op_case == 108) {
         // Builder: per-layer embedding reshape+transpose.
-        //   stateful:     [T, n_layer*pe_dim] -> reshape [T, n_layer, pe_dim] -> transpose [n_layer, T, pe_dim]
-        //   non-stateful: [1, 1, T, n_layer*pe_dim] -> reshape [1, T, n_layer, pe_dim] -> transpose [1, n_layer, T, pe_dim]
+        //   [1, 1, T, n_layer*pe_dim] -> reshape [1, T, n_layer, pe_dim] -> transpose [1, n_layer, T, pe_dim]
         // output_shape is {1, n_layer, T, pe_dim}; dim[1] (n_layer) and dim[3] (pe_dim) are static.
-        // A naive reshape directly to [n_layer, T, pe_dim] is WRONG for T>1: the data is
+        // A naive reshape directly to [1, n_layer, T, pe_dim] is WRONG for T>1: the data is
         // contiguous as [T, n_layer, pe_dim] (one row per token), so we must reshape then
-        // transpose the first two non-batch axes.
+        // transpose the two middle axes.
         int64_t n_layer = (int64_t)output_shape[1];
         int64_t pe_dim = (int64_t)output_shape[3];
-        if (context.is_stateful()) {
-            // Step 1: reshape to [T, n_layer, pe_dim] (-1 on T axis for dynamic)
-            new_shape_node =
-                ov::op::v0::Constant::create(ov::element::i64, {3}, std::vector<int64_t>{-1, n_layer, pe_dim});
-            auto reshaped = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
-            // Step 2: transpose [T, n_layer, pe_dim] -> [n_layer, T, pe_dim]
-            auto perm = ov::op::v0::Constant::create(ov::element::i64, {3}, std::vector<int64_t>{1, 0, 2});
-            auto transposed = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
-            return rename_outputs_with_suffix({transposed}, context.get_name());
-        } else {
-            // Step 1: reshape to [1, T, n_layer, pe_dim]
-            new_shape_node =
-                ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_layer, pe_dim});
-            auto reshaped = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
-            // Step 2: transpose [1, T, n_layer, pe_dim] -> [1, n_layer, T, pe_dim]
-            auto perm = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, 2, 1, 3});
-            auto transposed = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
-            return rename_outputs_with_suffix({transposed}, context.get_name());
-        }
+        // Step 1: reshape to [1, T, n_layer, pe_dim]
+        new_shape_node =
+            ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{1, -1, n_layer, pe_dim});
+        auto reshaped = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
+        // Step 2: transpose [1, T, n_layer, pe_dim] -> [1, n_layer, T, pe_dim]
+        auto perm = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, 2, 1, 3});
+        auto transposed = std::make_shared<ov::op::v1::Transpose>(reshaped, perm);
+        return rename_outputs_with_suffix({transposed}, context.get_name());
     }
     auto res = std::make_shared<ov::op::v1::Reshape>(context.get_input(0), new_shape_node, false);
     return rename_outputs_with_suffix({res}, context.get_name());

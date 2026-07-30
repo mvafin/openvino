@@ -110,35 +110,43 @@ public:
     // dynamic_pointer_cast<ov::op::v0::Parameter>.
     virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const = 0;
 
-    // Auxiliary model-scope inputs (position IDs, KV-cache lengths, attention masks, beam_idx).
-    // The cgraph/decoder-replay path returns these folded into get_model_inputs() and leaves this
-    // empty; the native .gguf builder path surfaces them here.
-    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const = 0;
-
     virtual std::vector<std::string> get_model_output_names() const = 0;
+
+    // ── Optional model scope ───────────────────────────────────────────────────────────────────
+    //
+    // The accessors below are how a decoder OPTIONALLY enriches the graph; each has a
+    // do-nothing default so a decoder only implements what it actually knows. That is what lets
+    // two very different decoders satisfy one interface: the native .gguf builder answers all of
+    // them, while the llama.cpp cgraph decoder (which is handed an already-built ggml graph and no
+    // GGUF metadata) answers none and is not forced to write empty stubs.
+    //
+    // Note what is NOT here: nothing describes the execution mode. There is no is_stateful /
+    // is_static, because a decoder describes ggml OPERATIONS, not a deployment. Conversion always
+    // yields a stateless graph; a caller that wants an OpenVINO KV cache registers
+    // ov::frontend::gguf::pass::MakeStateful as a DecoderTransformationExtension.
+
+    // Auxiliary model-scope inputs (position IDs, KV-cache lengths, attention masks, beam_idx).
+    // A decoder that folds these into get_model_inputs() leaves this empty.
+    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const {
+        return empty_node_map();
+    }
 
     // Pre-built OpenVINO weight nodes, keyed by ggml tensor name (e.g. "blk.0.attn_q.weight").
     // The native .gguf builder path dequantizes weights up front and returns them here; the
     // TranslateSession seeds them into the tensor map before the graph walk. A decoder that
     // instead surfaces each weight as a GGML_OP_NONE leaf carrying a "data" attribute (the
     // llama.cpp cgraph path) returns an empty map -- translate_weight then builds the node.
-    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const = 0;
-
-    // KV-cache parameter/result friendly-name pairs consumed by ov::pass::MakeStateful when the
-    // model is stateful (empty otherwise): each entry maps a cache Parameter name to its Result
-    // name so MakeStateful turns them into a ReadValue/Assign pair.
-    virtual std::map<std::string, std::string> get_kv_param_res_names() const = 0;
-
-    // Execution-mode flags. A static model uses fixed token length (NPU-friendly, SqueezeMatmul);
-    // a stateful model carries an OpenVINO KV cache (ReadValue/Assign, beam_idx) and is what
-    // OpenVINO GenAI consumes. The cgraph/decoder-replay path reports both false (stateless).
-    virtual bool is_static() const = 0;
-    virtual bool is_stateful() const = 0;
+    virtual const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_weights() const {
+        return empty_node_map();
+    }
 
     // GGUF tokenizer metadata (the file's `tokenizer.*` keys), attached to the converted model's
     // rt_info so a downstream consumer (OpenVINO GenAI) can build the tokenizer without reopening
     // the .gguf. Empty when the decoder carries no tokenizer metadata.
-    virtual const ov::AnyMap& get_tokenizer_config() const = 0;
+    virtual const ov::AnyMap& get_tokenizer_config() const {
+        static const ov::AnyMap empty;
+        return empty;
+    }
 
     // RoPE configuration, exposed through get_attribute<RopeConfig>("rope_config"):
     //   - at model scope (via InputModel::get_rope_config), used by TranslateSession::preprocess
@@ -150,6 +158,13 @@ public:
     // marks such a leaf via get_attribute<ov::Tensor>("data") + get_attribute<std::string>(
     // "quant_type") + get_output_shape(), and translate_weight builds the node. The native .gguf
     // builder path uses get_model_weights() instead and returns those leaves' data pre-dequantized.
+
+protected:
+    // Shared empty map backing the optional accessors above, which return by const reference.
+    static const std::map<std::string, std::shared_ptr<ov::Node>>& empty_node_map() {
+        static const std::map<std::string, std::shared_ptr<ov::Node>> empty;
+        return empty;
+    }
 };
 
 }  // namespace ov::frontend::gguf

@@ -23,15 +23,23 @@ GGUF itself instead of depending on llama.cpp, and the memory-consumption model.
      |   walks the decoder's nodes, calls one op translator per node
      v
   op translators  ── src/op/*.cpp  (GGML_OP_MUL_MAT -> MatMul, GGML_OP_ROPE -> RoPE, ...)
-     |   + normalization passes (SetRows lowering, MakeStateful, ...)
+     |   + normalization passes (SetRows lowering; caller extensions such as MakeStateful)
      v
-   ov::Model  (stateful, SDPA-shaped)
+   ov::Model  (stateless; stateful when the caller registers MakeStateful)
 ```
 
 The **`GgufDecoder` interface** is the single seam. It is node-scoped: `visit_subgraph` hands the
 translator a decoder bound to one node, and per-node accessors (`get_op_type`, `get_input_shape`,
 `get_attribute`, `get_op_case`, ...) refer to that node; model-scope accessors (`get_model_inputs`,
-`get_model_weights`, `get_kv_param_res_names`, `is_stateful`, ...) answer whole-model questions.
+`get_model_output_names`, and the optional `get_model_extra_inputs` / `get_model_weights` /
+`get_tokenizer_config`) answer whole-model questions. The optional ones have do-nothing defaults, so
+a decoder implements only what it actually knows — which is what lets two very different decoders
+satisfy one interface (the native builder answers all of them, the cgraph decoder none).
+
+Note what the interface deliberately does *not* have: anything describing the **execution mode**.
+A decoder describes ggml *operations*, not a deployment, so there is no `is_stateful` / `is_static`.
+Conversion always produces a stateless graph; see "Statefulness".
+
 Everything downstream of the decoder (translators, passes, the produced `ov::Model`) is shared by
 both decoder paths — so a new op or a graph fix benefits both at once.
 
@@ -128,13 +136,55 @@ to look for (compile peak jumping toward the dequantized size).
 
 ## Statefulness & the attention backends
 
-The native builder emits a **stateful** graph: per-layer f16 KV-cache `Parameter`s written via a
-`SetRows` placeholder, lowered to an appending `Concat` (+ `beam_idx` `Gather`) and turned into
-`ReadValue`/`Assign` by `MakeStateful`. The graph is shaped so the CPU plugin's
-`stateful_sdpa_fusion` folds attention into `ScaledDotProductAttentionWithKVCache`.
-`AdaptToGenAI` (`src/pass/adapt_to_genai.cpp`, run by GenAI, not the frontend) rewrites the
-llama.cpp-style IO (`inp_tokens`/`inp_pos`/`self_kq_mask`/... ) into GenAI's contract
-(`input_ids`/`attention_mask`/`position_ids`/`beam_idx` -> `logits`).
+**The frontend is universal: conversion always produces a STATELESS graph.** Every KV cache is an
+explicit model `Parameter`, written by a `SetRows` placeholder op and returned as a `Result`. That is
+the same shape optimum-intel exports before applying its own
+`apply_make_stateful_transformation` — and it is why the decoder interface carries no execution-mode
+flag.
+
+**Statefulness is a caller concern**, chosen by registering a transformation extension. Extensions
+run in the frontend's normalization stage *ahead of* the built-in `LowerSetRowsStateless`, so a
+registered pass consumes the KV-cache `SetRows` ops and the default lowering only ever sees the ones
+left over (e.g. MoE routing writes, which stay stateless either way):
+
+```cpp
+// Stateless (the default): caches are inputs/outputs, SetRows -> ScatterUpdate.
+auto stateless = core.read_model("model.gguf");
+
+// Stateful: caches become Variables (ReadValue / Concat / Assign).
+ov::frontend::gguf::FrontEnd fe;
+fe.add_extension(std::make_shared<ov::frontend::DecoderTransformationExtension>(
+    ov::frontend::gguf::pass::MakeStateful()));
+auto stateful = fe.convert(fe.load("model.gguf"));
+```
+
+`ov::Core::add_extension` before `core.read_model("model.gguf")` works too (the reader forwards its
+extensions to the frontend before `load`), but it is global; driving the frontend directly scopes the
+choice to one conversion, which is what GenAI does.
+
+Three consumers, three combinations, one frontend:
+
+| Consumer | Extension registered | Result |
+| --- | --- | --- |
+| `core.read_model("model.gguf")` | none | stateless graph, gguf-native IO |
+| OpenVINO GenAI | `MakeStateful` + then `AdaptToGenAI` | stateful graph, GenAI IO |
+| llama.cpp `ggml-openvino` | its own `LlamaCppToStateful` | stateful graph, its own cache layout & mask re-slicing |
+
+`MakeStateful` (`include/openvino/frontend/gguf/make_stateful.hpp`) is decoder-agnostic: it infers
+each cache's append axis from the cache `Parameter`'s single dynamic axis (or takes it explicitly for
+a preallocated cache), and re-splits the placeholder's flattened rows against the cache layout. It
+scopes itself to cache growth only and does **not** touch the attention mask — a dynamically-sized
+mask (what the native builder emits) needs no change, while a preallocated fixed mask window must be
+re-sliced by the caller, which is what llama.cpp's own extension does.
+
+`AdaptToGenAI` (`src/pass/adapt_to_genai.cpp`, run by GenAI after conversion) then rewrites the
+gguf-native IO (`inp_tokens`/`inp_pos`/`self_kq_mask`/...) into GenAI's contract
+(`input_ids`/`attention_mask`/`position_ids`/`beam_idx` -> `logits`), so a GGUF model behaves like an
+optimum-intel export. The two concerns are separate passes precisely because they are independent:
+cache form vs IO contract.
+
+Either way the stateful graph is shaped so the CPU plugin's `stateful_sdpa_fusion` folds attention
+into `ScaledDotProductAttentionWithKVCache`.
 
 The result is valid under **both** attention backends: plain stateful SDPA inference, and
 `ov::pass::SDPAToPagedAttention` (the transform GenAI's ContinuousBatching adapter applies for
@@ -150,12 +200,14 @@ element-for-element the same buffer.
 **The invariant to preserve: no node may pin the leading two dims to constants.** `AdaptToGenAI`
 derives them from the live `input_ids`, and the op translators reshape with `special_zero=true` so a
 `0` copies dim 0 through instead of writing a literal `1` (`reshape` cases 1/2, `rope`'s
-bhsd/paired/to_bhls targets, `set_rows`, `LowerSetRowsStateful`). Two traps when touching these:
+bhsd/paired/to_bhls targets, `set_rows`, `MakeStateful`'s row re-split). Two traps when touching
+these:
 
 - **OV broadcasts elementwise operands from the right.** A rank-4 activation against a rank-3 one
   *appears* to work while dim 0 is a literal batch 1 (`[1,1,T,E]` right-aligns onto `[1,T,E]`), then
-  silently forms a `T x T` outer product once tokens move to dim 0. Emit the rank the mode's
-  activation convention uses (rank 3 stateful, rank 4 otherwise).
+  silently forms a `T x T` outer product once tokens move to dim 0. **Activations are uniformly
+  rank-4** (ggml's `[batch, tokens, heads, head_size]`) — there is no second convention to pick
+  between, and a translator that emits rank 3 reintroduces exactly this bug.
 - **`get_rows` lowers to `Gather(act, ids, axis=1, batch_dims=1)`** = `act[i, ids[i,j]]`, so an
   identity selection is `ids[i,j] == j` — an index along axis 1 replicated over axis 0, *not* a
   `0..tokens` range. A range only coincides with the identity when axis 0 is a batch of 1.
@@ -280,13 +332,13 @@ llama.cpp. The rt_info path is the fast in-process handoff; the file path is the
 
 | Path | Contents |
 |---|---|
-| `include/openvino/frontend/gguf/` | public headers: `decoder.hpp`, `frontend.hpp`, `adapt_to_genai.hpp`, `tokenizer_metadata.hpp`, `set_rows_op.hpp` |
+| `include/openvino/frontend/gguf/` | public headers: `decoder.hpp`, `frontend.hpp`, `make_stateful.hpp`, `adapt_to_genai.hpp`, `tokenizer_metadata.hpp`, `set_rows_op.hpp` |
 | `src/frontend.cpp` | FrontEnd: `.gguf` magic sniff + native load path; live-decoder path; extensions |
-| `src/translate_session.cpp` | graph walk, weight seeding, statefulness passes, tokenizer rt_info |
+| `src/translate_session.cpp` | graph walk, weight seeding, normalization passes (caller extensions then built-ins), tokenizer rt_info |
 | `src/op/*.cpp` | one op translator per GGML op |
 | `src/builder/` | native `.gguf` parser adapter + `TransformerBuilder` + `GgufBuilderDecoder` |
 | `src/quant/` | GGUF container parser (`gguf.cpp`), dequant fill fns (`gguf_quants.cpp`), weight-node construction (`weights.cpp`) |
-| `src/pass/` | `LowerSetRows{Stateless,Stateful}`, `SqueezeMatmul`, `AdaptToGenAI` |
+| `src/pass/` | `LowerSetRowsStateless` (built-in), `MakeStateful` + `AdaptToGenAI` (caller-registered) |
 | `src/helper_ops/` | internal `SetRows` placeholder op |
 | `tests/` | C++ op/dequant tests (in CI); standalone python dev/bench scripts |
 
