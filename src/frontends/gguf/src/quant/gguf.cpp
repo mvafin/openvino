@@ -757,7 +757,12 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     config["rms_norm_eps"] = metadata_to_float(metadata, arch + ".attention.layer_norm_rms_epsilon");
     config["rope_freq_base"] =
         metadata.count(arch + ".rope.freq_base") ? metadata_to_float(metadata, arch + ".rope.freq_base") : 10000.0f;
-    config["file_type"] = metadata_to_int(metadata, "general.file_type");
+    // Advisory: the dominant quant type of the file. Purely informational -- every weight carries
+    // its own type in the tensor info, which is what the dequant path uses. Optional because
+    // llama.cpp's own model writer (llama_model_saver, the source of the per-arch test fixtures)
+    // does not emit it; requiring it would reject files llama.cpp itself considers valid.
+    config["file_type"] =
+        metadata.count("general.file_type") ? metadata_to_int(metadata, "general.file_type") : 0;
 
     // RoPE YaRN scaling: freq_scale = 1/factor (default 1.0 = no scaling), ext_factor = 1.0
     // for YARN type (0.0 otherwise), n_ctx_orig from rope.scaling.original_context_length.

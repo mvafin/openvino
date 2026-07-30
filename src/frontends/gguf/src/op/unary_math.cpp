@@ -3,19 +3,14 @@
 //
 // Element-wise unary math ops: LOG, SIN, COS, GELU_QUICK.
 
-#include <cmath>
 #include <memory>
 #include <openvino/core/node_output.hpp>
-#include <openvino/op/add.hpp>
 #include <openvino/op/constant.hpp>
 #include <openvino/op/cos.hpp>
 #include <openvino/op/log.hpp>
 #include <openvino/op/multiply.hpp>
-#include <openvino/op/power.hpp>
 #include <openvino/op/sigmoid.hpp>
 #include <openvino/op/sin.hpp>
-#include <openvino/op/sqrt.hpp>
-#include <openvino/op/tanh.hpp>
 
 #include "../node_context.hpp"
 #include "../op_table.hpp"
@@ -44,35 +39,20 @@ OutputVector translate_cos(const NodeContext& context) {
     return rename_outputs_with_suffix({res}, context.get_name());
 }
 
-// GGML_UNARY_OP_GELU_QUICK: fast GELU approximation using tanh.
-// Formula: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
-// Equivalent to PyTorch's F.gelu(x, approximate='tanh').
+// GGML_UNARY_OP_GELU_QUICK: sigmoid-based GELU approximation.
+// Formula: x * sigmoid(1.702 * x), matching ggml_gelu_quick_f32 in ggml/src/ggml-cpu/vec.h:
+//   x*(1.0f/(1.0f+expf(GELU_QUICK_COEF*x))) with GELU_QUICK_COEF = -1.702f.
+// This is a different approximation from GGML_UNARY_OP_GELU (tanh/erf); the two are not
+// interchangeable -- they diverge by ~2e-2 on [-6, 6], most sharply in the negative tail.
 OutputVector translate_unary_gelu_quick(const NodeContext& context) {
     num_inputs_check(context, 1, 1);
 
     auto x = context.get_input(0);
 
-    auto c1 = ov::op::v0::Constant::create(ov::element::f32, {}, {0.044715f});
-    auto c2 = ov::op::v0::Constant::create(ov::element::f32, {}, {static_cast<float>(std::sqrt(2.0 / M_PI))});
-    auto c_half = ov::op::v0::Constant::create(ov::element::f32, {}, {0.5f});
-    auto c_one = ov::op::v0::Constant::create(ov::element::f32, {}, {1.0f});
-    auto c_three = ov::op::v0::Constant::create(ov::element::f32, {}, {3.0f});
-
-    // x^3
-    auto x_cubed = std::make_shared<ov::op::v1::Power>(x, c_three);
-    // 0.044715 * x^3
-    auto x_cubed_scaled = std::make_shared<ov::op::v1::Multiply>(c1, x_cubed);
-    // x + 0.044715 * x^3
-    auto inner = std::make_shared<ov::op::v1::Add>(x, x_cubed_scaled);
-    // sqrt(2/pi) * (x + 0.044715 * x^3)
-    auto scaled = std::make_shared<ov::op::v1::Multiply>(c2, inner);
-    // tanh(...)
-    auto t = std::make_shared<ov::op::v0::Tanh>(scaled);
-    // 1 + tanh(...)
-    auto one_plus_t = std::make_shared<ov::op::v1::Add>(c_one, t);
-    // 0.5 * x * (1 + tanh(...))
-    auto half_x = std::make_shared<ov::op::v1::Multiply>(c_half, x);
-    auto res = std::make_shared<ov::op::v1::Multiply>(half_x, one_plus_t);
+    auto coef = ov::op::v0::Constant::create(ov::element::f32, {}, {1.702f});
+    auto scaled = std::make_shared<ov::op::v1::Multiply>(x, coef);
+    auto s = std::make_shared<ov::op::v0::Sigmoid>(scaled);
+    auto res = std::make_shared<ov::op::v1::Multiply>(x, s);
 
     return rename_outputs_with_suffix({res}, context.get_name());
 }
