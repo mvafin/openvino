@@ -25,12 +25,17 @@
 // data offset, i.e. magic + KV metadata + tensor table.  That is the whole input to architecture
 // detection and graph construction; the weight bytes after it do not affect the converted graph's
 // structure.  Each is turned back into a loadable .gguf here by appending the manifest's recorded
-// number of zero bytes.  Full models would be 559 MB; the headers are ~120 KB in the git pack.
+// number of zero bytes.  Full models would be 559 MB; the headers are ~25 KB each.
 //
-// The fixtures are generated OFFLINE by gen_arch_fixtures.py from llama.cpp's test-llama-archs.
-// They are committed rather than generated in CI on purpose: OpenVINO must not depend on llama.cpp
-// at build or test time, and a CI-time generator would make OV precommit red for upstream churn
-// unrelated to the PR under test.  See docs/testing_architecture.md.
+// The headers are GENERATED, not committed: tests/gen_arch_fixtures.py builds llama.cpp's
+// test-llama-archs at a pinned commit and strips its output.  CI does this in the Linux build job
+// (.github/workflows/job_build_linux.yml) and ships the result in the tests artifact.  The
+// manifest, by contrast, IS committed -- it carries the reviewed expectation per architecture.
+//
+// So on a platform where the generator did not run, the manifest is present but its fixtures are
+// not.  That is a legitimate configuration and the suite skips itself (see present_fixture_count());
+// a manifest entry missing its file while OTHER fixtures exist is a broken generation and fails.
+// Running the generator locally into test_data/arch_fixtures makes the suite live in-tree too.
 
 #include <algorithm>
 #include <cctype>
@@ -98,6 +103,27 @@ std::vector<ArchFixture> read_manifest() {
         fixtures.push_back(f);
     }
     return fixtures;
+}
+
+// Whether the generated *.gguf.hdr fixtures are present at all.
+//
+// Counted rather than checked as a boolean so a PARTIAL generation is distinguishable from no
+// generation: none present means the generator did not run on this platform (skip), some present
+// means it ran and produced an incomplete set (a failure, asserted in ManifestIsPresentAndComplete).
+size_t count_present_fixtures(const std::vector<ArchFixture>& fixtures) {
+    size_t present = 0;
+    for (const auto& f : fixtures) {
+        if (ov::util::file_exists(ov::util::path_join({fixture_dir(), f.header_file}).string())) {
+            ++present;
+        }
+    }
+    return present;
+}
+
+// Cached: every parameterized test consults this, and there are ~101 of them.
+size_t present_fixture_count() {
+    static const size_t count = count_present_fixtures(read_manifest());
+    return count;
 }
 
 // Reconstruct a loadable .gguf from a header fixture: header bytes followed by data_bytes zeros.
@@ -190,6 +216,10 @@ class GGUFArchConversion : public ::testing::TestWithParam<ArchFixture> {};
 
 TEST_P(GGUFArchConversion, MatchesManifestExpectation) {
     const ArchFixture fixture = GetParam();
+    if (present_fixture_count() == 0) {
+        GTEST_SKIP() << "no arch fixtures in " << fixture_dir()
+                     << " -- generate them with tests/gen_arch_fixtures.py --fetch";
+    }
     ScratchDir scratch;
     const std::string model_path = materialize(fixture, scratch.path());
     ASSERT_FALSE(model_path.empty()) << "could not materialize fixture " << fixture.header_file;
@@ -272,10 +302,27 @@ TEST(GGUFArchConversionManifest, IsPresentAndComplete) {
     EXPECT_GE(fixtures.size(), 90u) << "manifest has far fewer fixtures than the ~101 architectures llama.cpp "
                                     << "emits; regenerate with gen_arch_fixtures.py";
 
+    // Fixture files are generated, so "none present" is a valid platform configuration and only
+    // means the suite above skips.  "Some present" is not: it means the generator ran and produced
+    // an incomplete set, which would silently shrink coverage to whatever happened to be written.
+    const size_t present = present_fixture_count();
+    if (present != 0) {
+        for (const auto& f : fixtures) {
+            const std::string path = ov::util::path_join({fixture_dir(), f.header_file}).string();
+            EXPECT_TRUE(ov::util::file_exists(path))
+                << "manifest lists " << f.header_file << " but the file is missing, while " << present << " of "
+                << fixtures.size() << " fixtures are present -- fixture generation was incomplete. Re-run "
+                << "tests/gen_arch_fixtures.py (CI: the 'Generate GGUF arch fixtures' build step).";
+        }
+    } else {
+        GTEST_LOG_(INFO) << "no fixture files in " << fixture_dir()
+                         << "; the GGUFArchs suite is skipped on this platform";
+    }
+
+    // Manifest/fingerprint consistency is checked whether or not the fixtures were generated: both
+    // are committed source, so a mismatch is a bug on every platform.
     size_t convertible = 0;
     for (const auto& f : fixtures) {
-        const std::string path = ov::util::path_join({fixture_dir(), f.header_file}).string();
-        EXPECT_TRUE(ov::util::file_exists(path)) << "manifest lists " << f.header_file << " but the file is missing";
         if (f.expectation == Expectation::Convert) {
             ++convertible;
             EXPECT_NE(fingerprints().count(f.header_file), 0u)

@@ -102,14 +102,20 @@ ov_add_test_target(
 )
 
 # Install the reference data next to the test binary (found via getExecutableDirectory()):
-# *.npy op/dequant references, plus the per-architecture GGUF header fixtures and their manifest.
+# *.npy op/dequant references, plus the per-architecture fixture manifest.
+#
+# The manifest's companion *.gguf.hdr fixtures are deliberately NOT here: they are generated from
+# llama.cpp by tests/gen_arch_fixtures.py into this same directory (see the "Generate GGUF arch
+# fixtures" step in .github/workflows/job_build_linux.yml).  The manifest itself IS installed --
+# it carries the reviewed per-architecture expectation for each fixture, which is source, not
+# generated output.  Where no fixtures were generated the arch suite skips itself; see
+# test_arch_conversion.cpp.
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/test_data"
         DESTINATION tests
         COMPONENT tests
         EXCLUDE_FROM_ALL
         FILES_MATCHING
             PATTERN "*.npy"
-            PATTERN "*.gguf.hdr"
             PATTERN "manifest.txt")
 
 # Sources compiled into the binary: resolve the visibility macros to local definitions, not dllimport.
