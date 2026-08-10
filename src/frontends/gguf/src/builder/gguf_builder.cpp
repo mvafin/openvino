@@ -175,6 +175,18 @@ public:
         m_has_qkv_bias = m_weights.count("blk.0.attn_q.bias") > 0 || m_weights.count("blk.0.attn_qkv.bias") > 0;
         m_has_attn_out_bias = m_weights.count("blk.0.attn_output.bias") > 0;
         m_has_rope_freqs = m_weights.count("rope_freqs.weight") > 0;
+        // muse-glimmer: sigmoid output gate on the attention sublayer. The gate is projected
+        // from the SAME pre-attention normed hidden the Q/K/V projections consume, so it is
+        // wired inside the layer right before the output projection (see build()).
+        m_has_attn_gate = m_weights.count("blk.0.attn_gate.weight") > 0;
+        // muse-glimmer applies a weightless RMSNorm to the token embeddings before layer 0
+        // (llama.cpp src/models/muse-glimmer.cpp: build_norm(inpL, nullptr, nullptr, RMS, -1)),
+        // ropes only its sliding-window layers (global layers are NoPE), and post-norms with a
+        // tighter eps (post_norm_eps = 1e-8) than the pre-norms use.
+        const bool is_muse_glimmer = arch_str == "muse-glimmer";
+        m_scaleless_embd_norm = is_muse_glimmer;
+        m_rope_on_swa_only = is_muse_glimmer;
+        m_post_norm_eps = is_muse_glimmer ? 1e-8f : 0.0f;  // 0 -> reuse m_rms_eps
 
         // Per-architecture scalars from metadata (1.0 / 0.0 when absent -> no-op).
         m_embedding_scale = cfg_float("embedding_scale");
@@ -436,7 +448,12 @@ private:
     }
 
     // RMS_NORM followed by elementwise MUL with the norm weight (build_norm, LLM_NORM_RMS).
-    std::string rms_norm(const std::string& in, const std::string& weight, const std::string& out_prefix) {
+    // `eps` overrides the model-wide rms_norm_eps when > 0 (muse-glimmer's post-norms use a
+    // tighter 1e-8 than its pre-norms).
+    std::string rms_norm(const std::string& in,
+                         const std::string& weight,
+                         const std::string& out_prefix,
+                         float eps = 0.0f) {
         add_weight(weight);
         auto norm = add_op("GGML_OP_RMS_NORM",
                            out_prefix + ".rms",
@@ -444,7 +461,7 @@ private:
                            m_tensor_shapes.at(in),
                            ov::element::f32,
                            0,
-                           {{"eps", m_rms_eps}});
+                           {{"eps", eps > 0.0f ? eps : m_rms_eps}});
         m_tensor_shapes[weight] = m_tensor_shapes.count(weight) ? m_tensor_shapes[weight] : ov::PartialShape{};
         return add_op("GGML_OP_MUL", out_prefix, {norm, weight}, m_tensor_shapes.at(in), ov::element::f32);
     }
@@ -816,6 +833,11 @@ private:
     bool m_has_moe_expert_bias = false, m_has_sinks = false, m_has_swa = false;
     bool m_has_attn_post_norm = false, m_has_ffn_post_norm = false, m_is_geglu = false;
     bool m_has_v_norm = false;  // gemma4: V is also RMSNorm'd like K
+    // muse-glimmer specifics
+    bool m_has_attn_gate = false;        // sigmoid gate multiplied into the attention output
+    bool m_scaleless_embd_norm = false;  // weightless RMSNorm on the token embeddings
+    bool m_rope_on_swa_only = false;     // global (non-SWA) layers are NoPE
+    float m_post_norm_eps = 0.0f;        // eps for post-attn/post-FFN norms (0 -> m_rms_eps)
     // Norm key suffixes; overridden for archs that use non-standard naming (exaone4, gpt-oss).
     std::string m_attn_norm_key{"attn_norm.weight"};
     std::string m_ffn_norm_key{"ffn_norm.weight"};
@@ -891,6 +913,11 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
     // MiniCPM scales the embeddings by a constant.
     if (m_embedding_scale != 1.0f) {
         cur = scale(cur, m_embedding_scale, "embd_scaled");
+    }
+    // muse-glimmer normalizes the token embeddings with a WEIGHTLESS RMSNorm before layer 0
+    // (build_norm with a null weight -> plain ggml_rms_norm, no multiplicative term).
+    if (m_scaleless_embd_norm) {
+        cur = add_op("GGML_OP_RMS_NORM", "embd_normed", {cur}, m_tensor_shapes.at(cur), f32, 0, {{"eps", m_rms_eps}});
     }
 
     // rope freq factors (llama-3 long context, phi-3): an optional 3rd ROPE input.
@@ -1071,6 +1098,9 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
 
         // RoPE (NEOX). rope_freqs.weight (per-dim frequency factor) is an optional 3rd input.
         // For gemma4: global layers use rope_freqs (proportional/NTK scaling), SWA layers don't.
+        // muse-glimmer ropes ONLY its sliding-window layers; its global layers are NoPE
+        // (llama.cpp muse-glimmer.cpp: `const bool use_rope = hparams.is_swa(il)`).
+        const bool use_rope = !m_rope_on_swa_only || is_swa_layer;
         const bool use_rope_freqs = m_has_rope_freqs && !is_swa_layer;
         const std::vector<std::string> q_rope_in = use_rope_freqs
                                                        ? std::vector<std::string>{q, "inp_pos", "rope_freqs.weight"}
@@ -1078,20 +1108,22 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         const std::vector<std::string> k_rope_in = use_rope_freqs
                                                        ? std::vector<std::string>{k, "inp_pos", "rope_freqs.weight"}
                                                        : std::vector<std::string>{k, "inp_pos"};
-        q = add_op("GGML_OP_ROPE",
-                   p + "Qcur_rope",
-                   q_rope_in,
-                   ps({1, T, m_n_head, head_size_l}),
-                   f32,
-                   m_rope_op_case,
-                   {{"rope_config", rope_config_l}});
-        k = add_op("GGML_OP_ROPE",
-                   p + "Kcur_rope",
-                   k_rope_in,
-                   ps({1, T, n_head_kv_l, head_size_l}),
-                   f32,
-                   m_rope_op_case,
-                   {{"rope_config", rope_config_l}});
+        if (use_rope) {
+            q = add_op("GGML_OP_ROPE",
+                       p + "Qcur_rope",
+                       q_rope_in,
+                       ps({1, T, m_n_head, head_size_l}),
+                       f32,
+                       m_rope_op_case,
+                       {{"rope_config", rope_config_l}});
+            k = add_op("GGML_OP_ROPE",
+                       p + "Kcur_rope",
+                       k_rope_in,
+                       ps({1, T, n_head_kv_l, head_size_l}),
+                       f32,
+                       m_rope_op_case,
+                       {{"rope_config", rope_config_l}});
+        }
 
         // ---- KV cache store ----
         // Gemma4: layers with shared_kv_layers have no K/V of their own; they reuse the KV
@@ -1206,6 +1238,20 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         auto attn_2d =
             add_op("GGML_OP_RESHAPE", p + "kqv_merged", {attn}, ps({1, 1, T, m_n_head * head_size_l}), f32, 2);
 
+        // muse-glimmer: sigmoid output gate. The gate is a projection of the PRE-attention
+        // normed hidden (the same `attn_norm` tensor Q/K/V come from), squashed by sigmoid and
+        // multiplied elementwise into the merged attention output before the wo projection.
+        if (m_has_attn_gate) {
+            add_weight(p + "attn_gate.weight");
+            auto gate = add_op("GGML_OP_MUL_MAT",
+                               p + "attn_gate",
+                               {p + "attn_gate.weight", attn_norm},
+                               ps({1, 1, T, m_n_head * head_size_l}),
+                               f32);
+            gate = add_op("GGML_UNARY_OP_SIGMOID", p + "attn_gate_sig", {gate}, m_tensor_shapes.at(gate), f32);
+            attn_2d = add_op("GGML_OP_MUL", p + "kqv_gated", {attn_2d, gate}, m_tensor_shapes.at(attn_2d), f32);
+        }
+
         // output projection (+ optional bias)
         add_weight(p + "attn_output.weight");
         auto attn_out = add_op("GGML_OP_MUL_MAT",
@@ -1229,7 +1275,7 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         // Gemma2: post-attention RMSNorm applied to the sublayer output before residual add.
         // Applied after GET_ROWS so the selected-token path matches gemma2.cpp's order.
         if (m_has_attn_post_norm) {
-            ao = rms_norm(ao, p + "post_attention_norm.weight", p + "attn_post_norm");
+            ao = rms_norm(ao, p + "post_attention_norm.weight", p + "attn_post_norm", m_post_norm_eps);
         }
 
         auto ffn_inp = add_op("GGML_OP_ADD", p + "ffn_inp", {ao, sa}, ps({1, 1, T, m_n_embd}), f32);
@@ -1248,7 +1294,7 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         }
         // Gemma2: post-FFN RMSNorm applied to the FFN output before residual add.
         if (m_has_ffn_post_norm) {
-            down = rms_norm(down, p + "post_ffw_norm.weight", p + "ffn_post_norm");
+            down = rms_norm(down, p + "post_ffw_norm.weight", p + "ffn_post_norm", m_post_norm_eps);
         }
 
         cur = add_op("GGML_OP_ADD", p + "l_out", {down, ffn_inp}, ps({1, 1, T, m_n_embd}), f32);
@@ -1387,8 +1433,11 @@ const std::set<std::string>& experimental_archs() {
         "ernie4_5-moe",  // Ernie 4.5 MoE: NORMAL rope, dense lead layers + MoE stride
         "bailingmoe2",   // BailingMoe V2: NEOX rope, MoE + shared expert + QK-norm
         // 2026: dense
-        "maincoder",  // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
-        "mistral3",   // Ministral-3B: NORMAL rope, dense
+        "maincoder",     // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
+        "mistral3",      // Ministral-3B: NORMAL rope, dense
+        "muse-glimmer",  // Muse Glimmer (Meta Onyx): NORMAL rope on SWA layers only (global
+                         // layers are NoPE), sigmoid attention output gate, QK-norm,
+                         // pre+post norms, final logit soft-cap
         // 2026: MoE
         "mellum",         // JetBrains Mellum: NEOX rope, pure MoE
         "deepseek2-ocr",  // DeepSeekOCR: NEOX rope, dense lead layers + MoE

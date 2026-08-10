@@ -98,6 +98,7 @@ rather than converting into a silently wrong graph.
 | `bailingmoe2` | BailingMoe V2: MoE + shared expert + QK-norm |
 | `maincoder` | Maincoder-1B: NORMAL rope, QK-norm (auto-detected) |
 | `mistral3` | Ministral-3B: NORMAL rope, dense |
+| `muse-glimmer` | Muse Glimmer (Meta Onyx): NORMAL rope on SWA layers only (global layers are NoPE), sigmoid attention output gate, QK-norm, pre+post norms, final logit soft-cap |
 | `mellum` | JetBrains Mellum: pure MoE |
 | `deepseek2-ocr` | DeepSeekOCR: dense lead layers + MoE |
 | `jais2` | JAIS-2: dense (biases auto-detected) |
@@ -136,6 +137,7 @@ model/checkpoint that is simply weak on the prompt.
 | `smollm3` | experimental | SmolLM3-3B Q4_K_M | generates (reasoning preamble) | same |
 | `maincoder` | experimental | Maincoder-1B Q4_K_M | generates | generates |
 | `mistral3` | experimental | Ministral-3-3B-Instruct-2512 Q4_K_M | generates | generates |
+| `muse-glimmer` | experimental | Muse-Glimmer-30B Q4_0 | generates | generates |
 | `deepseek2-ocr` | experimental | deepseek-ocr-2 Q4_K_M | **degenerate** | generates |
 | `ernie4_5-moe` | experimental | ERNIE-4.5-21B-A3B Q4_K_M | **degenerate** (blank) | generates |
 | `bailingmoe2` | experimental | Ling-mini-2.0 Q2_K | generates | generates |
@@ -156,6 +158,22 @@ builder** — `hunyuan-dense`, `qwen3moe`, `gemma2`, `exaone4`, `deepseek2-ocr`,
 `ernie4_5-moe` (blank output) and `mellum` — i.e. real conversion defects. Three of them
 (`hunyuan-dense`, `qwen3moe`, `gemma2`) are in `verified_archs()`, so that set is currently
 **optimistic** and should be re-validated before it is relied on.
+
+`muse-glimmer` needs a footnote of its own, because it is the one arch whose row was decided
+by the *tokenizer*, not the graph. Fed llama.cpp's own token ids, the converted graph
+reproduces llama.cpp token-for-token: for `<|begin_of_text|>The capital of France is` all 32
+greedy tokens are identical, and the final logits agree to within the frontend's ordinary
+dequantization noise (sum -821515 vs -824015, 0.3%, *tighter* than the `qwen3` Q4_0 control
+at 0.17% on values ~3x smaller). Through GenAI it initially looked degenerate, because
+GenAI's GGUF tokenizer honored `tokenizer.ggml.add_bos_token` only on the SentencePiece
+(`tokenizer.ggml.model = llama`) path; on the BPE (`gpt2`) path it built no CombineSegments
+node, so the leading BOS was silently dropped. Muse Glimmer is `gpt2` + `add_bos_token = true`
+and is BOS-sensitive, so it looped on `The capital of France is`. Without the BOS the
+converted graph picks `" The"` at that position (top-8 `589=12.42 5422=10.97 1573=10.69`);
+with it, `" It"` (`1573=17.34`), which is what llama.cpp emits. The gap was arch-independent
+(`llama3` and `mistral3` lost their BOS the same way) and lived in GenAI, not in this
+frontend; it is fixed in `gguf_tokenizer.cpp` by emitting BOS/EOS as a CombineSegments
+segment on every tokenizer path.
 
 ### Measured performance and memory (OpenVINO GenAI, CPU)
 
@@ -191,9 +209,16 @@ genuinely requires RAM (see [`frontend_design.md`](frontend_design.md) on the me
 | `phi3` | 2282 | 4.4 | 108.3 | 11.84 | 8197 | 8130 |
 | `gemma4` | 4746 | 9.6 | 63.6 | 9.24 | 12309 | 11953 |
 | `gpt-oss` | 11548 | 89.3 | 18.7 | 5.48 | 123720 | 123493 |
+| `muse-glimmer` | 15512 | 28.3 | 28.9 | 2.66 | 37457 | 37357 |
 
 Numbers from architectures marked degenerate above still describe real compute cost (the
 graph runs, it is just numerically wrong), so they are kept for completeness.
+
+`muse-glimmer` is the largest checkpoint in the table (30B, 15.5 GiB) and is memory-bandwidth
+bound at 2.66 tok/s decode; llama.cpp on the same file and host does 3.46 tok/s, so the
+frontend lands at **0.77x llama.cpp**, in line with the 0.51-0.64x SDPA ratios measured on
+the smaller models below. Peak anon is 2.4x the file, better than the 3-4x typical elsewhere,
+because Q4_0 stays 4-bit and only the Q6_K tensors are requantized to Q8_0_C.
 
 One outlier remains: `gpt-oss` peaks at **124 GiB from an 11.5 GiB file (11x)**, versus a
 typical 3-4x elsewhere. On a smaller-RAM host it would OOM. The cause is the compressed-weights
