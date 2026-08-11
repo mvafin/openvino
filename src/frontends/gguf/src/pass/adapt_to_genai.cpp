@@ -3,6 +3,7 @@
 //
 
 #include "openvino/frontend/gguf/adapt_to_genai.hpp"
+#include "openvino/frontend/gguf/make_stateful.hpp"
 
 #include <memory>
 #include <unordered_map>
@@ -18,6 +19,7 @@
 #include "openvino/op/read_value.hpp"
 #include "openvino/op/reduce_prod.hpp"
 #include "openvino/op/reshape.hpp"
+#include "openvino/op/tile.hpp"
 #include "openvino/op/result.hpp"
 #include "openvino/op/scaled_dot_product_attention.hpp"
 #include "openvino/op/select.hpp"
@@ -147,7 +149,16 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
     auto tokens_4d = make_shared<ov::op::v1::Reshape>(tokens_i32, shape_1_1_batch_seq, false);
     inp_tokens->output(0).replace(tokens_4d->output(0));
 
-    auto pos_i32 = make_shared<ov::op::v0::Convert>(position_ids, ov::element::i32);
+    ov::Output<ov::Node> pos_i32 = make_shared<ov::op::v0::Convert>(position_ids, ov::element::i32);
+    // M-RoPE (qwen35): inp_pos carries FOUR position sections per token, laid out section-major --
+    // make_sin_cos reshapes it to {..,4,tokens} and transposes. GenAI supplies one position per
+    // token, so tile it 4x along the token axis. All four sections hold the same value here: the
+    // per-section split only differs for image/video input, and a text-only prompt has no spatial
+    // axes to differ on (llama.cpp fills all sections with the text position likewise).
+    if (model->get_rt_info().count(gguf_imrope_key())) {
+        auto tile_repeats = const_i64({1, 4});
+        pos_i32 = make_shared<ov::op::v0::Tile>(pos_i32, tile_repeats);
+    }
     auto pos_4d = make_shared<ov::op::v1::Reshape>(pos_i32, shape_keep0_1_1_rest, true);
     inp_pos->output(0).replace(pos_4d->output(0));
 
@@ -162,20 +173,20 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
     auto q_pos =
         make_shared<ov::op::v0::Convert>(make_shared<ov::op::v1::Reshape>(position_ids, const_i64({-1}), false),
                                          ov::element::i32);  // [seq]
-    auto q_pos_col = make_shared<ov::op::v1::Reshape>(
-        q_pos,
-        make_shared<ov::op::v0::Concat>(ov::OutputVector{seq_len, const_i64({1})}, 0),
-        false);  // [seq, 1]
+    auto q_pos_col =
+        make_shared<ov::op::v1::Reshape>(q_pos,
+                                         make_shared<ov::op::v0::Concat>(ov::OutputVector{seq_len, const_i64({1})}, 0),
+                                         false);  // [seq, 1]
 
     auto zero_i32 = ov::op::v0::Constant::create(ov::element::i32, ov::Shape{}, {0});
     auto one_i32 = ov::op::v0::Constant::create(ov::element::i32, ov::Shape{}, {1});
     auto kv_len_i32 = make_shared<ov::op::v0::Squeeze>(make_shared<ov::op::v0::Convert>(kv_len, ov::element::i32),
-                                                       const_i64({0}));  // scalar
+                                                       const_i64({0}));                              // scalar
     auto k_range = make_shared<ov::op::v4::Range>(zero_i32, kv_len_i32, one_i32, ov::element::i32);  // [kv_len]
-    auto k_row = make_shared<ov::op::v1::Reshape>(
-        k_range,
-        make_shared<ov::op::v0::Concat>(ov::OutputVector{const_i64({1}), kv_len}, 0),
-        false);  // [1, kv_len]
+    auto k_row =
+        make_shared<ov::op::v1::Reshape>(k_range,
+                                         make_shared<ov::op::v0::Concat>(ov::OutputVector{const_i64({1}), kv_len}, 0),
+                                         false);  // [1, kv_len]
 
     auto allowed = make_shared<ov::op::v1::LessEqual>(k_row, q_pos_col);  // [seq, kv_len] bool
     auto zero_f = ov::op::v0::Constant::create(ov::element::f32, ov::Shape{}, {0.0f});

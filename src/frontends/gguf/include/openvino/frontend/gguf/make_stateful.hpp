@@ -58,6 +58,18 @@ namespace ov::frontend::gguf::pass {
 /// caller simply feeds a mask as wide as the grown cache. A graph that preallocates a fixed mask
 /// window instead reads it through a slice sized for that window, and the caller must re-slice it
 /// to (query_len, past + query_len); the llama.cpp backend does exactly that in its own extension.
+/// Key under which the frontend records the model's recurrent (overwritten, non-appending) states
+/// in rt_info, as a flat list of alternating {input name, output name}. Linear-attention
+/// architectures (qwen35's Gated DeltaNet) carry a conv window and a delta matrix per recurrent
+/// layer. Unlike a KV cache these have no token axis and no SetRows write marking them in the
+/// graph, so the pairing has to be carried explicitly; see GgufDecoder::get_recurrent_states.
+GGUF_FRONTEND_API const std::string& gguf_recurrent_states_key();
+
+/// Key under which the frontend records that the model uses interleaved M-RoPE (qwen35 /
+/// qwen3vl). Such a model expects inp_pos to carry FOUR position sections per token, so a consumer
+/// feeding it plain per-token positions (as OpenVINO GenAI does) has to expand them first.
+GGUF_FRONTEND_API const std::string& gguf_imrope_key();
+
 class GGUF_FRONTEND_API MakeStateful : public ov::pass::ModelPass {
 public:
     OPENVINO_MODEL_PASS_RTTI("gguf::MakeStateful");

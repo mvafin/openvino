@@ -42,6 +42,7 @@ public:
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_inputs() const override;
     const std::map<std::string, std::shared_ptr<ov::Node>>& get_model_extra_inputs() const override;
     std::vector<std::string> get_model_output_names() const override;
+    const std::vector<std::pair<std::string, std::string>>& get_recurrent_states() const override;
     const ov::AnyMap& get_tokenizer_config() const override;
 
 private:

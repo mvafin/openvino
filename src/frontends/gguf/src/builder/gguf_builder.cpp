@@ -883,6 +883,7 @@ private:
                              3,
                              {{"view_slice", tail_slice}, {"input_ggml_shape", shape_of(conv_in)}});
         m_graph->model_output_names.push_back(cs_out);
+        m_graph->recurrent_states.emplace_back(cs, cs_out);
 
         add_named_weight(p + "ssm_conv1d.weight");
         auto conv = add_op("GGML_OP_SSM_CONV",
@@ -949,6 +950,7 @@ private:
                                 4,
                                 {{"gdn_view", state_view}, {"view_reshape", std::vector<int64_t>{1, H_v, head_v, S}}});
         m_graph->model_output_names.push_back(new_state);
+        m_graph->recurrent_states.emplace_back(ss, new_state);
 
         // ---- gated output norm + projection ----
         // build_norm_gated: rms_norm(attn, ssm_norm) * silu(z), normalizing the head_v axis.

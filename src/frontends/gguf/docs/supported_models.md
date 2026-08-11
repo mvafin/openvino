@@ -139,8 +139,8 @@ model/checkpoint that is simply weak on the prompt.
 | `maincoder` | experimental | Maincoder-1B Q4_K_M | generates | generates |
 | `mistral3` | experimental | Ministral-3-3B-Instruct-2512 Q4_K_M | generates | generates |
 | `muse-glimmer` | experimental | Muse-Glimmer-30B Q4_0 | generates | generates |
-| `qwen35` | experimental | Qwen3.5-0.8B Q8_0 | generates (exact match vs llama.cpp) | generates |
-| `qwen35` (Bonsai) | experimental | Ternary-Bonsai-27B Q2_g64 | generates (exact match vs llama.cpp) | generates |
+| `qwen35` | experimental | Qwen3.5-0.8B Q8_0 | generates | generates |
+| `qwen35` (Bonsai) | experimental | Ternary-Bonsai-27B Q2_g64 | generates | generates |
 | `deepseek2-ocr` | experimental | deepseek-ocr-2 Q4_K_M | **degenerate** | generates |
 | `ernie4_5-moe` | experimental | ERNIE-4.5-21B-A3B Q4_K_M | **degenerate** (blank) | generates |
 | `bailingmoe2` | experimental | Ling-mini-2.0 Q2_K | generates | generates |
@@ -230,21 +230,23 @@ genuinely requires RAM (see [`frontend_design.md`](frontend_design.md) on the me
 | `phi3` | 2282 | 4.4 | 108.3 | 11.84 | 8197 | 8130 |
 | `gemma4` | 4746 | 9.6 | 63.6 | 9.24 | 12309 | 11953 |
 | `gpt-oss` | 11548 | 89.3 | 18.7 | 5.48 | 123720 | 123493 |
-| `qwen35` (Qwen3.5-0.8B Q8_0) | 795 | 0.9 | 191.4 | 42.52 | 1993 | 1925 |
-| `qwen35` (Bonsai-27B Q2_g64) | 7234 | 21.9 | 16.8 | 3.39 | 23352 | 23262 |
+| `qwen35` (Qwen3.5-0.8B Q8_0) | 795 | 1.5 | 537.4 | 41.38 | 2292 | 2207 |
+| `qwen35` (Bonsai-27B Q2_g64) | 7234 | 28.7 | 21.4 | 3.75 | 24009 | 23903 |
 | `muse-glimmer` | 15512 | 28.3 | 28.9 | 2.66 | 37457 | 37357 |
 
 Numbers from architectures marked degenerate above still describe real compute cost (the
 graph runs, it is just numerically wrong), so they are kept for completeness.
 
-The two `qwen35` rows were measured with the per-layer recurrent states driven by hand (GenAI
-cannot run this architecture yet -- its `MakeStateful` only rewrites append-style KV caches, so
-the conv/delta states stay as model inputs), f32 inference precision, and a warm-up inference
-before timing. Both reproduce llama.cpp token-for-token; see the numerical notes below.
+The two `qwen35` rows come from the same `gguf_arch_check` harness as every other row: GenAI
+runs this architecture now that `MakeStateful` also rewrites the recurrent conv/delta states and
+`AdaptToGenAI` expands `position_ids` into M-RoPE's four sections. Both reproduce llama.cpp
+token-for-token; see the numerical notes below.
 
-Against llama.cpp on the same host, `qwen35` prefills **1.10x faster** (191.4 vs 174.5 tok/s)
-and decodes at **0.76x** (42.5 vs 56.1) -- the usual SDPA-path ratio. Bonsai inverts that
-dramatically: **5.8x faster decode** (3.39 vs 0.58 tok/s). That is not an OpenVINO win so much
+Against llama.cpp on the same host, `qwen35` decodes at **0.74x** (41.4 vs 56.1 tok/s) -- the
+usual SDPA-path ratio -- while prefill is not directly comparable here because the two harnesses
+use different prompt lengths (95 vs 5 tokens); on the matched 5-token prompt the frontend
+prefills 1.10x faster (191.4 vs 174.5 tok/s). Bonsai inverts the decode picture dramatically:
+**6.5x faster** (3.75 vs 0.58 tok/s). That is not an OpenVINO win so much
 as an upstream gap -- ggml ships no x86 SIMD kernel for `Q2_0`, so `ggml_vec_dot_q2_0_q8_0`
 falls back to the generic scalar reference, while the frontend lowers Q2_0 into the ordinary
 u2 compressed-weights MatMul the CPU plugin already optimizes. (PrismML's own fork ships

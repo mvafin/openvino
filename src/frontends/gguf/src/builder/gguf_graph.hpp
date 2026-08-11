@@ -58,6 +58,10 @@ struct GgufGraph {
     std::map<std::string, std::shared_ptr<ov::Node>> model_extra_inputs;
     std::vector<std::string> model_output_names;
 
+    // Recurrent (overwritten, non-appending) states as {input name, output name} pairs; see
+    // GgufDecoder::get_recurrent_states. Empty for every architecture without linear attention.
+    std::vector<std::pair<std::string, std::string>> recurrent_states;
+
     bool has_rope = false;
     RopeConfig rope_config;
 

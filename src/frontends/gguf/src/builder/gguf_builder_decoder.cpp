@@ -185,6 +185,10 @@ std::vector<std::string> GgufBuilderDecoder::get_model_output_names() const {
     return m_graph->model_output_names;
 }
 
+const std::vector<std::pair<std::string, std::string>>& GgufBuilderDecoder::get_recurrent_states() const {
+    return m_graph->recurrent_states;
+}
+
 const ov::AnyMap& GgufBuilderDecoder::get_tokenizer_config() const {
     return m_graph->tokenizer_config;
 }
