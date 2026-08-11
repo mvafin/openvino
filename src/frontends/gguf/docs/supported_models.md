@@ -99,6 +99,7 @@ rather than converting into a silently wrong graph.
 | `maincoder` | Maincoder-1B: NORMAL rope, QK-norm (auto-detected) |
 | `mistral3` | Ministral-3B: NORMAL rope, dense |
 | `muse-glimmer` | Muse Glimmer (Meta Onyx): NORMAL rope on SWA layers only (global layers are NoPE), sigmoid attention output gate, QK-norm, pre+post norms, final logit soft-cap |
+| `qwen35` | Qwen3.5/3.6 (and the Ternary-Bonsai backbone): HYBRID stack -- 3 of every 4 layers are Gated-DeltaNet linear attention, the rest full attention with M-RoPE and an interleaved query+gate projection |
 | `mellum` | JetBrains Mellum: pure MoE |
 | `deepseek2-ocr` | DeepSeekOCR: dense lead layers + MoE |
 | `jais2` | JAIS-2: dense (biases auto-detected) |
@@ -138,6 +139,7 @@ model/checkpoint that is simply weak on the prompt.
 | `maincoder` | experimental | Maincoder-1B Q4_K_M | generates | generates |
 | `mistral3` | experimental | Ministral-3-3B-Instruct-2512 Q4_K_M | generates | generates |
 | `muse-glimmer` | experimental | Muse-Glimmer-30B Q4_0 | generates | generates |
+| `qwen35` | experimental | Qwen3.5-0.8B Q8_0 | converts (not yet numerically validated) | generates |
 | `deepseek2-ocr` | experimental | deepseek-ocr-2 Q4_K_M | **degenerate** | generates |
 | `ernie4_5-moe` | experimental | ERNIE-4.5-21B-A3B Q4_K_M | **degenerate** (blank) | generates |
 | `bailingmoe2` | experimental | Ling-mini-2.0 Q2_K | generates | generates |

@@ -906,10 +906,27 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
     config["ssm_inner_size"] = ssm_key("ssm.inner_size");
     // Every full_attention_interval-th layer is full attention, the rest are recurrent:
     // llama.cpp qwen35 is_recr(il) = (il < n_layer) && ((il + 1) % interval != 0).
-    config["full_attention_interval"] = ssm_key("full_attention_interval");
+    // llama.cpp defaults the interval to 4 when the GGUF omits the key, so match that rather
+    // than rejecting the model (llama.cpp src/models/qwen35.cpp load_arch_hparams).
+    config["full_attention_interval"] =
+        metadata.count(arch + ".full_attention_interval") ? ssm_key("full_attention_interval") : 4;
     // NextN / MTP: extra decoder blocks stored past the main stack and NOT executed in a normal
     // forward pass. The builder must stop its layer loop before them.
     config["nextn_predict_layers"] = ssm_key("nextn_predict_layers");
+    // Explicit per-layer recurrent flags. llama.cpp consults this FIRST and only falls back to
+    // full_attention_interval when it is absent (src/models/qwen35.cpp load_arch_hparams).
+    {
+        std::vector<int32_t> recr;
+        const std::string key = arch + ".attention.recurrent_layers";
+        if (metadata.count(key)) {
+            const auto& t = std::get<ov::Tensor>(metadata.at(key));
+            const auto* p = t.data<uint32_t>();
+            for (size_t i = 0; i < t.get_size(); ++i)
+                recr.push_back(static_cast<int32_t>(p[i]));
+        }
+        config["recurrent_layer_flags"] = recr;
+    }
+
     // M-RoPE section widths (qwen35 / qwen3vl): 4 per-axis rotary section sizes.
     {
         std::vector<int32_t> sections;

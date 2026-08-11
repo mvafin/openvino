@@ -97,7 +97,7 @@ qwen2-dense.gguf.hdr 4731264 convert
 qwen2moe-moe.gguf.hdr 9455872 reject
 qwen2vl-dense.gguf.hdr 4731264 reject
 qwen3-dense.gguf.hdr 4733824 convert
-qwen35-dense.gguf.hdr 5271040 broken
+qwen35-dense.gguf.hdr 5271040 convert
 qwen35moe-moe.gguf.hdr 9995904 reject
 qwen3moe-moe.gguf.hdr 7096192 convert
 qwen3next-moe.gguf.hdr 11044416 reject

@@ -204,12 +204,15 @@ public:
         // pass, so the layer loop must stop before them (llama.cpp runs 0..n_layer(), where
         // n_layer() already excludes them; the GGUF block_count counts them in).
         m_n_layer_nextn = cfg_int("nextn_predict_layers");
+        if (config.count("recurrent_layer_flags")) {
+            if (const auto* v = std::get_if<std::vector<int32_t>>(&config.at("recurrent_layer_flags")))
+                m_recurrent_layer_flags = *v;
+        }
         if (config.count("rope_sections")) {
             if (const auto* v = std::get_if<std::vector<int32_t>>(&config.at("rope_sections")))
                 m_rope_sections = *v;
         }
         if (m_is_qwen35) {
-            OPENVINO_ASSERT(m_full_attn_interval > 0, "[GGUF] qwen35 requires ", arch_str, ".full_attention_interval");
             // blk.0 is a RECURRENT layer whose attn_qkv.weight is the GDN q/k/v/z projection, not
             // a fused attention QKV -- the generic probe above would mistake it for phi-3-style
             // fused QKV and try to split it by attention head counts. Likewise blk.0's
@@ -226,8 +229,6 @@ public:
             // recurrent and carries no attn_q_norm, so set it explicitly.
             m_has_qk_norm = true;
             m_qk_norm_full = false;
-            // Interleaved M-RoPE (4 position sections), not NEOX/NORMAL.
-            m_rope_op_case = ROPE_OP_CASE_IMROPE;
             // qwen35's pre-FFN norm key ("post_attention_norm.weight", HF's
             // post_attention_layernorm) already falls out of the generic rule above: attn_norm
             // exists, ffn_norm does not, which is the gpt-oss pattern.
@@ -258,7 +259,11 @@ public:
         m_rope_dim_swa = cfg_int("rope_dimension_count_swa");
 
         const std::string arch = std::get<std::string>(config.at("architecture"));
-        m_rope_op_case = arch_uses_neox_rope(arch) ? ROPE_OP_CASE_NEOX : ROPE_OP_CASE_NORMAL;
+        // Interleaved M-RoPE (qwen35 / qwen3vl) is its own mode, so it must be decided here rather
+        // than in the per-arch block above -- this assignment runs later and would overwrite it.
+        m_rope_op_case = m_is_qwen35                 ? ROPE_OP_CASE_IMROPE
+                         : arch_uses_neox_rope(arch) ? ROPE_OP_CASE_NEOX
+                                                     : ROPE_OP_CASE_NORMAL;
 
         m_graph->has_rope = true;
         m_graph->rope_config.n_dims = cfg_int("rope_dimension_count");
@@ -282,10 +287,13 @@ public:
         if (m_has_swa && (swa_dims_differ || swa_freq_differs)) {
             m_graph->use_per_op_rope = true;
         }
-        // M-RoPE: inp_pos carries 4 sections per token, so the shared sin/cos table builder has
-        // to match the per-op translate_rope path (see RopeConfig::is_imrope).
+        // M-RoPE: inp_pos carries 4 sections per token and only the first n_dims of each head
+        // are rotated (qwen35: head_size 256, rope.dimension_count 64). Build sin/cos per ROPE op
+        // rather than from the shared table, whose layout assumes the single-section full-head
+        // case (see RopeConfig::is_imrope / use_per_op_rope).
         if (m_rope_op_case == ROPE_OP_CASE_IMROPE) {
             m_graph->rope_config.is_imrope = true;
+            m_graph->use_per_op_rope = true;
         }
     }
 
@@ -797,6 +805,164 @@ private:
         }
     }
 
+    // ---- qwen35 linear-attention (Gated DeltaNet) layer ----
+    // Mirrors llama.cpp src/models/qwen35.cpp build_layer_attn_linear + delta-net-base.cpp.
+    // `attn_norm` is the pre-attention normed hidden; returns the sublayer output BEFORE the
+    // residual add, i.e. exactly what the shared tail expects in place of attn_out.
+    //
+    // The two recurrent states are plain model Parameters written through to Results, matching
+    // how the builder treats KV caches: the frontend always emits a STATELESS graph and leaves
+    // statefulness to the consumer. Unlike a KV cache these are OVERWRITTEN, not appended, so
+    // they carry no token axis and MakeStateful's Concat path does not apply to them.
+    std::string build_qwen35_gdn(int il, const std::string& attn_norm, int64_t T) {
+        using ov::element::f32;
+        const std::string p = "blk." + std::to_string(il) + ".";
+
+        const int64_t d_conv = m_ssm_conv_kernel;
+        const int64_t S = m_ssm_state_size;             // head_k_dim == head_v_dim
+        const int64_t H_k = m_ssm_group_count;          // num_k_heads
+        const int64_t H_v = m_ssm_dt_rank;              // num_v_heads
+        const int64_t head_v = m_ssm_inner_size / H_v;  // head_v_dim
+        const int64_t key_dim = S * H_k;
+        const int64_t value_dim = head_v * H_v;
+        const int64_t conv_dim = 2 * key_dim + value_dim;
+
+        // ---- input projections ----
+        add_weight(p + "attn_qkv.weight");
+        auto qkv = add_op("GGML_OP_MUL_MAT",
+                          p + "qkv_mixed",
+                          {p + "attn_qkv.weight", attn_norm},
+                          ps({1, 1, T, conv_dim}),
+                          f32);
+        add_weight(p + "attn_gate.weight");
+        auto z = add_op("GGML_OP_MUL_MAT", p + "z", {p + "attn_gate.weight", attn_norm}, ps({1, 1, T, value_dim}), f32);
+
+        // beta = sigmoid(ssm_beta @ x), one scalar per v-head
+        add_weight(p + "ssm_beta.weight");
+        auto beta = add_op("GGML_OP_MUL_MAT", p + "beta", {p + "ssm_beta.weight", attn_norm}, ps({1, 1, T, H_v}), f32);
+        beta = add_op("GGML_UNARY_OP_SIGMOID", p + "beta_sig", {beta}, ps({1, 1, T, H_v}), f32);
+        beta = add_op("GGML_OP_RESHAPE", p + "beta_4d", {beta}, ps({1, T, H_v, 1}), f32, 1);
+
+        // g = softplus(ssm_alpha @ x + ssm_dt.bias) * ssm_a   (ggml: -A_log.exp() * softplus)
+        add_weight(p + "ssm_alpha.weight");
+        auto alpha =
+            add_op("GGML_OP_MUL_MAT", p + "alpha", {p + "ssm_alpha.weight", attn_norm}, ps({1, 1, T, H_v}), f32);
+        add_named_weight(p + "ssm_dt.bias");
+        alpha = add_op("GGML_OP_ADD", p + "alpha_biased", {alpha, p + "ssm_dt.bias"}, ps({1, 1, T, H_v}), f32);
+        alpha = add_op("GGML_UNARY_OP_SOFTPLUS", p + "alpha_sp", {alpha}, ps({1, 1, T, H_v}), f32);
+        add_named_weight(p + "ssm_a");
+        auto g = add_op("GGML_OP_MUL", p + "gate", {alpha, p + "ssm_a"}, ps({1, 1, T, H_v}), f32);
+        g = add_op("GGML_OP_RESHAPE", p + "gate_4d", {g}, ps({1, T, H_v, 1}), f32, 1);
+
+        // ---- causal depthwise conv over [conv state | this step's tokens] ----
+        // conv_state holds the trailing d_conv-1 columns of the previous step's conv input.
+        const std::string cs = "conv_state_l" + std::to_string(il);
+        if (!m_graph->model_inputs.count(cs)) {
+            add_input(cs, f32, ps({1, 1, conv_dim, d_conv - 1}));
+        }
+        m_tensor_shapes[cs] = ps({1, 1, conv_dim, d_conv - 1});
+        m_tensor_types[cs] = f32;
+
+        // [1,1,T,conv_dim] -> [1,1,conv_dim,T] so the conv window grows along the last axis.
+        auto qkv_t = add_op("GGML_OP_TRANSPOSE", p + "qkv_t", {qkv}, ps({1, 1, conv_dim, T}), f32);
+        auto conv_in = add_op("GGML_OP_CONCAT",
+                              p + "conv_in",
+                              {cs, qkv_t},
+                              ps({1, 1, conv_dim, d_conv - 1 + T}),
+                              f32,
+                              0,
+                              {{"concat_axis", int{0}}});
+
+        // Next step's state is the trailing d_conv-1 columns of this window.
+        const std::vector<int64_t> tail_slice{3, -(d_conv - 1), d_conv - 1};
+        auto cs_out = add_op("GGML_OP_VIEW",
+                             cs + "_out",
+                             {conv_in},
+                             ps({1, 1, conv_dim, d_conv - 1}),
+                             f32,
+                             3,
+                             {{"view_slice", tail_slice}, {"input_ggml_shape", shape_of(conv_in)}});
+        m_graph->model_output_names.push_back(cs_out);
+
+        add_named_weight(p + "ssm_conv1d.weight");
+        auto conv = add_op("GGML_OP_SSM_CONV",
+                           p + "conv_out",
+                           {conv_in, p + "ssm_conv1d.weight"},
+                           ps({1, 1, T, conv_dim}),
+                           f32);
+        conv = add_op("GGML_UNARY_OP_SILU", p + "conv_silu", {conv}, ps({1, 1, T, conv_dim}), f32);
+
+        // ---- split the conv output into q | k | v and normalize q/k ----
+        auto slice_heads = [&](const std::string& name, int64_t off, int64_t width, int64_t heads, int64_t dim) {
+            const std::vector<int64_t> sl{3, off, width};
+            auto s = add_op("GGML_OP_VIEW",
+                            p + name + "_s",
+                            {conv},
+                            ps({1, 1, T, width}),
+                            f32,
+                            3,
+                            {{"view_slice", sl}, {"input_ggml_shape", shape_of(conv)}});
+            return add_op("GGML_OP_RESHAPE", p + name, {s}, ps({1, T, heads, dim}), f32, 1);
+        };
+        auto q = slice_heads("q_conv", 0, key_dim, H_k, S);
+        auto k = slice_heads("k_conv", key_dim, key_dim, H_k, S);
+        auto v = slice_heads("v_conv", 2 * key_dim, value_dim, H_v, head_v);
+        q = add_op("GGML_OP_L2_NORM", p + "q_l2", {q}, ps({1, T, H_k, S}), f32, 0, {{"eps", m_rms_eps}});
+        k = add_op("GGML_OP_L2_NORM", p + "k_l2", {k}, ps({1, T, H_k, S}), f32, 0, {{"eps", m_rms_eps}});
+
+        // ---- recurrent delta rule ----
+        // ggml state layout is [B, H_v, value_dim, key_dim]; the translator transposes it for
+        // the fused op and transposes the new state back, so the Parameter keeps ggml's layout.
+        const std::string ss = "ssm_state_l" + std::to_string(il);
+        if (!m_graph->model_inputs.count(ss)) {
+            add_input(ss, f32, ps({1, H_v, head_v, S}));
+        }
+        m_tensor_shapes[ss] = ps({1, H_v, head_v, S});
+        m_tensor_types[ss] = f32;
+
+        auto gdn = add_op("GGML_OP_GATED_DELTA_NET",
+                          p + "gdn",
+                          {q, k, v, g, beta, ss},
+                          ps({1, 1, T + head_v, head_v * H_v}),
+                          f32,
+                          0,
+                          {{"gdn_state_slots", int64_t{1}}});
+
+        // The op packs [attn rows | new-state rows]; op_case 4 slices them apart.
+        const std::vector<int64_t> attn_view{0, head_v};
+        const std::vector<int64_t> state_view{1, head_v};
+        auto attn = add_op("GGML_OP_VIEW",
+                           p + "gdn_attn",
+                           {gdn},
+                           ps({1, T, H_v, head_v}),
+                           f32,
+                           4,
+                           {{"gdn_view", attn_view}, {"view_reshape", std::vector<int64_t>{1, T, H_v, head_v}}});
+        auto new_state = add_op("GGML_OP_VIEW",
+                                ss + "_out",
+                                {gdn},
+                                ps({1, H_v, head_v, S}),
+                                f32,
+                                4,
+                                {{"gdn_view", state_view}, {"view_reshape", std::vector<int64_t>{1, H_v, head_v, S}}});
+        m_graph->model_output_names.push_back(new_state);
+
+        // ---- gated output norm + projection ----
+        // build_norm_gated: rms_norm(attn, ssm_norm) * silu(z), normalizing the head_v axis.
+        auto out = rms_norm(attn, p + "ssm_norm.weight", p + "gdn_norm");
+        auto z_4d = add_op("GGML_OP_RESHAPE", p + "z_4d", {z}, ps({1, T, H_v, head_v}), f32, 1);
+        auto z_silu = add_op("GGML_UNARY_OP_SILU", p + "z_silu", {z_4d}, ps({1, T, H_v, head_v}), f32);
+        out = add_op("GGML_OP_MUL", p + "gdn_gated", {out, z_silu}, ps({1, T, H_v, head_v}), f32);
+        out = add_op("GGML_OP_RESHAPE", p + "gdn_merged", {out}, ps({1, 1, T, value_dim}), f32, 2);
+
+        add_weight(p + "ssm_out.weight");
+        return add_op("GGML_OP_MUL_MAT",
+                      p + "linear_attn_out",
+                      {p + "ssm_out.weight", out},
+                      ps({1, 1, T, m_n_embd}),
+                      f32);
+    }
+
     // Emit a plain (non-quantized) weight stored under its full GGUF name, e.g. a bias tensor
     // "blk.N.attn_q.bias" (no ".weight" suffix). It flows through the same GGML_OP_NONE +
     // translate_weight path; make_weight_node treats an F16/F32/BF16 blob as a plain Constant.
@@ -817,7 +983,10 @@ private:
         std::unordered_map<std::string, ov::Tensor> extracted{{ggml_name + ".weight", w}};
         const auto& s = w.get_shape();
         int64_t n = s.empty() ? 1 : static_cast<int64_t>(s[0]);
-        emit_weight_op(ggml_name, extracted, qtype, ps({1, 1, 1, n}));
+        // 2-D plain weights (qwen35's ssm_conv1d, OV [conv_dim, d_conv]) keep both extents;
+        // 1-D ones (biases, norm scales) are the common case and stay a trailing vector.
+        const ov::PartialShape shape = s.size() == 2 ? ps({1, 1, n, static_cast<int64_t>(s[1])}) : ps({1, 1, 1, n});
+        emit_weight_op(ggml_name, extracted, qtype, shape);
     }
 
     // Elementwise add of a (broadcast) bias weight: GGML_OP_ADD(x, bias_weight).
@@ -918,17 +1087,25 @@ private:
     float m_post_norm_eps = 0.0f;        // eps for post-attn/post-FFN norms (0 -> m_rms_eps)
     // qwen35 (hybrid Gated-DeltaNet + full attention)
     bool m_is_qwen35 = false;
-    int m_ssm_conv_kernel = 0;             // d_conv
-    int m_ssm_state_size = 0;              // head_k_dim / head_v_dim
-    int m_ssm_group_count = 0;             // num_k_heads
-    int m_ssm_dt_rank = 0;                 // num_v_heads
-    int m_ssm_inner_size = 0;              // d_inner = num_v_heads * head_v_dim
-    int m_full_attn_interval = 0;          // full attention when (il + 1) % interval == 0
-    int m_n_layer_nextn = 0;               // trailing MTP blocks, not executed
-    std::vector<int32_t> m_rope_sections;  // M-RoPE per-axis section widths
-    // True when layer `il` is a linear-attention (recurrent) layer.
+    int m_ssm_conv_kernel = 0;                     // d_conv
+    int m_ssm_state_size = 0;                      // head_k_dim / head_v_dim
+    int m_ssm_group_count = 0;                     // num_k_heads
+    int m_ssm_dt_rank = 0;                         // num_v_heads
+    int m_ssm_inner_size = 0;                      // d_inner = num_v_heads * head_v_dim
+    int m_full_attn_interval = 0;                  // full attention when (il + 1) % interval == 0
+    int m_n_layer_nextn = 0;                       // trailing MTP blocks, not executed
+    std::vector<int32_t> m_rope_sections;          // M-RoPE per-axis section widths
+    std::vector<int32_t> m_recurrent_layer_flags;  // explicit per-layer recurrent flags
+    // True when layer `il` is a linear-attention (recurrent) layer. An explicit per-layer flag
+    // array wins over the interval rule, matching llama.cpp's load order.
     bool is_recurrent_layer(int il) const {
-        return m_is_qwen35 && m_full_attn_interval > 0 && ((il + 1) % m_full_attn_interval != 0);
+        if (!m_is_qwen35) {
+            return false;
+        }
+        if (il < static_cast<int>(m_recurrent_layer_flags.size())) {
+            return m_recurrent_layer_flags[il] != 0;
+        }
+        return m_full_attn_interval > 0 && ((il + 1) % m_full_attn_interval != 0);
     }
     // Norm key suffixes; overridden for archs that use non-standard naming (exaone4, gpt-oss).
     std::string m_attn_norm_key{"attn_norm.weight"};
@@ -1123,14 +1300,28 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         // Q/K/V projections: MUL_MAT(w, attn_norm), then conceptual reshape to heads.
         // Fused-QKV archs (phi-3, minicpm) carry a single attn_qkv weight; split it into
         // separate q/k/v weights so the rest of the layer is architecture-agnostic.
+        if (m_is_qwen35 && is_recurrent_layer(il)) {
+            // Hybrid stack: 3 of every 4 layers replace attention with a Gated DeltaNet block.
+            // It produces the same thing the attention path does -- the sublayer output before
+            // the residual -- so the shared FFN tail below is reused verbatim.
+            const std::string gdn_out = build_qwen35_gdn(il, attn_norm, T);
+            std::string sa = inpSA;
+            std::string ao = gdn_out;
+            if (il == m_n_layer - 1) {
+                ao = add_op("GGML_OP_GET_ROWS",
+                            p + "attn_out_g",
+                            {gdn_out, "inp_out_ids"},
+                            ps({1, 1, T, m_n_embd}),
+                            f32);
+                sa = add_op("GGML_OP_GET_ROWS", p + "inpSA_g", {inpSA, "inp_out_ids"}, ps({1, 1, T, m_n_embd}), f32);
+            }
+            auto ffn_inp_r = add_op("GGML_OP_ADD", p + "ffn_inp", {ao, sa}, ps({1, 1, T, m_n_embd}), f32);
+            auto ffn_norm_r = rms_norm(ffn_inp_r, p + m_ffn_norm_key, p + "ffn_norm");
+            auto down_r = build_dense_ffn(p, ffn_norm_r, T);
+            cur = add_op("GGML_OP_ADD", p + "l_out", {down_r, ffn_inp_r}, ps({1, 1, T, m_n_embd}), f32);
+            continue;
+        }
         if (m_is_qwen35) {
-            // Hybrid stack: 3 of every 4 layers run linear attention (Gated DeltaNet) instead.
-            FRONT_END_GENERAL_CHECK(!is_recurrent_layer(il),
-                                    "[GGUF] qwen35 layer ",
-                                    il,
-                                    " is a linear-attention (Gated DeltaNet) layer, which the native "
-                                    ".gguf builder does not construct yet. Only the full-attention "
-                                    "layers are implemented.");
             register_qwen35_q_gate(il);
             add_weight(p + "attn_k.weight");
             add_weight(p + "attn_v.weight");
