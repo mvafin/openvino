@@ -640,6 +640,26 @@ void fill_q8_k(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& s
     });
 }
 
+// Q2_0 ternary: block = |f16 d|u2 qs[64]| (18 bytes / 64 weights), value = (code - 1) * d with
+// code in [0..3] -> {-1, 0, +1, +2}. ggml packs the codes 4 per byte LSB-first
+// (dequantize_row_q2_0: `(qs[j/4] >> ((j%4)*2)) & 3`), which is exactly the order OpenVINO's u2
+// Constant reads, so the 16 code bytes are copied verbatim. The zero-point is the constant 1.
+void gguf_fill_q2_0(const gguf_tensor& tensor, ov::Tensor& weights_arr, ov::Tensor& scales_arr, ov::Tensor& zp_arr) {
+    const uint64_t bytes_per_block = 18;
+    const uint64_t bytes_per_block_codes = 16;
+    auto data = static_cast<const uint8_t*>(tensor.weights_data);
+    auto weights = static_cast<uint8_t*>(weights_arr.data());
+    auto scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
+    auto zp = static_cast<uint8_t*>(zp_arr.data());
+
+    ov::parallel_for(scales_arr.get_size(), [&](size_t i) {
+        const uint8_t* block = data + i * bytes_per_block;
+        scales[i] = ov::float16::from_bits(*reinterpret_cast<const uint16_t*>(block));
+        std::memcpy(weights + i * bytes_per_block_codes, block + 2, bytes_per_block_codes);
+        zp[i] = 1;
+    });
+}
+
 // Symmetric types (Q8_0, Q5_0, Q6_K, Q3_K): fill weights + scales (f16), no zero-point.
 // Q8_K uses f32 scales and is handled by a separate overload dispatched on tensor.type.
 void gguf_fill_sym(const gguf_tensor& tensor, ov::Tensor& weights, ov::Tensor& scales) {

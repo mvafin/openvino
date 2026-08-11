@@ -164,6 +164,7 @@ int main(int argc, char** argv) {
     run_dequant(out_dir, "q4_k", GGML_TYPE_Q4_K, R, C);
     run_dequant(out_dir, "q5_k", GGML_TYPE_Q5_K, R, C);
     run_dequant(out_dir, "q6_k", GGML_TYPE_Q6_K, R, C);
+    run_dequant(out_dir, "q2_0", GGML_TYPE_Q2_0, R, C);
 
     return 0;
 }

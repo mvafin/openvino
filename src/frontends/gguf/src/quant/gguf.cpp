@@ -55,6 +55,8 @@ TypeTraits type_traits(uint32_t type) {
         return {32, 40};
     case GGUF_TYPE_Q2_K:
         return {256, 84};
+    case GGUF_TYPE_Q2_0:
+        return {64, 18};  // f16 scale + 64x 2-bit codes (16 bytes)
     case GGUF_TYPE_Q3_K:
         return {256, 110};
     case GGUF_TYPE_Q4_K:
@@ -396,6 +398,17 @@ GGUFLoad get_gguf_data(const std::string& file) {
             return {w_bytes, s_nelems * sizeof(uint16_t), s_nelems};  // zp: u8 per sub-block
         }
 
+        // Q2_0: u2 (4 per byte), one f16 scale per 64 weights, constant zero-point of 1.
+        if (ti.type == GGUF_TYPE_Q2_0) {
+            const size_t w_bytes = (w_nelems + 3) / 4;  // u2: 4 values per byte
+            auto scale_shape = shape;
+            scale_shape.back() /= 64;
+            size_t s_nelems = 1;
+            for (auto d : scale_shape)
+                s_nelems *= d;
+            return {w_bytes, s_nelems * sizeof(uint16_t), s_nelems};  // zp: u8 per block
+        }
+
         // Q3_K: i4 packed (2 per byte), 16 sub-blocks of 16 per super-block.
         if (ti.type == GGUF_TYPE_Q3_K) {
             const size_t w_bytes = (w_nelems + 1) / 2;  // i4: 2 values per byte
@@ -450,7 +463,8 @@ GGUFLoad get_gguf_data(const std::string& file) {
         const bool is_quant = ti.type == GGUF_TYPE_Q4_0 || ti.type == GGUF_TYPE_Q4_1 || ti.type == GGUF_TYPE_Q5_0 ||
                               ti.type == GGUF_TYPE_Q5_1 || ti.type == GGUF_TYPE_Q8_0 || ti.type == GGUF_TYPE_Q2_K ||
                               ti.type == GGUF_TYPE_Q3_K || ti.type == GGUF_TYPE_Q4_K || ti.type == GGUF_TYPE_Q5_K ||
-                              ti.type == GGUF_TYPE_Q6_K || ti.type == GGUF_TYPE_Q8_K || ti.type == GGUF_TYPE_MXFP4;
+                              ti.type == GGUF_TYPE_Q6_K || ti.type == GGUF_TYPE_Q8_K || ti.type == GGUF_TYPE_MXFP4 ||
+                              ti.type == GGUF_TYPE_Q2_0;
         if (!is_quant)
             continue;
         auto [wb, sb, bb] = quant_sizes(ti);
@@ -570,6 +584,35 @@ GGUFLoad get_gguf_data(const std::string& file) {
             arrays.emplace(name_prefix + ".scales", std::move(scales));
             arrays.emplace(name_prefix + ".zp", std::move(zp));
             qtype.emplace(name_prefix + ".qtype", GGUF_TYPE_Q2_K);
+        } else if (ti.type == GGUF_TYPE_Q2_0) {
+            // Ternary: u2 weights (4 per byte) + one f16 scale per 64 + integer zp of exactly 1.
+            // ggml packs Q2_0 codes LSB-first, 4 per byte -- the same order OpenVINO's u2 Constant
+            // expects -- so the code bytes are copied verbatim, no repacking.
+            auto [wb, sb, zb] = quant_sizes(ti);
+            char* buf_ptr = quant_buf->get_ptr<char>();
+
+            auto shape = get_shape(tensor);
+            auto scale_shape = shape;
+            scale_shape.back() /= 64;  // one scale per 64-weight block
+
+            std::shared_ptr<void> so_buf(quant_buf);
+            ov::Tensor w_view(ov::element::u2, shape, static_cast<void*>(buf_ptr + quant_offset));
+            ov::Tensor weights(w_view, so_buf);
+            quant_offset += wb;
+            ov::Tensor s_view(ov::element::f16, scale_shape, static_cast<void*>(buf_ptr + quant_offset));
+            ov::Tensor scales(s_view, so_buf);
+            quant_offset += sb;
+            // Integer zero-point: (code - 1) * scale, so zp is the constant 1 for every block.
+            ov::Tensor zp(ov::element::u8, scale_shape);
+            quant_offset += zb;
+
+            gguf_fill_q2_0(tensor, weights, scales, zp);
+            mapped->hint_evict(abs_off, tensor.bsize);
+
+            arrays.emplace(name, std::move(weights));
+            arrays.emplace(name_prefix + ".scales", std::move(scales));
+            arrays.emplace(name_prefix + ".zp", std::move(zp));
+            qtype.emplace(name_prefix + ".qtype", GGUF_TYPE_Q2_0);
         } else if (ti.type == GGUF_TYPE_Q8_K) {
             // Q8_K: 256 weights/block, f32 scale (NOT f16), 16 i16 bsums (ignored).
             // block_q8_K: [f32 d][i8 qs[256]][i16 bsums[16]] = 4+256+32 = 292 bytes.
