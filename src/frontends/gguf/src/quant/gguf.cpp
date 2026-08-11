@@ -894,6 +894,35 @@ std::map<std::string, GGUFMetaData> config_from_meta(const std::unordered_map<st
                                    : def_residual_scale;
     config["logit_scale"] =
         metadata.count(arch + ".logit_scale") ? metadata_to_float(metadata, arch + ".logit_scale") : def_logit_scale;
+    // Hybrid linear-attention (Gated DeltaNet) parameters: qwen35 / qwen3next / kimi-linear.
+    // 0 for every non-SSM architecture, which is what the builder tests against.
+    auto ssm_key = [&](const std::string& k) {
+        return metadata.count(arch + "." + k) ? metadata_to_int(metadata, arch + "." + k) : 0;
+    };
+    config["ssm_conv_kernel"] = ssm_key("ssm.conv_kernel");
+    config["ssm_state_size"] = ssm_key("ssm.state_size");
+    config["ssm_group_count"] = ssm_key("ssm.group_count");
+    config["ssm_time_step_rank"] = ssm_key("ssm.time_step_rank");
+    config["ssm_inner_size"] = ssm_key("ssm.inner_size");
+    // Every full_attention_interval-th layer is full attention, the rest are recurrent:
+    // llama.cpp qwen35 is_recr(il) = (il < n_layer) && ((il + 1) % interval != 0).
+    config["full_attention_interval"] = ssm_key("full_attention_interval");
+    // NextN / MTP: extra decoder blocks stored past the main stack and NOT executed in a normal
+    // forward pass. The builder must stop its layer loop before them.
+    config["nextn_predict_layers"] = ssm_key("nextn_predict_layers");
+    // M-RoPE section widths (qwen35 / qwen3vl): 4 per-axis rotary section sizes.
+    {
+        std::vector<int32_t> sections;
+        const std::string key = arch + ".rope.dimension_sections";
+        if (metadata.count(key)) {
+            const auto& t = std::get<ov::Tensor>(metadata.at(key));
+            const auto* p = t.data<uint32_t>();
+            for (size_t i = 0; i < t.get_size() && i < 4; ++i)
+                sections.push_back(static_cast<int32_t>(p[i]));
+        }
+        config["rope_sections"] = sections;
+    }
+
     // Optional explicit attention (softmax) scale; 0 -> use 1/sqrt(head_size).
     // Gemma4 uses scale=1.0 (no pre-attn scaling), per llama.cpp hparams.f_attention_scale=1.0.
     // Gemma3 (like gemma/gemma2) uses 1/sqrt(n_embd_head_k); llama.cpp applies it as a

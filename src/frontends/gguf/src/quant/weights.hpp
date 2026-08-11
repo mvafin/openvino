@@ -69,4 +69,12 @@ std::array<FusedQkvPart, 3> split_fused_qkv_extracted(
     size_t n_k,
     size_t n_v);
 
+// De-interleave a qwen35 `<base>` attn_q weight, which packs the query and the attention output
+// gate per head as [q_h0 | gate_h0 | q_h1 | gate_h1 | ...], into two plain projections.
+// Returns {query, gate}, keyed "<base>.q.*" and "<base>.gate.*".
+std::array<FusedQkvPart, 2> split_interleaved_q_gate(const std::string& base,
+                                                     const std::unordered_map<std::string, ov::Tensor>& weights,
+                                                     const std::unordered_map<std::string, gguf_tensor_type>& qtypes,
+                                                     size_t head_dim);
+
 }  // namespace ov::frontend::gguf

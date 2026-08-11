@@ -53,8 +53,28 @@ ov::Tensor slice_rows(const ov::Tensor& t, size_t r0, size_t r1) {
     return out;
 }
 
+// Gather rows in a repeating per-block pattern: for every `block` consecutive rows, take
+// [0, take) into the result. qwen35's attn_q interleaves query and gate per head as
+// [q_h0 | gate_h0 | q_h1 | gate_h1 | ...], so the query is gather(block=2*head_dim,
+// take=head_dim, offset=0) and the gate the same with offset=head_dim. Like slice_rows this
+// works on raw row bytes, which is safe for the packed types because a quantization block
+// never spans two rows.
+ov::Tensor gather_rows_strided(const ov::Tensor& t, size_t block, size_t take, size_t offset) {
+    const auto& s = t.get_shape();
+    OPENVINO_ASSERT(s.size() == 2 && block > 0 && offset + take <= block && s[0] % block == 0,
+                    "[GGUF] bad strided row gather");
+    const size_t n_blocks = s[0] / block;
+    ov::Tensor out(t.get_element_type(), ov::Shape{n_blocks * take, s[1]});
+    const size_t row_bytes = t.get_byte_size() / s[0];
+    const auto* src = static_cast<const uint8_t*>(t.data());
+    auto* dst = static_cast<uint8_t*>(out.data());
+    for (size_t b = 0; b < n_blocks; ++b) {
+        std::memcpy(dst + b * take * row_bytes, src + (b * block + offset) * row_bytes, take * row_bytes);
+    }
+    return out;
+}
 
-// Shared shape helpers for grouped weight layouts. See make_int8 comment for why we keep
+
 // all leading dims separate rather than flattening: the trailing Reshape must be
 // (orig_rank+1)D -> orig_rank for the CompressedWeightsBlock matcher to fire.
 ov::Shape grouped_weight_shape(const ov::Shape& orig, size_t num_groups, size_t group_size) {
@@ -533,6 +553,47 @@ std::array<FusedQkvPart, 3> split_fused_qkv_extracted(
         }
         if (has_zp) {
             out[i].extracted[parts[i] + ".zp"] = slice_rows(get(weights, base + ".zp"), r0, r1);
+        }
+    }
+    return out;
+}
+
+// qwen35: attn_q packs the query and the attention output gate interleaved per head, as
+// [q_h0 | gate_h0 | q_h1 | gate_h1 | ...] with a stride of 2*head_dim rows. De-interleave it
+// into two plain weights so the graph sees ordinary projections. Returns {query, gate}.
+std::array<FusedQkvPart, 2> split_interleaved_q_gate(const std::string& base,
+                                                     const std::unordered_map<std::string, ov::Tensor>& weights,
+                                                     const std::unordered_map<std::string, gguf_tensor_type>& qtypes,
+                                                     size_t head_dim) {
+    gguf_tensor_type qtype = GGUF_TYPE_F16;
+    if (auto it = qtypes.find(base + ".qtype"); it != qtypes.end()) {
+        qtype = it->second;
+    }
+    const bool has_scales = qtype == GGUF_TYPE_Q4_0 || qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K ||
+                            qtype == GGUF_TYPE_Q5_0 || qtype == GGUF_TYPE_Q5_1 || qtype == GGUF_TYPE_Q8_0 ||
+                            qtype == GGUF_TYPE_Q2_K || qtype == GGUF_TYPE_Q3_K || qtype == GGUF_TYPE_Q5_K ||
+                            qtype == GGUF_TYPE_Q6_K || qtype == GGUF_TYPE_Q2_0;
+    const bool has_zp = qtype == GGUF_TYPE_Q4_1 || qtype == GGUF_TYPE_Q4_K || qtype == GGUF_TYPE_Q5_K ||
+                        qtype == GGUF_TYPE_Q5_1 || qtype == GGUF_TYPE_Q2_K || qtype == GGUF_TYPE_Q2_0;
+
+    const ov::Tensor& w = get(weights, base + ".weight");
+    const size_t block = 2 * head_dim;
+    OPENVINO_ASSERT(w.get_shape()[0] % block == 0, "[GGUF] interleaved q/gate row mismatch for ", base);
+
+    const std::array<std::string, 2> parts = {base + ".q", base + ".gate"};
+    const std::array<size_t, 2> offsets = {0, head_dim};
+
+    std::array<FusedQkvPart, 2> out;
+    for (size_t i = 0; i < 2; ++i) {
+        out[i].qtype = qtype;
+        out[i].extracted[parts[i] + ".weight"] = gather_rows_strided(w, block, head_dim, offsets[i]);
+        if (has_scales) {
+            out[i].extracted[parts[i] + ".scales"] =
+                gather_rows_strided(get(weights, base + ".scales"), block, head_dim, offsets[i]);
+        }
+        if (has_zp) {
+            out[i].extracted[parts[i] + ".zp"] =
+                gather_rows_strided(get(weights, base + ".zp"), block, head_dim, offsets[i]);
         }
     }
     return out;

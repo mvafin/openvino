@@ -54,6 +54,8 @@ namespace {
 // rotate halves). The input is not a VIEW here so the low bits stay 0.
 constexpr int ROPE_OP_CASE_NORMAL = 0x00000000;
 constexpr int ROPE_OP_CASE_NEOX = 0x00010000;
+// IMROPE=2: interleaved multimodal rope (qwen35 / qwen3vl). inp_pos carries 4 mrope sections.
+constexpr int ROPE_OP_CASE_IMROPE = 0x00020000;
 
 // Architectures whose rope is NEOX (rotate-halves); everything else in the supported set
 // uses NORMAL (rotate consecutive pairs). Mirrors llama_model_rope_type.
@@ -188,6 +190,53 @@ public:
         m_rope_on_swa_only = is_muse_glimmer;
         m_post_norm_eps = is_muse_glimmer ? 1e-8f : 0.0f;  // 0 -> reuse m_rms_eps
 
+        // ---- qwen35 (Qwen3.5/3.6): hybrid Gated-DeltaNet + full attention ----
+        // Layers alternate: every full_attention_interval-th layer is full attention, the rest
+        // run a linear-attention (GDN) block. llama.cpp src/models/qwen35.cpp.
+        m_is_qwen35 = arch_str == "qwen35";
+        m_ssm_conv_kernel = cfg_int("ssm_conv_kernel");
+        m_ssm_state_size = cfg_int("ssm_state_size");
+        m_ssm_group_count = cfg_int("ssm_group_count");
+        m_ssm_dt_rank = cfg_int("ssm_time_step_rank");
+        m_ssm_inner_size = cfg_int("ssm_inner_size");
+        m_full_attn_interval = cfg_int("full_attention_interval");
+        // NextN/MTP blocks live past the main stack and are not executed in a normal forward
+        // pass, so the layer loop must stop before them (llama.cpp runs 0..n_layer(), where
+        // n_layer() already excludes them; the GGUF block_count counts them in).
+        m_n_layer_nextn = cfg_int("nextn_predict_layers");
+        if (config.count("rope_sections")) {
+            if (const auto* v = std::get_if<std::vector<int32_t>>(&config.at("rope_sections")))
+                m_rope_sections = *v;
+        }
+        if (m_is_qwen35) {
+            OPENVINO_ASSERT(m_full_attn_interval > 0, "[GGUF] qwen35 requires ", arch_str, ".full_attention_interval");
+            // blk.0 is a RECURRENT layer whose attn_qkv.weight is the GDN q/k/v/z projection, not
+            // a fused attention QKV -- the generic probe above would mistake it for phi-3-style
+            // fused QKV and try to split it by attention head counts. Likewise blk.0's
+            // attn_gate.weight is the GDN output gate (z), not an attention gate.
+            m_has_fused_qkv = false;
+            // qwen35's full-attention layers DO have a sigmoid attention output gate, and it is
+            // the same construction muse-glimmer uses -- projected from the pre-attention normed
+            // hidden, sigmoid'd, multiplied into the merged attention output before wo. The only
+            // difference is where the weight lives: qwen35 interleaves it per head inside attn_q
+            // rather than storing a separate tensor, so register_qwen35_q_gate() de-interleaves it
+            // into blk.N.attn_q.weight + blk.N.attn_gate.weight and the shared path handles it.
+            m_has_attn_gate = true;
+            // Per-head QK-norm on the full-attention layers. Auto-detection probes blk.0, which is
+            // recurrent and carries no attn_q_norm, so set it explicitly.
+            m_has_qk_norm = true;
+            m_qk_norm_full = false;
+            // Interleaved M-RoPE (4 position sections), not NEOX/NORMAL.
+            m_rope_op_case = ROPE_OP_CASE_IMROPE;
+            // qwen35's pre-FFN norm key ("post_attention_norm.weight", HF's
+            // post_attention_layernorm) already falls out of the generic rule above: attn_norm
+            // exists, ffn_norm does not, which is the gpt-oss pattern.
+            // MTP/NextN blocks are stored past the main stack and are not part of a normal
+            // forward pass, so the layer loop must not walk into them.
+            m_n_layer -= m_n_layer_nextn;
+            OPENVINO_ASSERT(m_n_layer > 0, "[GGUF] qwen35: no trunk layers left after excluding NextN blocks");
+        }
+
         // Per-architecture scalars from metadata (1.0 / 0.0 when absent -> no-op).
         m_embedding_scale = cfg_float("embedding_scale");
         m_residual_scale = cfg_float("residual_scale");
@@ -232,6 +281,11 @@ public:
         const bool swa_freq_differs = m_rope_config_swa.freq_base != m_graph->rope_config.freq_base;
         if (m_has_swa && (swa_dims_differ || swa_freq_differs)) {
             m_graph->use_per_op_rope = true;
+        }
+        // M-RoPE: inp_pos carries 4 sections per token, so the shared sin/cos table builder has
+        // to match the per-op translate_rope path (see RopeConfig::is_imrope).
+        if (m_rope_op_case == ROPE_OP_CASE_IMROPE) {
+            m_graph->rope_config.is_imrope = true;
         }
     }
 
@@ -719,6 +773,30 @@ private:
         }
     }
 
+    // qwen35 full-attention layers: attn_q packs query and attention-output gate interleaved per
+    // head ([q_h0 | gate_h0 | q_h1 | ...], stride 2*head_size). De-interleave into the plain
+    // blk.N.attn_q.weight / blk.N.attn_gate.weight the shared attention path expects, so the
+    // graph never sees the interleaving. llama.cpp does the same split with two strided views
+    // (src/models/qwen35.cpp build_layer_attn).
+    void register_qwen35_q_gate(int il) {
+        const std::string p = "blk." + std::to_string(il) + ".";
+        auto parts = split_interleaved_q_gate(p + "attn_q", m_weights, m_qtypes, static_cast<size_t>(m_head_size));
+        const std::array<std::string, 2> names = {p + "attn_q.weight", p + "attn_gate.weight"};
+        const std::array<std::string, 2> suffix = {"q", "gate"};
+        const int64_t rows = static_cast<int64_t>(m_n_head) * m_head_size;
+        for (size_t i = 0; i < 2; ++i) {
+            // Re-key "<base>.q.weight" -> "<node>.weight" so emit_weight_op's sub-key extraction
+            // sees the node's own base name (same re-keying as register_fused_qkv).
+            std::unordered_map<std::string, ov::Tensor> extracted;
+            const std::string base = p + "attn_" + suffix[i];
+            for (const auto& kv : parts[i].extracted) {
+                auto dot = kv.first.rfind('.');
+                extracted[base + "." + kv.first.substr(dot + 1)] = kv.second;
+            }
+            emit_weight_op(names[i], extracted, parts[i].qtype, ps({1, 1, rows, m_n_embd}));
+        }
+    }
+
     // Emit a plain (non-quantized) weight stored under its full GGUF name, e.g. a bias tensor
     // "blk.N.attn_q.bias" (no ".weight" suffix). It flows through the same GGML_OP_NONE +
     // translate_weight path; make_weight_node treats an F16/F32/BF16 blob as a plain Constant.
@@ -838,6 +916,20 @@ private:
     bool m_scaleless_embd_norm = false;  // weightless RMSNorm on the token embeddings
     bool m_rope_on_swa_only = false;     // global (non-SWA) layers are NoPE
     float m_post_norm_eps = 0.0f;        // eps for post-attn/post-FFN norms (0 -> m_rms_eps)
+    // qwen35 (hybrid Gated-DeltaNet + full attention)
+    bool m_is_qwen35 = false;
+    int m_ssm_conv_kernel = 0;             // d_conv
+    int m_ssm_state_size = 0;              // head_k_dim / head_v_dim
+    int m_ssm_group_count = 0;             // num_k_heads
+    int m_ssm_dt_rank = 0;                 // num_v_heads
+    int m_ssm_inner_size = 0;              // d_inner = num_v_heads * head_v_dim
+    int m_full_attn_interval = 0;          // full attention when (il + 1) % interval == 0
+    int m_n_layer_nextn = 0;               // trailing MTP blocks, not executed
+    std::vector<int32_t> m_rope_sections;  // M-RoPE per-axis section widths
+    // True when layer `il` is a linear-attention (recurrent) layer.
+    bool is_recurrent_layer(int il) const {
+        return m_is_qwen35 && m_full_attn_interval > 0 && ((il + 1) % m_full_attn_interval != 0);
+    }
     // Norm key suffixes; overridden for archs that use non-standard naming (exaone4, gpt-oss).
     std::string m_attn_norm_key{"attn_norm.weight"};
     std::string m_ffn_norm_key{"ffn_norm.weight"};
@@ -1031,7 +1123,18 @@ std::shared_ptr<GgufGraph> TransformerBuilder::build() {
         // Q/K/V projections: MUL_MAT(w, attn_norm), then conceptual reshape to heads.
         // Fused-QKV archs (phi-3, minicpm) carry a single attn_qkv weight; split it into
         // separate q/k/v weights so the rest of the layer is architecture-agnostic.
-        if (m_has_fused_qkv) {
+        if (m_is_qwen35) {
+            // Hybrid stack: 3 of every 4 layers run linear attention (Gated DeltaNet) instead.
+            FRONT_END_GENERAL_CHECK(!is_recurrent_layer(il),
+                                    "[GGUF] qwen35 layer ",
+                                    il,
+                                    " is a linear-attention (Gated DeltaNet) layer, which the native "
+                                    ".gguf builder does not construct yet. Only the full-attention "
+                                    "layers are implemented.");
+            register_qwen35_q_gate(il);
+            add_weight(p + "attn_k.weight");
+            add_weight(p + "attn_v.weight");
+        } else if (m_has_fused_qkv) {
             register_fused_qkv(il);
         } else {
             add_weight(p + "attn_q.weight");
@@ -1435,6 +1538,8 @@ const std::set<std::string>& experimental_archs() {
         // 2026: dense
         "maincoder",     // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
         "mistral3",      // Ministral-3B: NORMAL rope, dense
+        "qwen35",        // Qwen3.5/3.6: hybrid Gated-DeltaNet + full attention, M-RoPE,
+                         // interleaved query+gate projection (full-attention layers only so far)
         "muse-glimmer",  // Muse Glimmer (Meta Onyx): NORMAL rope on SWA layers only (global
                          // layers are NoPE), sigmoid attention output gate, QK-norm,
                          // pre+post norms, final logit soft-cap
