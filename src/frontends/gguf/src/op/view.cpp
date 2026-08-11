@@ -211,7 +211,11 @@ OutputVector translate_view(const NodeContext & context) {
             result = std::make_shared<ov::op::v1::Reshape>(
                 result, ov::op::v0::Constant::create(ov::element::i64, {tgt.size()}, tgt), false);
         }
-        return {result};
+        // Carry the view's gguf name onto the produced node like every other case does. A view that
+        // is itself a model output (the builder's recurrent conv-state writeback) is otherwise
+        // indistinguishable from any other Slice, so a consumer cannot tell which Result feeds
+        // which state input.
+        return rename_outputs_with_suffix({result}, context.get_name());
     }
     // op_case 104 (builder): layer-index slice for per-layer embedding.
     // Input [1, n_layer, T, D] -> slice the layer axis (1) -> [1, 1, T, D].

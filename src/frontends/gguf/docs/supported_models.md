@@ -139,7 +139,8 @@ model/checkpoint that is simply weak on the prompt.
 | `maincoder` | experimental | Maincoder-1B Q4_K_M | generates | generates |
 | `mistral3` | experimental | Ministral-3-3B-Instruct-2512 Q4_K_M | generates | generates |
 | `muse-glimmer` | experimental | Muse-Glimmer-30B Q4_0 | generates | generates |
-| `qwen35` | experimental | Qwen3.5-0.8B Q8_0 | converts (not yet numerically validated) | generates |
+| `qwen35` | experimental | Qwen3.5-0.8B Q8_0 | generates (exact match vs llama.cpp) | generates |
+| `qwen35` (Bonsai) | experimental | Ternary-Bonsai-27B Q2_g64 | generates (exact match vs llama.cpp) | generates |
 | `deepseek2-ocr` | experimental | deepseek-ocr-2 Q4_K_M | **degenerate** | generates |
 | `ernie4_5-moe` | experimental | ERNIE-4.5-21B-A3B Q4_K_M | **degenerate** (blank) | generates |
 | `bailingmoe2` | experimental | Ling-mini-2.0 Q2_K | generates | generates |
@@ -160,6 +161,24 @@ builder** — `hunyuan-dense`, `qwen3moe`, `gemma2`, `exaone4`, `deepseek2-ocr`,
 `ernie4_5-moe` (blank output) and `mellum` — i.e. real conversion defects. Three of them
 (`hunyuan-dense`, `qwen3moe`, `gemma2`) are in `verified_archs()`, so that set is currently
 **optimistic** and should be re-validated before it is relied on.
+
+`qwen35` was validated the same way muse-glimmer was, feeding llama.cpp's own token ids and
+comparing greedy output. On Qwen3.5-0.8B-Q8_0 and on Ternary-Bonsai-27B-Q2_g64 the frontend
+reproduces llama.cpp **token for token** (`" Paris.\nThe capital of France is Paris. ..."` and
+`" Paris. Paris is the largest city in France. Paris is the most popular"` respectively). Final
+logits agree to 1.0% on the 0.8B (sum -771776 vs -779763) and 0.12% on Bonsai (-812702 vs
+-813701); the 0.8B figure is in line with the *verified* `qwen3` arch measured through the same
+harness, so it is dequant/driver noise rather than an arch defect.
+
+A caveat on the Bonsai artifacts: **`Ternary-Bonsai-27B-Q2_0.gguf` is not upstream `Q2_0`.**
+It does not load in llama.cpp either (`tensor 'output_norm.weight' has offset 337715200,
+expected 357580800`; the ratio 0.94444 is exactly `(34/128)/(18/64)`). The file is packed
+**g128** -- one f16 scale per 128 weights, 2.125 bits/weight -- while `GGML_TYPE_Q2_0` is
+**g64**, 18 bytes per 64 weights, 2.25 bits/weight. The model card says as much, calling the
+deployed format "Q2_0_g128" and publishing a separate group-64 pack "matching the 64-value-group
+Q2_0 packing in llama.cpp". Use `Ternary-Bonsai-27B-Q2_g64.gguf`; the g128 pack needs PrismML's
+fork. The frontend rejects it safely (`tensor 'blk.63.ffn_up.weight' data runs past EOF`) rather
+than dequantizing garbage.
 
 `muse-glimmer` needs a footnote of its own, because it is the one arch whose row was decided
 by the *tokenizer*, not the graph. Fed llama.cpp's own token ids, the converted graph
@@ -211,10 +230,27 @@ genuinely requires RAM (see [`frontend_design.md`](frontend_design.md) on the me
 | `phi3` | 2282 | 4.4 | 108.3 | 11.84 | 8197 | 8130 |
 | `gemma4` | 4746 | 9.6 | 63.6 | 9.24 | 12309 | 11953 |
 | `gpt-oss` | 11548 | 89.3 | 18.7 | 5.48 | 123720 | 123493 |
+| `qwen35` (Qwen3.5-0.8B Q8_0) | 795 | 0.9 | 191.4 | 42.52 | 1993 | 1925 |
+| `qwen35` (Bonsai-27B Q2_g64) | 7234 | 21.9 | 16.8 | 3.39 | 23352 | 23262 |
 | `muse-glimmer` | 15512 | 28.3 | 28.9 | 2.66 | 37457 | 37357 |
 
 Numbers from architectures marked degenerate above still describe real compute cost (the
 graph runs, it is just numerically wrong), so they are kept for completeness.
+
+The two `qwen35` rows were measured with the per-layer recurrent states driven by hand (GenAI
+cannot run this architecture yet -- its `MakeStateful` only rewrites append-style KV caches, so
+the conv/delta states stay as model inputs), f32 inference precision, and a warm-up inference
+before timing. Both reproduce llama.cpp token-for-token; see the numerical notes below.
+
+Against llama.cpp on the same host, `qwen35` prefills **1.10x faster** (191.4 vs 174.5 tok/s)
+and decodes at **0.76x** (42.5 vs 56.1) -- the usual SDPA-path ratio. Bonsai inverts that
+dramatically: **5.8x faster decode** (3.39 vs 0.58 tok/s). That is not an OpenVINO win so much
+as an upstream gap -- ggml ships no x86 SIMD kernel for `Q2_0`, so `ggml_vec_dot_q2_0_q8_0`
+falls back to the generic scalar reference, while the frontend lowers Q2_0 into the ordinary
+u2 compressed-weights MatMul the CPU plugin already optimizes. (PrismML's own fork ships
+tuned CUDA/Metal kernels; this comparison is upstream-CPU vs OpenVINO-CPU.) Memory is the
+other side of that trade: llama.cpp mmaps the weights and peaks at 7.5 GiB for Bonsai, the
+frontend materializes decompression constants and peaks at 22.7 GiB (3.1x the file).
 
 `muse-glimmer` is the largest checkpoint in the table (30B, 15.5 GiB) and is memory-bandwidth
 bound at 2.66 tok/s decode; llama.cpp on the same file and host does 3.46 tok/s, so the

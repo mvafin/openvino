@@ -928,7 +928,10 @@ private:
                           0,
                           {{"gdn_state_slots", int64_t{1}}});
 
-        // The op packs [attn rows | new-state rows]; op_case 4 slices them apart.
+        // The op packs [attn rows | new-state rows]; op_case 4 slices them apart. The attn view's
+        // token axis is marked -1 explicitly rather than left as the representative T: the consumer
+        // replaces the FIRST dim equal to the token count, and with T == 1 that would match the
+        // leading batch dim and move the tokens into dim 0 for the rest of the model.
         const std::vector<int64_t> attn_view{0, head_v};
         const std::vector<int64_t> state_view{1, head_v};
         auto attn = add_op("GGML_OP_VIEW",
@@ -937,7 +940,7 @@ private:
                            ps({1, T, H_v, head_v}),
                            f32,
                            4,
-                           {{"gdn_view", attn_view}, {"view_reshape", std::vector<int64_t>{1, T, H_v, head_v}}});
+                           {{"gdn_view", attn_view}, {"view_reshape", std::vector<int64_t>{1, -1, H_v, head_v}}});
         auto new_state = add_op("GGML_OP_VIEW",
                                 ss + "_out",
                                 {gdn},
