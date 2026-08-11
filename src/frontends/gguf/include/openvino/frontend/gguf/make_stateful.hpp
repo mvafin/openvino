@@ -65,6 +65,12 @@ namespace ov::frontend::gguf::pass {
 /// graph, so the pairing has to be carried explicitly; see GgufDecoder::get_recurrent_states.
 GGUF_FRONTEND_API const std::string& gguf_recurrent_states_key();
 
+/// LIMITATION -- recurrent states are batch-1 and are NOT reordered by beam_idx. Unlike a KV
+/// cache, which this pass gathers by beam_idx before appending, a recurrent state is a single
+/// static-shaped block with no batch axis to reorder. Beam search or batch > 1 therefore fails at
+/// inference with a shape mismatch on the state's Concat rather than silently mixing state across
+/// beams; greedy, batch-1 generation is the supported mode for a linear-attention architecture.
+///
 /// Key under which the frontend records that the model uses interleaved M-RoPE (qwen35 /
 /// qwen3vl). Such a model expects inp_pos to carry FOUR position sections per token, so a consumer
 /// feeding it plain per-token positions (as OpenVINO GenAI does) has to expand them first.

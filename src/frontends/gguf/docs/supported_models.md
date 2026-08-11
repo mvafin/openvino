@@ -64,7 +64,7 @@ The builder's accept-list is the union of two sets, both defined at the bottom o
 Anything not in either set is rejected with an explicit `OPENVINO_ASSERT` at load time
 rather than converting into a silently wrong graph.
 
-### `verified_archs()` — 13 architectures
+### `verified_archs()` — 14 architectures
 
 | Architecture | Notes |
 |---|---|
@@ -76,13 +76,14 @@ rather than converting into a silently wrong graph.
 | `hunyuan-dense` | |
 | `olmoe` | OLMoE 1B-7B (MoE) |
 | `qwen3moe` | Qwen3 MoE; same topology as `olmoe` |
+| `qwen35` | Qwen3.5/3.6 (and the Ternary-Bonsai backbone): hybrid Gated-DeltaNet + full attention, M-RoPE, interleaved query+gate projection. Greedy / batch 1 only |
 | `gpt-oss` | MoE + attention sinks + SWA + OAI gated activation |
 | `gemma` | Gemma 2B / 7B |
 | `gemma2` | post-norms + attention soft-cap |
 | `gemma3` | post-norms + final logit soft-cap |
 | `gemma4` | SWA, per-layer embeddings, shared KV |
 
-### `experimental_archs()` — 15 architectures
+### `experimental_archs()` — 16 architectures
 
 | Architecture | Notes |
 |---|---|
@@ -99,7 +100,6 @@ rather than converting into a silently wrong graph.
 | `maincoder` | Maincoder-1B: NORMAL rope, QK-norm (auto-detected) |
 | `mistral3` | Ministral-3B: NORMAL rope, dense |
 | `muse-glimmer` | Muse Glimmer (Meta Onyx): NORMAL rope on SWA layers only (global layers are NoPE), sigmoid attention output gate, QK-norm, pre+post norms, final logit soft-cap |
-| `qwen35` | Qwen3.5/3.6 (and the Ternary-Bonsai backbone): HYBRID stack -- 3 of every 4 layers are Gated-DeltaNet linear attention, the rest full attention with M-RoPE and an interleaved query+gate projection |
 | `mellum` | JetBrains Mellum: pure MoE |
 | `deepseek2-ocr` | DeepSeekOCR: dense lead layers + MoE |
 | `jais2` | JAIS-2: dense (biases auto-detected) |
@@ -139,8 +139,8 @@ model/checkpoint that is simply weak on the prompt.
 | `maincoder` | experimental | Maincoder-1B Q4_K_M | generates | generates |
 | `mistral3` | experimental | Ministral-3-3B-Instruct-2512 Q4_K_M | generates | generates |
 | `muse-glimmer` | experimental | Muse-Glimmer-30B Q4_0 | generates | generates |
-| `qwen35` | experimental | Qwen3.5-0.8B Q8_0 | generates | generates |
-| `qwen35` (Bonsai) | experimental | Ternary-Bonsai-27B Q2_g64 | generates | generates |
+| `qwen35` | verified | Qwen3.5-0.8B Q8_0 | generates | generates |
+| `qwen35` (Bonsai) | verified | Ternary-Bonsai-27B Q2_g64 | generates | generates |
 | `deepseek2-ocr` | experimental | deepseek-ocr-2 Q4_K_M | **degenerate** | generates |
 | `ernie4_5-moe` | experimental | ERNIE-4.5-21B-A3B Q4_K_M | **degenerate** (blank) | generates |
 | `bailingmoe2` | experimental | Ling-mini-2.0 Q2_K | generates | generates |
@@ -169,6 +169,28 @@ reproduces llama.cpp **token for token** (`" Paris.\nThe capital of France is Pa
 logits agree to 1.0% on the 0.8B (sum -771776 vs -779763) and 0.12% on Bonsai (-812702 vs
 -813701); the 0.8B figure is in line with the *verified* `qwen3` arch measured through the same
 harness, so it is dequant/driver noise rather than an arch defect.
+
+**`qwen35` is greedy / batch-1 only.** The recurrent conv and delta states are a single
+static-shaped block with no batch axis, and `MakeStateful` does not reorder them by `beam_idx`
+the way it reorders a KV cache. Beam search or batch > 1 therefore **fails at inference** with a
+shape mismatch on the conv window's `Concat` -- it does not silently mix state across beams, so
+no wrong output can be produced. Prefix caching and PagedAttention are unavailable for the same
+reason: a recurrent state cannot be re-derived from a cached prefix, and cannot be paged.
+
+What "verified" rests on for this arch, since a hybrid stack is easy to get subtly wrong:
+
+* Token-exact greedy agreement with llama.cpp on **two real checkpoints** of different size and
+  quantization (Qwen3.5-0.8B Q8_0, Ternary-Bonsai-27B Q2_g64), through GenAI's own harness.
+* A **five-prompt** raw-completion sweep on the 0.8B. Three match llama.cpp exactly; two diverge
+  mid-continuation. Both divergences are near-ties, and the *already verified* `qwen3` arch
+  diverges on the same prompts in the same way ("20 years old" vs "22 years old"), so this is the
+  frontend's numerical baseline rather than a qwen35 defect.
+* A **prefill-vs-decode consistency** check (generate N tokens, then re-prefill each own-output
+  prefix and compare the next token). `qwen35` scores 1 mismatch in 16 -- identical to `qwen3`
+  (1/16) at the identical position. `llama` scores 0/16. The GDN recurrence is computed chunk-wise
+  during prefill and step-wise during decode, which are mathematically equal but not bit-equal, so
+  a near-tie can flip; llama.cpp has the same two code paths.
+* Final logits within 1.0% (0.8B) and 0.12% (Bonsai) of llama.cpp on the sum over the vocabulary.
 
 A caveat on the Bonsai artifacts: **`Ternary-Bonsai-27B-Q2_0.gguf` is not upstream `Q2_0`.**
 It does not load in llama.cpp either (`tensor 'output_norm.weight' has offset 337715200,

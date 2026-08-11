@@ -1704,11 +1704,18 @@ const std::set<std::string>& verified_archs() {
         "hunyuan-dense",
         "olmoe",     // OLMoE 1B-7B (MoE)
         "qwen3moe",  // Qwen3 MoE: same topology as olmoe
-        "gpt-oss",   // MoE + sinks + SWA
-        "gemma",     // Gemma 2B / 7B
-        "gemma2",    // Gemma 2: post-norms + attention soft-cap
-        "gemma3",    // Gemma 3: post-norms + final logit soft-cap
-        "gemma4",    // Gemma 4: SWA, per-layer embeddings, shared KV
+        // Qwen3.5/3.6 hybrid: Gated-DeltaNet linear attention on 3 of every 4 layers, full
+        // attention with M-RoPE and an interleaved query+gate projection on the rest. Verified
+        // token-exact against llama.cpp on Qwen3.5-0.8B-Q8_0 and Ternary-Bonsai-27B-Q2_g64.
+        // GREEDY / BATCH 1 ONLY: the recurrent conv and delta states are not reordered by
+        // beam_idx and have a static batch of 1, so beam search or batch > 1 fails at inference
+        // (a Concat shape mismatch on the conv window) rather than producing wrong output.
+        "qwen35",
+        "gpt-oss",  // MoE + sinks + SWA
+        "gemma",    // Gemma 2B / 7B
+        "gemma2",   // Gemma 2: post-norms + attention soft-cap
+        "gemma3",   // Gemma 3: post-norms + final logit soft-cap
+        "gemma4",   // Gemma 4: SWA, per-layer embeddings, shared KV
     };
     return archs;
 }
@@ -1734,8 +1741,6 @@ const std::set<std::string>& experimental_archs() {
         // 2026: dense
         "maincoder",     // Maincoder-1B: NORMAL rope, QK-norm (auto-detected)
         "mistral3",      // Ministral-3B: NORMAL rope, dense
-        "qwen35",        // Qwen3.5/3.6: hybrid Gated-DeltaNet + full attention, M-RoPE,
-                         // interleaved query+gate projection (full-attention layers only so far)
         "muse-glimmer",  // Muse Glimmer (Meta Onyx): NORMAL rope on SWA layers only (global
                          // layers are NoPE), sigmoid attention output gate, QK-norm,
                          // pre+post norms, final logit soft-cap
