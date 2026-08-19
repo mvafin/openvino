@@ -149,7 +149,8 @@ than a bespoke attribute) or emitting the same node *count* ggml does instead of
 Understanding where memory goes matters for large models (MoE especially). Load/convert is
 plugin-independent; compile and inference depend on how the target plugin handles the compressed
 weight subgraph the frontend emits, so those numbers are plugin-specific — measured here on CPU,
-which is the only plugin verified so far.
+which is the only plugin verified so far. See [performance_and_memory.md](performance_and_memory.md)
+for the full measured tables.
 
 **Load / convert (plugin-independent):**
 - The GGUF file is memory-mapped (`ov::load_mmap_object`); non-quantized tensors are zero-copy views
