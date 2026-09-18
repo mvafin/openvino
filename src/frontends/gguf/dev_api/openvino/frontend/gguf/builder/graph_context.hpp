@@ -52,6 +52,7 @@ public:
     // The SWA mask is included when requested here or by configure_decoder.
     void build_attn_inp_kv(bool swa = false);
     GgufValue add_input(const std::string& name, ov::element::Type type, const ov::PartialShape& shape);
+    GgufValue add_constant(const std::string& name, const ov::Tensor& value);
 
     // Invoke a registered converter; its OpenVINO outputs supply shape/type inference.
     GgufValue node(const std::string& op_type,
@@ -71,6 +72,7 @@ public:
 
     // Outputs and state
     void set_output(const GgufValue& logits);
+    void set_output(const GgufValue& value, const std::string& name);
     // Record the sliding window for normalization passes.
     void set_sliding_window(int64_t tokens);
     // Registers an overwritten state, automatically marking the update as a model output.

@@ -4,6 +4,7 @@
 
 #include "arch_registry.hpp"
 
+#include "builder/arch/mmproj_builder.hpp"
 #include "openvino/core/except.hpp"
 
 namespace ov::frontend::gguf {
@@ -38,7 +39,7 @@ std::vector<ArchitectureDefinition> builtin_architectures() {
     for (const auto& entry : decoders) {
         definitions.push_back(make_decoder_architecture(entry.name, entry.rope, {}, entry.maturity));
     }
-    // Add custom definitions here; their factories and builders are shared with external plugins.
+    definitions.push_back(mmproj_architecture());
     return definitions;
 }
 
