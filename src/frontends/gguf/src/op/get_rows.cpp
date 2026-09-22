@@ -17,10 +17,7 @@
 #include "openvino/op/unsqueeze.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace gguf {
-namespace op {
+namespace ov::frontend::gguf::op {
 
 OutputVector translate_get_rows(const NodeContext& context) {
     num_inputs_check(context, 2, 2);
@@ -113,7 +110,4 @@ OutputVector translate_get_rows(const NodeContext& context) {
     return rename_outputs_with_suffix({convert_rows(res)}, context.get_name());
 }
 
-}  // namespace op
-}  // namespace gguf
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::gguf::op

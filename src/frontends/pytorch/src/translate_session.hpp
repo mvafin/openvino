@@ -8,9 +8,7 @@
 #include "openvino/frontend/extension/telemetry.hpp"
 #include "openvino/frontend/pytorch/node_context.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
+namespace ov::frontend::pytorch {
 
 /// For one call of convert and decode method of Frontend, it creates one TranslateSession object to save data for the
 /// translation session: telemetry statistics, operation translators (including extensions) registered for this
@@ -63,6 +61,4 @@ private:
     std::map<std::string, uint64_t> m_op_statistics;
 };
 
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch

@@ -8,10 +8,7 @@
 #include "openvino/op/convert.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -73,7 +70,4 @@ OutputVector translate_topk_fx(const NodeContext& context) {
     return {context.mark_node(make_list_construct(OutputVector({topk->output(0), indices})))};
 };
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

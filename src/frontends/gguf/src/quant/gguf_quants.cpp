@@ -16,9 +16,7 @@
 #include "openvino/core/parallel.hpp"
 #include "openvino/core/type/element_type_traits.hpp"
 
-namespace ov {
-namespace frontend {
-namespace gguf {
+namespace ov::frontend::gguf {
 
 using namespace std;
 
@@ -831,6 +829,4 @@ void gguf_fill_asym(const GgufTensor& tensor, ov::Tensor& weights, ov::Tensor& s
     }
 }
 
-}  // namespace gguf
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::gguf

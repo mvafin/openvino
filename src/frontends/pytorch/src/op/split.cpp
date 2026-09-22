@@ -11,10 +11,7 @@
 #include "openvino/op/variadic_split.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 using namespace ov::op;
 
@@ -108,7 +105,4 @@ OutputVector translate_split_with_sizes(const NodeContext& context) {
     return {context.mark_node(make_list_construct(res))};
 }
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op

@@ -10,10 +10,7 @@
 #include "openvino/op/embeddingbag_packed.hpp"
 #include "utils.hpp"
 
-namespace ov {
-namespace frontend {
-namespace pytorch {
-namespace op {
+namespace ov::frontend::pytorch::op {
 
 OutputVector translate_embedding_bag_common(const NodeContext& context) {
     // aten::embedding_bag(weight, input, offsets=None, scale_grad_by_freq=False, mode_enum=1, sparse=False,
@@ -86,7 +83,4 @@ OutputVector translate_embedding_bag_fx(const NodeContext& context) {
     return {context.mark_node(make_list_construct(output))};
 }
 
-}  // namespace op
-}  // namespace pytorch
-}  // namespace frontend
-}  // namespace ov
+}  // namespace ov::frontend::pytorch::op
