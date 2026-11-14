@@ -151,6 +151,11 @@ extensions include MoE routing (`blocks::moe_ffn()`), gpt-oss sinks and OAI SwiG
 LayerNorm and ReLU² FFN, gemma2/3 post-norms and soft-caps, gemma4 per-layer embeddings and shared KV,
 and qwen35 Gated DeltaNet layers that return the same sublayer output as attention. To add one:
 
+For Gemma4 text decoding with `GenAIExtension`, when `AdaptToGenAI` selects one output row it applies
+that selection before the first shared-KV layer, including positions, query masks and per-layer
+embeddings. PagedAttention uses an identity selection and retains all new-token rows. Plain conversion
+and `GGUFMakeStateful` keep all token rows and preserve arbitrary `inp_out_ids` selection.
+
 1. Describe the feature in `DecoderParameters`. Select architecture-specific values in the owning
    family helper or extension factory; retain only unambiguous structural detection in `DecoderConfig`.
 2. Emit it behind that flag in the relevant `blocks/` function, or in `DecoderBuilder::build_layer()`

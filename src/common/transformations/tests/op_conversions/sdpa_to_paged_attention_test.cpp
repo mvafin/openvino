@@ -6,7 +6,9 @@
 
 #include <gtest/gtest.h>
 
+#include <functional>
 #include <set>
+#include <unordered_set>
 
 #include "../common_optimizations/ssm_test_models.hpp"
 #include "common_test_utils/node_builders/constant.hpp"
@@ -6839,9 +6841,10 @@ TEST(SDPAToPA, Gemma3n_SharedKVCache_TwoLayersSameReadValue) {
     auto beam_idx = ov::test::utils::make_param(element::i32, PartialShape{DYN}, "beam_idx");
     auto position_ids = ov::test::utils::make_param(element::i64, PartialShape{DYN, DYN}, "position_ids");
     auto attention_mask = ov::test::utils::make_param(element::i64, PartialShape{DYN, DYN}, "attention_mask");
+    auto shared_row_indices = ov::test::utils::make_param(element::i64, PartialShape{DYN}, "shared_row_indices");
     auto inputs_embeds =
         ov::test::utils::make_param(element::f32, PartialShape{DYN, DYN, hidden_size}, "inputs_embeds");
-    ParameterVector params{beam_idx, position_ids, attention_mask, inputs_embeds};
+    ParameterVector params{beam_idx, position_ids, attention_mask, shared_row_indices, inputs_embeds};
 
     auto ShapeOf0 = makeOP<v3::ShapeOf>({inputs_embeds}, {{"output_type", "i64"}});
     auto Gather0 = makeOP<v8::Gather>({ShapeOf0, {0}, 0}, {{"batch_dims", 0}});
@@ -6872,7 +6875,15 @@ TEST(SDPAToPA, Gemma3n_SharedKVCache_TwoLayersSameReadValue) {
     auto sdpa_18 =
         makeOP<v13::ScaledDotProductAttention>({Q_18, K_shared, V_shared, Slice_mask, 1.0f}, {{"causal", false}});
 
-    auto Q_20 = make_projection(ln_out, q_proj_size, q_heads);
+    auto sdpa_18_transposed = makeOP<v1::Transpose>({sdpa_18, {0, 2, 1, 3}});
+    auto sdpa_18_hidden = makeOP<v1::Reshape>({sdpa_18_transposed, {0, 0, hidden_size}},
+                                              {{"special_zero", true}});
+    auto sdpa_18_flat = makeOP<v1::Reshape>({sdpa_18_hidden, {-1, hidden_size}}, {{"special_zero", false}});
+    auto shared_indices = makeOP<v1::Reshape>({shared_row_indices, {-1, 1}}, {{"special_zero", false}});
+    auto selected_rows = makeOP<v8::Gather>({sdpa_18_flat, shared_indices, 0}, {{"batch_dims", 0}});
+    auto selected_rows_unsqueezed = makeOP<v0::Unsqueeze>({selected_rows, {0}});
+    auto selected_hidden = makeOP<v0::Squeeze>({selected_rows_unsqueezed, {2}});
+    auto Q_20 = make_projection(selected_hidden, q_proj_size, q_heads);
     auto sdpa_20 =
         makeOP<v13::ScaledDotProductAttention>({Q_20, K_shared, V_shared, Slice_mask, 1.0f}, {{"causal", false}});
 
@@ -6926,6 +6937,36 @@ TEST(SDPAToPA, Gemma3n_SharedKVCache_TwoLayersSameReadValue) {
     }
     EXPECT_EQ(key_cache_count, 1u) << "Expected 1 key_cache parameter (shared)";
     EXPECT_EQ(value_cache_count, 1u) << "Expected 1 value_cache parameter (shared)";
+
+    const auto converted_parameters = model->get_parameters();
+    const auto shared_tokens_indices = std::find_if(converted_parameters.begin(),
+                                                    converted_parameters.end(),
+                                                    [](const auto& parameter) {
+                                                        return parameter->get_friendly_name() ==
+                                                               "shared_kv_tokens_indices";
+                                                    });
+    ASSERT_NE(shared_tokens_indices, converted_parameters.end());
+
+    std::function<bool(const ov::Output<ov::Node>&, const ov::Node*, std::unordered_set<const ov::Node*>&)> depends_on;
+    depends_on = [&](const ov::Output<ov::Node>& output,
+                     const ov::Node* target,
+                     std::unordered_set<const ov::Node*>& visited) {
+        const auto* node = output.get_node();
+        if (node == target) {
+            return true;
+        }
+        if (!visited.insert(node).second) {
+            return false;
+        }
+        for (const auto& input : node->input_values()) {
+            if (depends_on(input, target, visited)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::unordered_set<const ov::Node*> visited;
+    EXPECT_TRUE(depends_on(shared_pa->input_value(0), shared_tokens_indices->get(), visited));
 }
 
 TEST(SDPAToPA, SingleLayerSlidingWindow) {
@@ -7134,10 +7175,11 @@ TEST(SDPAToPA, Gemma4_PerLayerSlidingWindow) {
         // outer Select: combine with causal mask
         auto causal = makeConst(element::boolean, ov::Shape({}), {1});
         auto outer_select = makeOP<v1::Select>({causal, 0.0f, inner_select}, {numpy_broadcast});
+        auto last_query_row = makeOP<v8::Gather>({outer_select, {-1}, 2}, {{"batch_dims", 0}});
 
         // Slice (identity slice to match pattern)
         auto cur_len_unsq = makeOP<v0::Unsqueeze>({cur_len, 0});
-        return makeOP<v8::Slice>({outer_select, {0}, cur_len_unsq, {1}, {3}});
+        return makeOP<v8::Slice>({last_query_row, {0}, cur_len_unsq, {1}, {3}});
     };
 
     // Gemma4 global layer mask: Slice(Broadcast(...)) - no GreaterEqual pattern

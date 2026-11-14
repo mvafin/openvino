@@ -241,7 +241,11 @@ static std::tuple<std::shared_ptr<ov::Node>, std::shared_ptr<ov::Node>> gptoss_g
     auto bitwise_and_3 = wrap_type<v13::BitwiseAnd>({bitwise_and_2, any_input()});
     auto broadcast = wrap_type<v3::Broadcast>({bitwise_and_3, any_input()});
     auto select = wrap_type<v1::Select>({broadcast, any_input(), any_input()});
-    auto mask = pattern::optional<v8::Slice>({select, any_input(), any_input(), any_input(), any_input()});
+    auto query_select = pattern::optional<v8::Gather>({select, any_input(), any_input()});
+    auto sliced_mask = pattern::optional<v8::Slice>({query_select, any_input(), any_input(), any_input(), any_input()});
+    auto squeezed_mask = pattern::optional<v0::Squeeze>({sliced_mask, any_input()});
+    auto converted_mask = pattern::optional<v0::Convert>(squeezed_mask);
+    auto mask = pattern::optional<v0::Unsqueeze>({converted_mask, any_input()});
 
     return {mask, offset};
 }
@@ -253,7 +257,11 @@ static std::tuple<std::shared_ptr<ov::Node>, std::shared_ptr<ov::Node>> gemma4_s
     auto unsqueeze_1 = wrap_type<v0::Unsqueeze>({unsqueeze_0, any_input()});
     auto inner_select = wrap_type<v1::Select>({unsqueeze_1, any_input(), any_input()});
     auto outer_select = wrap_type<v1::Select>({any_input(), any_input(), inner_select});
-    auto mask = pattern::optional<v8::Slice>({outer_select, any_input(), any_input(), any_input(), any_input()});
+    auto query_select = pattern::optional<v8::Gather>({outer_select, any_input(), any_input()});
+    auto sliced_mask = pattern::optional<v8::Slice>({query_select, any_input(), any_input(), any_input(), any_input()});
+    auto squeezed_mask = pattern::optional<v0::Squeeze>({sliced_mask, any_input()});
+    auto converted_mask = pattern::optional<v0::Convert>(squeezed_mask);
+    auto mask = pattern::optional<v0::Unsqueeze>({converted_mask, any_input()});
 
     return {mask, offset};
 }
@@ -629,6 +637,22 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
         Output<Node> q_to_pa = q_reshape;
         Output<Node> k_to_pa = k_reshape;
         Output<Node> v_to_pa = v_reshape;
+        const bool shared_kv_pruning_enabled = pa_params.exists("shared_kv_tokens_indices");
+        const bool prune_shared_kv_rows =
+            shared_kv_pruning_enabled && !kv_params.write_kv_cache;
+        if (prune_shared_kv_rows) {
+            auto shared_kv_tokens_indices = pa_params["shared_kv_tokens_indices"];
+            auto axis = v0::Constant::create(element::i64, Shape{}, {0});
+            auto k_gather = std::make_shared<v8::Gather>(k_target_layout, shared_kv_tokens_indices, axis);
+            auto v_gather = std::make_shared<v8::Gather>(v_target_layout, shared_kv_tokens_indices, axis);
+            copy_runtime_info(k_target_layout.get_node_shared_ptr(), k_gather);
+            copy_runtime_info(v_target_layout.get_node_shared_ptr(), v_gather);
+            auto flattened_shape = v0::Constant::create(element::i64, Shape{2}, {0, -1});
+            k_to_pa = std::make_shared<v1::Reshape>(k_gather, flattened_shape, true);
+            v_to_pa = std::make_shared<v1::Reshape>(v_gather, flattened_shape, true);
+            copy_runtime_info(k_gather, k_to_pa.get_node_shared_ptr());
+            copy_runtime_info(v_gather, v_to_pa.get_node_shared_ptr());
+        }
 
         // Re-apply the activation-quantization op matched by optional_quantization (per-tensor
         // v0::FakeQuantize on the KV concat, or v13::FakeConvert on a Q/K/V input) onto the rebuilt PA
@@ -698,8 +722,9 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
         }
 
         OutputVector pa_arguments = {q_to_pa, k_to_pa, v_to_pa, k_parameter, v_parameter};
-        pa_arguments.push_back(pa_params["past_lens"]);
-        pa_arguments.push_back(pa_params["subsequence_begins"]);
+        pa_arguments.push_back(prune_shared_kv_rows ? pa_params["shared_kv_past_lens"] : pa_params["past_lens"]);
+        pa_arguments.push_back(prune_shared_kv_rows ? pa_params["shared_kv_subsequence_begins"]
+                                                    : pa_params["subsequence_begins"]);
         if (!options.use_per_layer_block_indices_inputs) {
             pa_arguments.push_back(pa_params["block_indices"]);
         }
