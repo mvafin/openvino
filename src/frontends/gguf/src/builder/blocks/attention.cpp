@@ -43,8 +43,7 @@ std::string attention(GraphEmitter& e,
                       const std::string& attn_norm,
                       const std::string& positions,
                       const std::string& mask,
-                      const std::string& swa_mask,
-                      bool shared_kv_pruning) {
+                      const std::string& swa_mask) {
     const std::string p = "blk." + std::to_string(il) + ".";
 
     // Per-layer hyperparameters (SWA vs global head size / rope / scale; per-layer KV heads).
@@ -234,8 +233,6 @@ std::string attention(GraphEmitter& e,
         attn_in.push_back(p + "attn_sinks.weight");
     }
     std::map<std::string, ov::Any> attn_attrs = {{"scale", kq_scale}};
-    if (shared_kv_pruning)
-        attn_attrs["shared_kv_pruning"] = true;
     if (is_swa_layer && cfg.swa_window_size > 0) {
         attn_attrs["swa_window_size"] = static_cast<int64_t>(cfg.swa_window_size);
     }

@@ -52,6 +52,7 @@
 #include "openvino/pass/manager.hpp"
 #include "openvino/pass/matcher_pass.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
+#include "openvino/pass/sdpa_to_paged_attention.hpp"
 #include "openvino/runtime/properties.hpp"
 #include "pass/simplify_activation_shapes.hpp"
 #include "utils.hpp"
@@ -709,7 +710,7 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
         hidden_ps[hidden_ps.size() - 1].is_static() && lm_head->get_input_partial_shape(1).size() == 2) {
         const auto ops = model->get_ops();
         const bool shared_kv_pruning = std::any_of(ops.begin(), ops.end(), [](const auto& node) {
-            return node->get_rt_info().count("gguf.shared_kv_pruning") != 0;
+            return node->get_rt_info().count(ov::pass::paged_attention::SHARED_KV_ROW_SELECTION_RT_INFO) != 0;
         });
         auto head_batch_len = batch_len;
         if (shared_kv_pruning) {

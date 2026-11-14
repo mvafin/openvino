@@ -31,6 +31,7 @@
 #include "openvino/op/tanh.hpp"
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/unsqueeze.hpp"
+#include "openvino/pass/sdpa_to_paged_attention.hpp"
 #include "utils.hpp"
 
 namespace ov::frontend::gguf::op {
@@ -268,16 +269,10 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
                                                                         false);
     }
     const auto swa_window_size = context.get_attribute<int64_t>("swa_window_size", 0);
-    if (context.get_attribute<bool>("shared_kv_pruning", false)) {
-        FRONT_END_OP_CONVERSION_CHECK(
-            ov::as_type_ptr<ov::op::v13::ScaledDotProductAttention>(sdpa.get_node_shared_ptr()),
-            "Shared-KV pruning requires a ScaledDotProductAttention node");
-        sdpa.get_node()->get_rt_info()["gguf.shared_kv_pruning"] = true;
-    }
     if (swa_window_size > 0) {
         if (const auto sdpa_node =
                 ov::as_type_ptr<ov::op::v13::ScaledDotProductAttention>(sdpa.get_node_shared_ptr())) {
-            sdpa_node->get_rt_info()["gguf.swa_window_size"] = swa_window_size;
+            sdpa_node->get_rt_info()[ov::pass::paged_attention::SLIDING_WINDOW_SIZE_RT_INFO] = swa_window_size;
         }
     }
     // [B, H, L, S] -> [B, L, H, S] (ggml-natural layout expected by caller).

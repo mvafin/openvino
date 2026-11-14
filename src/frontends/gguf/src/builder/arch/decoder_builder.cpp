@@ -283,7 +283,6 @@ std::string DecoderBuilder::build_layer(int il,
         return m_emit.add_op("GGML_OP_ADD", p + "l_out", {down_r, ffn_inp_r});
     }
 
-    const bool shared_kv_layer = prunes_shared_kv_rows() && il >= first_shared_kv_layer();
     std::string attn_out = blocks::attention(m_emit,
                                              m_cfg,
                                              m_kv,
@@ -291,8 +290,7 @@ std::string DecoderBuilder::build_layer(int il,
                                              attn_norm,
                                              attention_inputs.positions,
                                              attention_inputs.mask,
-                                             attention_inputs.swa_mask,
-                                             shared_kv_layer);
+                                             attention_inputs.swa_mask);
 
     // MiniCPM scales the attention sublayer output before the residual add.
     if (m_cfg.residual_scale != 1.0f) {
