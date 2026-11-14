@@ -268,6 +268,12 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
                                                                         false);
     }
     const auto swa_window_size = context.get_attribute<int64_t>("swa_window_size", 0);
+    if (context.get_attribute<bool>("shared_kv_pruning", false)) {
+        FRONT_END_OP_CONVERSION_CHECK(
+            ov::as_type_ptr<ov::op::v13::ScaledDotProductAttention>(sdpa.get_node_shared_ptr()),
+            "Shared-KV pruning requires a ScaledDotProductAttention node");
+        sdpa.get_node()->get_rt_info()["gguf.shared_kv_pruning"] = true;
+    }
     if (swa_window_size > 0) {
         if (const auto sdpa_node =
                 ov::as_type_ptr<ov::op::v13::ScaledDotProductAttention>(sdpa.get_node_shared_ptr())) {

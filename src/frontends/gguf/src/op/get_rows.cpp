@@ -150,7 +150,13 @@ OutputVector translate_get_rows(const NodeContext& context) {
     // The two Squeezes above dropped the leading axes; restore ggml's rank-4 form.
     res = std::make_shared<ov::op::v0::Unsqueeze>(res, ov::op::v0::Constant::create(ov::element::i64, {1}, {0}));
     res = apply_hadamard(context, res);
-    return rename_outputs_with_suffix({convert_rows(res)}, context.get_name());
+    const bool shared_kv_prune_rows = context.get_attribute<bool>("shared_kv_prune_rows", false);
+    if (shared_kv_prune_rows)
+        res.get_node()->get_rt_info()["gguf.shared_kv_prune_rows"] = true;
+    auto outputs = rename_outputs_with_suffix({convert_rows(res)}, context.get_name());
+    if (shared_kv_prune_rows)
+        outputs.front().get_node()->get_rt_info()["gguf.shared_kv_prune_rows"] = true;
+    return outputs;
 }
 
 }  // namespace ov::frontend::gguf::op

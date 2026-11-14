@@ -707,9 +707,18 @@ bool AdaptToGenAI::run_on_model(const std::shared_ptr<ov::Model>& model) {
     const auto& hidden_ps = lm_head ? lm_head->get_input_partial_shape(0) : ov::PartialShape::dynamic();
     if (lm_head && hidden_ps.rank().is_static() && (hidden_ps.size() == 3 || hidden_ps.size() == 4) &&
         hidden_ps[hidden_ps.size() - 1].is_static() && lm_head->get_input_partial_shape(1).size() == 2) {
+        const auto ops = model->get_ops();
+        const bool shared_kv_pruning = std::any_of(ops.begin(), ops.end(), [](const auto& node) {
+            return node->get_rt_info().count("gguf.shared_kv_pruning") != 0;
+        });
+        auto head_batch_len = batch_len;
+        if (shared_kv_pruning) {
+            head_batch_len = get_dimensions(lm_head->input_value(0), {0});
+        }
         const auto sequence_and_hidden_dims =
             v0::Constant::create(ov::element::i64, {2}, {int64_t{-1}, hidden_ps[hidden_ps.size() - 1].get_length()});
-        const auto hidden_3d_shape = make_shared<v0::Concat>(ov::OutputVector{batch_len, sequence_and_hidden_dims}, 0);
+        const auto hidden_3d_shape =
+            make_shared<v0::Concat>(ov::OutputVector{head_batch_len, sequence_and_hidden_dims}, 0);
         auto hidden_3d =
             make_shared<v1::Reshape>(lm_head->input_value(0), hidden_3d_shape, false);  // [batch, seq, hidden]
         lm_head->input(0).replace_source_output(hidden_3d);

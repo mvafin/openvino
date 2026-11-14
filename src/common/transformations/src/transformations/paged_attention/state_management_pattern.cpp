@@ -631,6 +631,25 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
         Output<Node> q_to_pa = q_reshape;
         Output<Node> k_to_pa = k_reshape;
         Output<Node> v_to_pa = v_reshape;
+        const bool has_shared_kv_pruning_marker = sdpa_node->get_rt_info().count("gguf.shared_kv_pruning") != 0;
+        const bool shared_kv_pruning_enabled = pa_params.exists("shared_kv_tokens_indices");
+        OPENVINO_ASSERT(!shared_kv_pruning_enabled || !has_shared_kv_pruning_marker || !kv_params.write_kv_cache,
+                        "A GGUF shared-KV PagedAttention node unexpectedly writes its KV cache");
+        const bool prune_shared_kv_rows =
+            shared_kv_pruning_enabled && has_shared_kv_pruning_marker && !kv_params.write_kv_cache;
+        if (prune_shared_kv_rows) {
+            auto shared_kv_tokens_indices = pa_params["shared_kv_tokens_indices"];
+            auto axis = v0::Constant::create(element::i64, Shape{}, {0});
+            auto k_gather = std::make_shared<v8::Gather>(k_target_layout, shared_kv_tokens_indices, axis);
+            auto v_gather = std::make_shared<v8::Gather>(v_target_layout, shared_kv_tokens_indices, axis);
+            copy_runtime_info(k_target_layout.get_node_shared_ptr(), k_gather);
+            copy_runtime_info(v_target_layout.get_node_shared_ptr(), v_gather);
+            auto flattened_shape = v0::Constant::create(element::i64, Shape{2}, {0, -1});
+            k_to_pa = std::make_shared<v1::Reshape>(k_gather, flattened_shape, true);
+            v_to_pa = std::make_shared<v1::Reshape>(v_gather, flattened_shape, true);
+            copy_runtime_info(k_gather, k_to_pa.get_node_shared_ptr());
+            copy_runtime_info(v_gather, v_to_pa.get_node_shared_ptr());
+        }
 
         // Re-apply the activation-quantization op matched by optional_quantization (per-tensor
         // v0::FakeQuantize on the KV concat, or v13::FakeConvert on a Q/K/V input) onto the rebuilt PA
@@ -700,8 +719,9 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
         }
 
         OutputVector pa_arguments = {q_to_pa, k_to_pa, v_to_pa, k_parameter, v_parameter};
-        pa_arguments.push_back(pa_params["past_lens"]);
-        pa_arguments.push_back(pa_params["subsequence_begins"]);
+        pa_arguments.push_back(prune_shared_kv_rows ? pa_params["shared_kv_past_lens"] : pa_params["past_lens"]);
+        pa_arguments.push_back(prune_shared_kv_rows ? pa_params["shared_kv_subsequence_begins"]
+                                                    : pa_params["subsequence_begins"]);
         if (!options.use_per_layer_block_indices_inputs) {
             pa_arguments.push_back(pa_params["block_indices"]);
         }

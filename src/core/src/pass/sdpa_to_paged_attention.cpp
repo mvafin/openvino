@@ -9,6 +9,7 @@
 #include "openvino/op/assign.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/gather.hpp"
+#include "openvino/op/reshape.hpp"
 #include "openvino/op/scaled_dot_product_attention.hpp"
 #include "openvino/op/shape_of.hpp"
 #include "openvino/op/subtract.hpp"
@@ -53,6 +54,37 @@ std::shared_ptr<v0::Parameter> get_parameter(const std::shared_ptr<ov::Model>& m
     return nullptr;
 }
 
+bool has_rt_info(const ov::Node& node, const std::string& key) {
+    return node.get_rt_info().count(key) != 0;
+}
+
+void apply_shared_kv_row_selection(const std::shared_ptr<ov::Model>& model,
+                                   const std::shared_ptr<v0::Parameter>& shared_kv_tokens_indices) {
+    using namespace ov::op;
+    const auto ids_shape = v0::Constant::create(ov::element::i64, ov::Shape{3}, {1, -1, 1});
+    const auto selected_ids = std::make_shared<v1::Reshape>(shared_kv_tokens_indices, ids_shape, false);
+    size_t selected_nodes = 0;
+    for (const auto& node : model->get_ops()) {
+        if (!has_rt_info(*node, "gguf.shared_kv_prune_rows") || !ov::is_type<v0::Unsqueeze>(node))
+            continue;
+
+        const auto gather = ov::as_type_ptr<v8::Gather>(node->get_input_node_shared_ptr(0));
+        OPENVINO_ASSERT(gather,
+                        "GGUF shared-KV pruning expected a Gather under row-selection node ",
+                        node->get_friendly_name());
+        const auto indices_reshape = ov::as_type_ptr<v1::Reshape>(gather->get_input_node_shared_ptr(1));
+        OPENVINO_ASSERT(indices_reshape,
+                        "GGUF shared-KV pruning expected reshaped inp_out_ids under ",
+                        node->get_friendly_name());
+        if (selected_nodes == 0) {
+            copy_runtime_info(indices_reshape, selected_ids);
+        }
+        indices_reshape->input(0).replace_source_output(selected_ids);
+        ++selected_nodes;
+    }
+    OPENVINO_ASSERT(selected_nodes > 0, "GGUF shared-KV pruning has no marked row-selection nodes");
+}
+
 }  // namespace
 
 ov::pass::SDPAToPagedAttention::SDPAToPagedAttention(bool use_per_layer_block_indices_inputs,
@@ -88,6 +120,20 @@ bool ov::pass::SDPAToPagedAttention::run_on_model(const std::shared_ptr<ov::Mode
 
     m_params = PaParams{model->get_parameters()};
     m_results = PaResults{model->get_results()};
+    const auto ops = model->get_ops();
+    const auto has_shared_kv_pruning_marker = std::any_of(ops.begin(), ops.end(), [](const auto& node) {
+        return node->get_rt_info().count("gguf.shared_kv_pruning") != 0;
+    });
+    if (has_shared_kv_pruning_marker && !m_params.exists("token_type_ids")) {
+        auto sampled_tokens_indices = m_params.add("sampled_tokens_indices", element::i64, PartialShape{-1});
+        auto shared_kv_tokens_indices = m_params.add("shared_kv_tokens_indices", element::i64, PartialShape{-1});
+        auto shared_kv_past_lens = m_params.add("shared_kv_past_lens", element::i32, PartialShape{-1});
+        auto shared_kv_subsequence_begins =
+            m_params.add("shared_kv_subsequence_begins", element::i32, PartialShape{-1});
+        model->add_parameters(
+            {sampled_tokens_indices, shared_kv_tokens_indices, shared_kv_past_lens, shared_kv_subsequence_begins});
+        apply_shared_kv_row_selection(model, shared_kv_tokens_indices);
+    }
     auto max_context_len = m_params.add("max_context_len", element::i32, PartialShape{});
     m_params.add("past_lens", element::i32, PartialShape{-1});
     m_params.add("subsequence_begins", element::i32, PartialShape{-1});
@@ -221,7 +267,14 @@ bool ov::pass::SDPAToPagedAttention::run_on_model(const std::shared_ptr<ov::Mode
     }
 
     model->add_results(m_results.items());
-    model->add_parameters(m_params.items());
+    const auto model_parameters = model->get_parameters();
+    ov::ParameterVector parameters_to_add;
+    for (const auto& parameter : m_params.items()) {
+        if (std::find(model_parameters.begin(), model_parameters.end(), parameter) == model_parameters.end()) {
+            parameters_to_add.push_back(parameter);
+        }
+    }
+    model->add_parameters(parameters_to_add);
     model->validate_nodes_and_infer_types();
 
     return true;

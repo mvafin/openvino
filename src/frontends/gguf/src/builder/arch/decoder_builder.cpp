@@ -16,6 +16,7 @@
 #include "builder/arch/decoder_builder.hpp"
 
 #include <cmath>
+#include <map>
 
 #include "builder/api/metadata_store.hpp"
 #include "builder/blocks/common.hpp"
@@ -203,7 +204,13 @@ std::string DecoderBuilder::inject_per_layer_embedding(int il,
     std::string pl_slice_used = pl_slice;
     if (selects_per_layer_embedding_rows(il)) {
         pl_slice_used = p + "per_layer_slice_sel";
-        m_emit.add_op("GGML_OP_GET_ROWS", pl_slice_used, {pl_slice, "inp_out_ids"});
+        const bool shared_kv_rows = prunes_shared_kv_rows() && il >= first_shared_kv_layer();
+        m_emit.add_op("GGML_OP_GET_ROWS",
+                      pl_slice_used,
+                      {pl_slice, "inp_out_ids"},
+                      0,
+                      shared_kv_rows ? std::map<std::string, ov::Any>{{"shared_kv_prune_rows", true}}
+                                     : std::map<std::string, ov::Any>{});
         if (prunes_shared_kv_rows() && il >= first_shared_kv_layer()) {
             pl_slice_used = m_emit.add_op("GGML_OP_TRANSPOSE",
                                           p + "per_layer_slice_batch_major",
@@ -276,6 +283,7 @@ std::string DecoderBuilder::build_layer(int il,
         return m_emit.add_op("GGML_OP_ADD", p + "l_out", {down_r, ffn_inp_r});
     }
 
+    const bool shared_kv_layer = prunes_shared_kv_rows() && il >= first_shared_kv_layer();
     std::string attn_out = blocks::attention(m_emit,
                                              m_cfg,
                                              m_kv,
@@ -283,7 +291,8 @@ std::string DecoderBuilder::build_layer(int il,
                                              attn_norm,
                                              attention_inputs.positions,
                                              attention_inputs.mask,
-                                             attention_inputs.swa_mask);
+                                             attention_inputs.swa_mask,
+                                             shared_kv_layer);
 
     // MiniCPM scales the attention sublayer output before the residual add.
     if (m_cfg.residual_scale != 1.0f) {
@@ -404,7 +413,11 @@ std::shared_ptr<GgufGraph> DecoderBuilder::build() {
     for (int il = 0; il < m_cfg.n_layer; ++il) {
         if (prune_shared_kv_rows && il == first_shared_kv_layer()) {
             full_token_ref = cur;
-            cur = m_emit.add_op("GGML_OP_GET_ROWS", "shared_kv_inp", {cur, "inp_out_ids"});
+            cur = m_emit.add_op("GGML_OP_GET_ROWS",
+                                "shared_kv_inp",
+                                {cur, "inp_out_ids"},
+                                0,
+                                {{"shared_kv_prune_rows", true}});
             cur = m_emit.add_op("GGML_OP_TRANSPOSE",
                                 "shared_kv_inp_batch_major",
                                 {cur},
@@ -418,8 +431,11 @@ std::shared_ptr<GgufGraph> DecoderBuilder::build() {
                               {"inp_pos"},
                               6,
                               {{"reshape_target", std::vector<int64_t>{0, 0, -1, 1}}, {"special_zero", true}});
-            positions_as_rows =
-                m_emit.add_op("GGML_OP_GET_ROWS", "inp_pos_shared_rows", {positions_as_rows, "inp_out_ids"});
+            positions_as_rows = m_emit.add_op("GGML_OP_GET_ROWS",
+                                              "inp_pos_shared_rows",
+                                              {positions_as_rows, "inp_out_ids"},
+                                              0,
+                                              {{"shared_kv_prune_rows", true}});
             attention_inputs.positions = m_emit.add_op("GGML_OP_RESHAPE",
                                                        "inp_pos_shared",
                                                        {positions_as_rows},
