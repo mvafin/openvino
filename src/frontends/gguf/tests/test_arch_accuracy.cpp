@@ -1077,7 +1077,16 @@ TEST(GGUFMultimodalBackboneAdaptation, QwenAndGemmaSupportBatchesAndPagedAttenti
         manager.register_pass<ov::pass::SDPAToPagedAttention>();
         ASSERT_NO_THROW(manager.run_passes(model));
         // Multiple tokens expose accidental [tokens,tokens,...] M-RoPE broadcasts.
-        model->reshape({{"input_ids", {5}}, {"position_ids", {5}}});
+        if (std::string(family) == "gemma4-ple") {
+            model->reshape({{"input_ids", {5}},
+                            {"position_ids", {5}},
+                            {"sampled_tokens_indices", {5}},
+                            {"shared_kv_tokens_indices", {5}},
+                            {"shared_kv_past_lens", {1}},
+                            {"shared_kv_subsequence_begins", {2}}});
+        } else {
+            model->reshape({{"input_ids", {5}}, {"position_ids", {5}}});
+        }
         const bool gemma = std::string(family).find("gemma4") == 0;
         size_t attention = 0, recurrent = 0;
         size_t sliding_attention = 0;

@@ -20,14 +20,6 @@ namespace ov {
 namespace pass {
 namespace paged_attention {
 
-/**
- * Runtime-info keys for PagedAttention conversion:
- * - Mark row-selection nodes with SHARED_KV_ROW_SELECTION_RT_INFO to enable shared-KV compaction.
- * - Set SLIDING_WINDOW_SIZE_RT_INFO to an int64_t window size on SDPA nodes that use sliding-window attention.
- */
-inline constexpr char SHARED_KV_ROW_SELECTION_RT_INFO[] = "ov.paged_attention.shared_kv_row_selection";
-inline constexpr char SLIDING_WINDOW_SIZE_RT_INFO[] = "ov.paged_attention.sliding_window_size";
-
 struct Options {
     bool use_per_layer_block_indices_inputs;
     bool use_score_outputs;

@@ -18,7 +18,6 @@
 #include "openvino/op/squeeze.hpp"
 #include "openvino/op/subtract.hpp"
 #include "openvino/op/unsqueeze.hpp"
-#include "openvino/pass/sdpa_to_paged_attention.hpp"
 #include "utils.hpp"
 
 namespace ov::frontend::gguf::op {
@@ -151,13 +150,7 @@ OutputVector translate_get_rows(const NodeContext& context) {
     // The two Squeezes above dropped the leading axes; restore ggml's rank-4 form.
     res = std::make_shared<ov::op::v0::Unsqueeze>(res, ov::op::v0::Constant::create(ov::element::i64, {1}, {0}));
     res = apply_hadamard(context, res);
-    const bool shared_kv_prune_rows = context.get_attribute<bool>("shared_kv_prune_rows", false);
-    if (shared_kv_prune_rows)
-        res.get_node()->get_rt_info()[ov::pass::paged_attention::SHARED_KV_ROW_SELECTION_RT_INFO] = true;
-    auto outputs = rename_outputs_with_suffix({convert_rows(res)}, context.get_name());
-    if (shared_kv_prune_rows)
-        outputs.front().get_node()->get_rt_info()[ov::pass::paged_attention::SHARED_KV_ROW_SELECTION_RT_INFO] = true;
-    return outputs;
+    return rename_outputs_with_suffix({convert_rows(res)}, context.get_name());
 }
 
 }  // namespace ov::frontend::gguf::op

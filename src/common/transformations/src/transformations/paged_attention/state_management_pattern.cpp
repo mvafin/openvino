@@ -4,7 +4,6 @@
 
 #include "transformations/paged_attention/state_management_pattern.hpp"
 
-#include <limits>
 #include <tuple>
 #include <unordered_set>
 
@@ -242,7 +241,11 @@ static std::tuple<std::shared_ptr<ov::Node>, std::shared_ptr<ov::Node>> gptoss_g
     auto bitwise_and_3 = wrap_type<v13::BitwiseAnd>({bitwise_and_2, any_input()});
     auto broadcast = wrap_type<v3::Broadcast>({bitwise_and_3, any_input()});
     auto select = wrap_type<v1::Select>({broadcast, any_input(), any_input()});
-    auto mask = pattern::optional<v8::Slice>({select, any_input(), any_input(), any_input(), any_input()});
+    auto query_select = pattern::optional<v8::Gather>({select, any_input(), any_input()});
+    auto sliced_mask = pattern::optional<v8::Slice>({query_select, any_input(), any_input(), any_input(), any_input()});
+    auto squeezed_mask = pattern::optional<v0::Squeeze>({sliced_mask, any_input()});
+    auto converted_mask = pattern::optional<v0::Convert>(squeezed_mask);
+    auto mask = pattern::optional<v0::Unsqueeze>({converted_mask, any_input()});
 
     return {mask, offset};
 }
@@ -254,7 +257,11 @@ static std::tuple<std::shared_ptr<ov::Node>, std::shared_ptr<ov::Node>> gemma4_s
     auto unsqueeze_1 = wrap_type<v0::Unsqueeze>({unsqueeze_0, any_input()});
     auto inner_select = wrap_type<v1::Select>({unsqueeze_1, any_input(), any_input()});
     auto outer_select = wrap_type<v1::Select>({any_input(), any_input(), inner_select});
-    auto mask = pattern::optional<v8::Slice>({outer_select, any_input(), any_input(), any_input(), any_input()});
+    auto query_select = pattern::optional<v8::Gather>({outer_select, any_input(), any_input()});
+    auto sliced_mask = pattern::optional<v8::Slice>({query_select, any_input(), any_input(), any_input(), any_input()});
+    auto squeezed_mask = pattern::optional<v0::Squeeze>({sliced_mask, any_input()});
+    auto converted_mask = pattern::optional<v0::Convert>(squeezed_mask);
+    auto mask = pattern::optional<v0::Unsqueeze>({converted_mask, any_input()});
 
     return {mask, offset};
 }
@@ -724,14 +731,7 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
         pa_arguments.push_back(pa_params["block_indices_begins"]);
 
         std::shared_ptr<Node> sliding_window;
-        const auto sliding_window_info =
-            sdpa_node->get_rt_info().find(paged_attention::SLIDING_WINDOW_SIZE_RT_INFO);
-        if (sliding_window_info != sdpa_node->get_rt_info().end()) {
-            const auto window = sliding_window_info->second.as<int64_t>();
-            OPENVINO_ASSERT(window > 0 && window <= std::numeric_limits<int32_t>::max(),
-                            "Invalid PagedAttention sliding window size");
-            sliding_window = v0::Constant::create(element::i32, Shape{}, {static_cast<int32_t>(window)});
-        } else if (pattern_map.count(phi3_offset)) {
+        if (pattern_map.count(phi3_offset)) {
             auto offset = pattern_map.at(phi3_offset).get_node_shared_ptr();
             if (offset->get_element_type() != element::i32) {
                 offset = std::make_shared<v0::Convert>(offset, element::i32);

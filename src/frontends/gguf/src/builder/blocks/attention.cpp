@@ -233,9 +233,6 @@ std::string attention(GraphEmitter& e,
         attn_in.push_back(p + "attn_sinks.weight");
     }
     std::map<std::string, ov::Any> attn_attrs = {{"scale", kq_scale}};
-    if (is_swa_layer && cfg.swa_window_size > 0) {
-        attn_attrs["swa_window_size"] = static_cast<int64_t>(cfg.swa_window_size);
-    }
     if (cfg.embedding_model)
         attn_attrs["f32_attention"] = true;
     if (cfg.attn_soft_cap != 0.0f)

@@ -204,13 +204,10 @@ std::string DecoderBuilder::inject_per_layer_embedding(int il,
     std::string pl_slice_used = pl_slice;
     if (selects_per_layer_embedding_rows(il)) {
         pl_slice_used = p + "per_layer_slice_sel";
-        const bool shared_kv_rows = prunes_shared_kv_rows() && il >= first_shared_kv_layer();
         m_emit.add_op("GGML_OP_GET_ROWS",
                       pl_slice_used,
                       {pl_slice, "inp_out_ids"},
-                      0,
-                      shared_kv_rows ? std::map<std::string, ov::Any>{{"shared_kv_prune_rows", true}}
-                                     : std::map<std::string, ov::Any>{});
+                      0);
         if (prunes_shared_kv_rows() && il >= first_shared_kv_layer()) {
             pl_slice_used = m_emit.add_op("GGML_OP_TRANSPOSE",
                                           p + "per_layer_slice_batch_major",
@@ -414,8 +411,7 @@ std::shared_ptr<GgufGraph> DecoderBuilder::build() {
             cur = m_emit.add_op("GGML_OP_GET_ROWS",
                                 "shared_kv_inp",
                                 {cur, "inp_out_ids"},
-                                0,
-                                {{"shared_kv_prune_rows", true}});
+                                0);
             cur = m_emit.add_op("GGML_OP_TRANSPOSE",
                                 "shared_kv_inp_batch_major",
                                 {cur},
@@ -432,8 +428,7 @@ std::shared_ptr<GgufGraph> DecoderBuilder::build() {
             positions_as_rows = m_emit.add_op("GGML_OP_GET_ROWS",
                                               "inp_pos_shared_rows",
                                               {positions_as_rows, "inp_out_ids"},
-                                              0,
-                                              {{"shared_kv_prune_rows", true}});
+                                              0);
             attention_inputs.positions = m_emit.add_op("GGML_OP_RESHAPE",
                                                        "inp_pos_shared",
                                                        {positions_as_rows},
