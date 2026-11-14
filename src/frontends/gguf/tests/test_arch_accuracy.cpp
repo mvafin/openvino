@@ -27,6 +27,7 @@
 #include "helper_ops/gguf_constant.hpp"
 #include "op_test_utils.hpp"
 #include "openvino/core/type/float16.hpp"
+#include "openvino/core/validation_util.hpp"
 #include "openvino/frontend/extension/decoder_transformation.hpp"
 #include "openvino/frontend/gguf/adapt_mmproj_to_genai.hpp"
 #include "openvino/frontend/gguf/adapt_to_genai.hpp"
@@ -858,6 +859,82 @@ TEST(GGUFMultimodalBackboneAdaptation, Rank3HeadRemainsVisibleToGenAI) {
     }
 }
 
+TEST(GGUFMultimodalBackboneAdaptation, Gemma4PrunesRowsAtFirstSharedKvLayer) {
+    using namespace ov::frontend::gguf;
+    const auto arrays = cnpy::npz_load(ov_gguf_test::test_data_dir() + "/arch_accuracy/gemma4-ple.npz");
+    const ov_gguf_test::TemporaryGguf temporary(ov_gguf_test::npz_array(arrays, "model"));
+    auto loaded = get_gguf_data(temporary.path);
+    auto& metadata = std::get<0>(loaded);
+    auto& weights = std::get<1>(loaded);
+    detail::MetadataStore store{metadata};
+    const auto parameters = resolve_decoder_parameters(GgufMetadata(store), RopeMode::Neox);
+    detail::WeightStore tensors{weights};
+    BuildContext context{GgufMetadata(store), parameters.architecture, &tensors};
+    context.genai_adaptation = true;
+    DecoderBuilder builder(context, parameters);
+    const auto graph = builder.build();
+    const DecoderConfig config(parameters, weights);
+    const int first_shared = config.n_layer - config.shared_kv_layers;
+    ASSERT_GT(config.shared_kv_layers, 0);
+    ASSERT_GT(first_shared, 0);
+    ASSERT_GT(config.n_embd_per_layer, 0);
+
+    const auto find_node = [&](const std::string& name) -> const GgufOp* {
+        const auto it = std::find_if(graph->nodes.begin(), graph->nodes.end(), [&](const auto& op) {
+            return op.name == name;
+        });
+        return it == graph->nodes.end() ? nullptr : &*it;
+    };
+    const auto expect_rows = [&](const std::string& name, const std::string& input) {
+        const auto* op = find_node(name);
+        ASSERT_NE(op, nullptr) << name;
+        EXPECT_EQ(op->op_type, "GGML_OP_GET_ROWS");
+        ASSERT_EQ(op->input_names.size(), 2);
+        if (!input.empty()) {
+            EXPECT_EQ(op->input_names[0], input);
+        }
+        EXPECT_EQ(op->input_names[1], "inp_out_ids");
+    };
+
+    expect_rows("shared_kv_inp", "");
+    expect_rows("inp_pos_shared_rows", "inp_pos_as_rows");
+    const auto expect_last_query_row = [&](const std::string& name, const std::string& input) {
+        const auto* op = find_node(name);
+        ASSERT_NE(op, nullptr) << name;
+        EXPECT_EQ(op->op_type, "GGML_OP_GET_ROWS");
+        EXPECT_EQ(op->op_case, 11);
+        ASSERT_EQ(op->input_names.size(), 1);
+        EXPECT_EQ(op->input_names[0], input);
+    };
+    expect_last_query_row("self_kq_mask_shared", "self_kq_mask");
+    if (config.has_swa) {
+        expect_last_query_row("self_kq_mask_swa_shared", "self_kq_mask_swa");
+    }
+    const auto* shared_kv_batch_major = find_node("shared_kv_inp_batch_major");
+    ASSERT_NE(shared_kv_batch_major, nullptr);
+    EXPECT_EQ(shared_kv_batch_major->op_type, "GGML_OP_TRANSPOSE");
+    EXPECT_NE(find_node("inp_pos_shared"), nullptr);
+    EXPECT_EQ(find_node("blk." + std::to_string(config.n_layer - 1) + ".attn_out_g"), nullptr);
+    EXPECT_EQ(find_node("blk." + std::to_string(config.n_layer - 1) + ".inpSA_g"), nullptr);
+
+    for (int il = first_shared; il < config.n_layer; ++il) {
+        EXPECT_NE(find_node("blk." + std::to_string(il) + ".per_layer_slice_sel"), nullptr);
+        EXPECT_NE(find_node("blk." + std::to_string(il) + ".per_layer_slice_batch_major"), nullptr);
+    }
+    EXPECT_EQ(find_node("blk.0.per_layer_slice_sel"), nullptr);
+
+    const BuildContext raw_context{GgufMetadata(store), parameters.architecture, &tensors};
+    DecoderBuilder raw_builder(raw_context, parameters);
+    const auto raw_graph = raw_builder.build();
+    const auto has_node = [&](const std::string& name) {
+        return std::any_of(raw_graph->nodes.begin(), raw_graph->nodes.end(), [&](const auto& op) {
+            return op.name == name;
+        });
+    };
+    EXPECT_FALSE(has_node("shared_kv_inp"));
+    EXPECT_TRUE(has_node("blk." + std::to_string(config.n_layer - 1) + ".attn_out_g"));
+}
+
 TEST(GGUFMultimodalBackboneAdaptation, Lfm3SupportsBatchesAndBeamReordering) {
     for (const auto* family : {"lfm3", "lfm3-attention-first", "lfm3-wide-query"}) {
         SCOPED_TRACE(family);
@@ -903,6 +980,7 @@ TEST(GGUFMultimodalBackboneAdaptation, QwenAndGemmaSupportBatchesAndPagedAttenti
         model->reshape({{"input_ids", {5}}, {"position_ids", {5}}});
         const bool gemma = std::string(family).find("gemma4") == 0;
         size_t attention = 0, recurrent = 0;
+        size_t sliding_attention = 0;
         for (const auto& node : model->get_ops()) {
             if (auto pa = ov::as_type_ptr<ov::op::PagedAttentionExtension>(node)) {
                 ++attention;
@@ -910,6 +988,13 @@ TEST(GGUFMultimodalBackboneAdaptation, QwenAndGemmaSupportBatchesAndPagedAttenti
                 EXPECT_EQ(query_shape.rank(), 2);
                 EXPECT_EQ(query_shape[0], 5);
                 EXPECT_TRUE(query_shape[1] == 64 || (gemma && query_shape[1] == 32));
+                if (std::string(family) == "gemma4-ple") {
+                    const auto window_value = ov::util::get_constant_from_source(pa->input_value(10));
+                    ASSERT_NE(window_value, nullptr);
+                    const auto size = window_value->cast_vector<int32_t>()[0];
+                    EXPECT_TRUE(size == 0 || size == 2);
+                    sliding_attention += size == 2;
+                }
             }
             if (auto gdn = ov::as_type_ptr<ov::op::internal::PagedGatedDeltaNet>(node)) {
                 ++recurrent;
@@ -917,6 +1002,9 @@ TEST(GGUFMultimodalBackboneAdaptation, QwenAndGemmaSupportBatchesAndPagedAttenti
             }
         }
         EXPECT_EQ(attention, gemma ? (std::string(family) == "gemma4-ple" ? 4 : 2) : 1);
+        if (std::string(family) == "gemma4-ple") {
+            EXPECT_EQ(sliding_attention, 2);
+        }
         EXPECT_EQ(recurrent, gemma ? 0 : 3);
         EXPECT_TRUE(model->get_sinks().empty());
     }
