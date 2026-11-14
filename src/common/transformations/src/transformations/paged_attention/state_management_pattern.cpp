@@ -4,6 +4,7 @@
 
 #include "transformations/paged_attention/state_management_pattern.hpp"
 
+#include <limits>
 #include <tuple>
 #include <unordered_set>
 
@@ -63,6 +64,7 @@ constexpr const char* NUM_K_HEADS = "num_k_heads";
 constexpr const char* K_HEAD_SIZE = "k_head_size";
 constexpr const char* NUM_V_HEADS = "num_v_heads";
 constexpr const char* V_HEAD_SIZE = "v_head_size";
+constexpr const char* GGUF_SWA_WINDOW_SIZE = "gguf.swa_window_size";
 using namespace ov::pass;
 using ov::OutputVector;
 
@@ -706,7 +708,13 @@ ov::pass::StateManagementPattern::StateManagementPattern(PaParams& pa_params,
         pa_arguments.push_back(pa_params["block_indices_begins"]);
 
         std::shared_ptr<Node> sliding_window;
-        if (pattern_map.count(phi3_offset)) {
+        const auto gguf_window = sdpa_node->get_rt_info().find(GGUF_SWA_WINDOW_SIZE);
+        if (gguf_window != sdpa_node->get_rt_info().end()) {
+            const auto window = gguf_window->second.as<int64_t>();
+            OPENVINO_ASSERT(window > 0 && window <= std::numeric_limits<int32_t>::max(),
+                            "Invalid GGUF PagedAttention sliding window size");
+            sliding_window = v0::Constant::create(element::i32, Shape{}, {static_cast<int32_t>(window)});
+        } else if (pattern_map.count(phi3_offset)) {
             auto offset = pattern_map.at(phi3_offset).get_node_shared_ptr();
             if (offset->get_element_type() != element::i32) {
                 offset = std::make_shared<v0::Convert>(offset, element::i32);

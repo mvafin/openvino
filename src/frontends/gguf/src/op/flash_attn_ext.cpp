@@ -142,10 +142,12 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
     // builder identifies it by the mask input's name (self_kq_mask_swa).
     if (has_mask) {
         auto mask = context.get_input(3);
-        const bool is_swa = context.get_attribute<bool>("is_swa", false) ||
-                            context.get_input_names()[3].find("swa") != std::string::npos;
+        const auto& mask_input_name = context.get_input_names()[3];
+        const bool is_swa =
+            context.get_attribute<bool>("is_swa", false) || mask_input_name.find("swa") != std::string::npos;
+        const bool is_shared_query_mask = mask_input_name.find("_shared") != std::string::npos;
         const std::string mask_name = is_swa ? "KQ_mask_swa_sliced" : "KQ_mask_sliced";
-        if (context.has_input(mask_name)) {
+        if (context.has_input(mask_name) && !is_shared_query_mask) {
             mask_sliced = context.get_input(mask_name);
         } else {
             auto zero = ov::op::v0::Constant::create(ov::element::i64, {1}, {0});
@@ -264,6 +266,13 @@ OutputVector translate_flash_attn_ext(const NodeContext& context) {
                                                                         scale_node,
                                                                         sink_r,
                                                                         false);
+    }
+    const auto swa_window_size = context.get_attribute<int64_t>("swa_window_size", 0);
+    if (swa_window_size > 0) {
+        if (const auto sdpa_node =
+                ov::as_type_ptr<ov::op::v13::ScaledDotProductAttention>(sdpa.get_node_shared_ptr())) {
+            sdpa_node->get_rt_info()["gguf.swa_window_size"] = swa_window_size;
+        }
     }
     // [B, H, L, S] -> [B, L, H, S] (ggml-natural layout expected by caller).
     res = std::make_shared<ov::op::v1::Transpose>(sdpa,
